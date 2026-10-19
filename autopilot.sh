@@ -170,6 +170,7 @@ changed_submodules() {
 [ -f "$TASKS_FILE" ] || { announce crit "Task list $WORKDIR/$TASKS_FILE is missing"; exit 1; }
 is_approved || { announce warn "Acceptance test NOT approved: choose \"Approve acceptance test\" in the menu (or: autopilot approve)"; exit 1; }
 [ -n "$(g status --porcelain)" ] && { announce crit "Work directory not clean, aborting"; exit 1; }
+g var GIT_COMMITTER_IDENT >/dev/null 2>&1 || { announce crit "Git cannot commit in $WORKDIR: no identity. Set one: git config --global user.email you@example.org; git config --global user.name \"Your Name\""; exit 1; }
 rm -f "$STATE/WAITING" "$STATE/CONTINUE" "$STATE/cost-extra"
 
 i=0; start=$(date +%s); acc=0; cost=0; kind=-

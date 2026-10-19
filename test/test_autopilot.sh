@@ -312,5 +312,22 @@ iconv -f UTF-8 -t UTF-8 "$T/e5/.autopilot/log/history.log" >/dev/null 2>&1 || fa
 iconv -f UTF-8 -t UTF-8 BLOCKED.md >/dev/null 2>&1 || fail "BLOCKED.md contains a cut umlaut"
 git log -1 --format=%B | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1 || fail "commit message contains a cut umlaut"
 git log -1 --format=%B | grep -q "Autopilot: \[x\] 2\. \[x\] aü" || fail "commit message without the shortened umlaut task"
+# Without a Git identity the loop stops before Claude is started
+new_round
+sample_project "$T/e6/work"
+printf -- '- [ ] 1. [x] one\n' >TASKS.md && git add -A && git commit -qm start
+git config --unset user.email && git config --unset user.name && git config user.useConfigOnly true
+printf 'WORKDIR=work\nTEST_CMD=%q\nALLOWED=%q\n' 'bash check.sh' '^(checks\.txt|TASKS\.md)$' >"$T/e6/autopilot.conf"
+echo "echo check >>checks.txt; $tick" >"$FAKE_DIR/steps/1.sh"
+export AUTOPILOT_CONF="$T/e6/autopilot.conf"
+"$TOOL_DIR/menu.sh" trust "$AUTOPILOT_CONF" >/dev/null || fail "trust for the identity test failed"
+env -u EMAIL -u GIT_COMMITTER_EMAIL -u GIT_AUTHOR_EMAIL GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 MAX=1 \
+    "$TOOL_DIR/autopilot.sh" >"$T/e6/out.txt" 2>&1 && fail "run without a Git identity not refused"
+grep -q "user.email" "$T/e6/out.txt" || fail "no user.email hint without a Git identity: $(tail -3 "$T/e6/out.txt")"
+grep -q "git config" "$T/e6/out.txt" || fail "no git config hint without a Git identity"
+[ -f "$FAKE_DIR/step-nr" ] && fail "Claude was started without a Git identity"
+git config user.email t@e.org && git config user.name T
+GIT_CONFIG_GLOBAL=/dev/null MAX=1 "$TOOL_DIR/autopilot.sh" >"$T/e6/out.txt" 2>&1 || fail "run with a local Git identity refused: $(tail -3 "$T/e6/out.txt")"
+[ -f "$FAKE_DIR/step-nr" ] || fail "Claude not started with a local Git identity"
 unset AUTOPILOT_CONF
 echo ok
