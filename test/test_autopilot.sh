@@ -157,4 +157,17 @@ echo "Short report: all good." >"$FAKE_DIR/report.txt"
 "$TOOL_DIR/menu.sh" report | grep -q "Short report: all good" || fail "report wrong"
 [ -z "$("$TOOL_DIR/menu.sh" status --short)" ] || fail "status line shows something although nothing runs"
 [ -z "$(find "$T" -name triggered)" ] || fail "command from the file name was executed later while loading"
+
+# ======== Part C: plan file outside any Git project (e.g. ~/readme.md): own project folder, nothing else touched ========
+mkdir -p "$T/home" && echo "# Idea" >"$T/home/readme.md" && cd "$T/home" || exit 1
+unset GIT_AUTHOR_NAME GIT_COMMITTER_NAME
+"$TOOL_DIR/menu.sh" plan "$T/home/readme.md" >"$T/draft3.txt" 2>&1 || fail "draft outside Git failed: $(tail -3 "$T/draft3.txt")"
+grep -q "separate project folder was created" "$T/draft3.txt" || fail "no note about the new project folder"
+[ -d "$T/home/readme-autopilot/.git" ] && [ ! -e "$T/home/.git" ] || fail "Git was not confined to the new project folder"
+[ "$(cat "$T/home/readme.md")" = "# Idea" ] || fail "original plan file was changed"
+"$TOOL_DIR/menu.sh" plan accept >/dev/null || fail "accept in the own project folder failed"
+( . "$T/home/readme-autopilot/autopilot.conf"; [ "$WORKDIR" = "$T/home/readme-autopilot" ] ) || fail "WORKDIR should be the project folder itself"
+[ ! -e "$T/home/readme-autopilot-autopilot" ] || fail "an unnecessary second folder was created"
+[ "$(ls -A "$T/home")" = "readme-autopilot
+readme.md" ] || fail "something else was created next to the plan: $(ls -A "$T/home" | tr '\n' ' ')"
 echo ok

@@ -49,11 +49,31 @@ show() { # DRAFT DIRECTORY
     echo "Read in full: $e/tasks.md   Set up: autopilot plan accept   Draft again: autopilot plan <file>"
 }
 
+# A plan file outside any Git project gets its own project folder next to it (<name>-autopilot/) with its own
+# Git repository and a copy of the plan. Nothing else on the system is changed – no `git init` in your folders.
+new_workspace() { # PLANFILE → path of the project folder on stdout
+    local file=$1 name dir
+    name=$(basename "$file"); name=${name%.*}; name=$(printf %s "$name" | tr -c 'A-Za-z0-9._-' '-')
+    dir=$(dirname "$file")/${name:-plan}-autopilot
+    if [ -d "$dir/.git" ]; then echo "$dir"; return; fi
+    [ -e "$dir" ] && { echo "$dir exists and is not a Git project – please move it or use another plan file." >&2; return 1; }
+    mkdir -p "$dir" && cp "$file" "$dir/" || return 1
+    g -C "$dir" init -q -b main || return 1
+    # No Git identity on this machine? Set one for this folder only (your global settings stay untouched).
+    [ -n "$(g -C "$dir" config user.email)" ] || { g -C "$dir" config user.name autopilot-loop; g -C "$dir" config user.email autopilot-loop@localhost; }
+    g -C "$dir" add -A && g -C "$dir" commit -q --no-verify -m "Plan" || return 1
+    mkdir -p "$dir/.autopilot" && touch "$dir/.autopilot/own-workspace"
+    echo "Note: $file is not inside a Git project, so a separate project folder was created: $dir" >&2
+    echo "$dir"
+}
+
 draft() { # PLANFILE
     local file repo rel e prompt cost
     file=$(readlink -f "${1/#\~/$HOME}") && [ -f "$file" ] || fail "File not found: $1"  # ~ also without a shell (plugin)
-    repo=$(g -C "$(dirname "$file")" rev-parse --show-toplevel 2>/dev/null) ||
-        fail "$file is not inside a Git project. First: cd $(dirname "$file") && git init && git add -A && git commit -m Start"
+    if ! repo=$(g -C "$(dirname "$file")" rev-parse --show-toplevel 2>/dev/null); then
+        repo=$(new_workspace "$file") || fail "Could not create a project folder for $file."
+        file=$repo/$(basename "$file")
+    fi
     g -C "$repo" rev-parse -q --verify HEAD >/dev/null || fail "The Git project has no commit yet (git add -A && git commit -m Start)."
     rel=${file#"$repo"/}
     e=$repo/.autopilot/draft
@@ -88,6 +108,8 @@ accept() {
     name=$(basename "$repo" | tr -c 'A-Za-z0-9._-' '-'); name=${name%-}  # also the name of the tmux session
     base=$(g -C "$repo" branch --show-current); base=${base:-main}
     wt=$repo-autopilot
+    # Own project folder (created for a plan outside Git): work directly in it, no second folder needed.
+    [ -f "$repo/.autopilot/own-workspace" ] && { wt=$repo; base=$(g -C "$repo" rev-list --max-parents=0 HEAD | tail -1); }
     if [ ! -d "$wt" ]; then
         if g -C "$repo" rev-parse -q --verify autopilot >/dev/null; then g -C "$repo" worktree add -q "$wt" autopilot
         else g -C "$repo" worktree add -q "$wt" -b autopilot; fi || fail "Could not create the work branch."
