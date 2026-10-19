@@ -106,7 +106,7 @@ accept() {
     e=$repo/.autopilot/draft
     file=$(cat "$e/plan"); rel=${file#"$repo"/}
     name=$(basename "$repo" | tr -c 'A-Za-z0-9._-' '-'); name=${name%-}  # also the name of the tmux session
-    base=$(g -C "$repo" branch --show-current); base=${base:-main}
+    base=$(g -C "$repo" branch --show-current); base=${base:-$(g -C "$repo" rev-parse HEAD)}  # detached HEAD: the commit
     wt=$repo-autopilot
     # Own project folder (created for a plan outside Git): work directly in it, no second folder needed.
     [ -f "$repo/.autopilot/own-workspace" ] && { wt=$repo; base=$(g -C "$repo" rev-list --max-parents=0 HEAD | tail -1); }

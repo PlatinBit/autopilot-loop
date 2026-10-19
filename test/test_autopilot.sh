@@ -330,4 +330,18 @@ git config user.email t@e.org && git config user.name T
 GIT_CONFIG_GLOBAL=/dev/null MAX=1 "$TOOL_DIR/autopilot.sh" >"$T/e6/out.txt" 2>&1 || fail "run with a local Git identity refused: $(tail -3 "$T/e6/out.txt")"
 [ -f "$FAKE_DIR/step-nr" ] || fail "Claude not started with a local Git identity"
 unset AUTOPILOT_CONF
+
+# ======== Part F: fresh machine ========
+# Detached HEAD: plan accept takes the commit as BASE_BRANCH instead of "main"
+new_round
+sample_project "$T/f1/repo"
+git add -A && git commit -qm start && git checkout -q --detach && git branch -qD main || fail "detached HEAD setup failed"
+head=$(git rev-parse HEAD)
+printf "===CONFIG===\nTEST_CMD='bash check.sh'\n===TASKS===\n- [ ] 1. [x] one. Done when a test passes.\n" >"$FAKE_DIR/setup.txt"
+"$TOOL_DIR/menu.sh" plan "$T/f1/repo/plan.md" >"$T/f1/out.txt" 2>&1 || fail "draft with a detached HEAD failed: $(tail -3 "$T/f1/out.txt")"
+"$TOOL_DIR/menu.sh" plan accept >"$T/f1/out.txt" 2>&1 || fail "accept with a detached HEAD failed: $(tail -3 "$T/f1/out.txt")"
+( . "$T/f1/repo/autopilot.conf"; [ "$BASE_BRANCH" = "$head" ] ) || fail "BASE_BRANCH is not the detached commit: $(grep BASE_BRANCH "$T/f1/repo/autopilot.conf")"
+"$TOOL_DIR/menu.sh" result >"$T/f1/out.txt" 2>&1 || fail "result with a detached-HEAD base exits non-zero: $(cat "$T/f1/out.txt")"
+grep -q "fatal:" "$T/f1/out.txt" && fail "result with a detached-HEAD base shows a Git error: $(cat "$T/f1/out.txt")"
+grep -q "Autopilot: tasks from plan.md" "$T/f1/out.txt" || fail "result with a detached-HEAD base does not list the new commit"
 echo ok

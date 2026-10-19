@@ -7,3 +7,4 @@
 - Task 7: fixed by quoting the replacement values in `${prompt//…/"$VAL"}` (works the same in bash 4.4 and 5.2); fake-claude writes every worker prompt to `$FAKE_DIR/last-prompt`, so it holds the latest one.
 - Task 8: `cut_chars` in autopilot.sh shortens with bash substrings, so it counts characters in the current locale; under a non-UTF-8 locale (LC_ALL=C) bash counts bytes again and could still cut an umlaut – accepted, since the test and normal systems use a UTF-8 locale.
 - Task 9: the identity check (`g var GIT_COMMITTER_IDENT`) runs after the clean-tree check and before the start tests, so a missing identity stops the loop before any test or Claude run; the hint suggests `git config --global`, a repo-local identity also passes.
+- Task 10: with a detached HEAD the full commit hash (`rev-parse HEAD` of the original repo at accept time) becomes BASE_BRANCH; the "main" fallback is gone, since a repo without commits is already refused by `plan <file>`.
