@@ -1,15 +1,9 @@
-```text
-               __              _ __      __        __
-  ____ ___  __/ /_____  ____  (_) /___  / /_      / /___  ____  ____
- / __ `/ / / / __/ __ \/ __ \/ / / __ \/ __/_____/ / __ \/ __ \/ __ \
-/ /_/ / /_/ / /_/ /_/ / /_/ / / / /_/ / /_/_____/ / /_/ / /_/ / /_/ /
-\__,_/\__,_/\__/\____/ .___/_/_/\____/\__/     /_/\____/\____/ .___/
-                    /_/                                     /_/
-
-            .--> plan --> build --> verify --> commit --.
-            ^                                           |
-            '---------------- until done ---------------'
-```
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.svg">
+    <img src="assets/logo-light.svg" width="100%" alt="autopilot-loop: plan, build, verify, commit - until done">
+  </picture>
+</p>
 
 <p align="center">
   <img src="https://img.shields.io/badge/license-MIT-blue" alt="License: MIT">

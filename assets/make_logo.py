@@ -41,12 +41,14 @@ def main():
     lines = art()
     (HERE / "logo.txt").write_text("\n".join(lines) + "\n")
 
-    # Logo as SVG (black text on transparent; fine on light pages, use logo.txt in a code block elsewhere)
+    # Logo as SVG for the README: same characters, scaled to the column width (much larger than a code block).
+    # logo-dark.svg = light text for dark pages, logo-light.svg = dark text for light pages (GitHub's text colours).
     size, cw = 16, 16 * 0.602
-    w, h = int(max(map(len, lines)) * cw + 32), int(len(lines) * size * 1.25 + 24)
-    (HERE / "logo.svg").write_text(
-        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {w} {h}" width="{w}" height="{h}" role="img" '
-        f'aria-label="autopilot-loop"><title>autopilot-loop</title>{svg_text(lines, 16, 28, size, "#000")}</svg>\n')
+    w, h = int(max(map(len, lines)) * cw + 16), int(len(lines) * size * 1.12 + 12)
+    for name, colour in (("logo-dark.svg", "#f0f6fc"), ("logo-light.svg", "#1f2328")):
+        (HERE / name).write_text(
+            f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {w} {h}" width="{w}" height="{h}" role="img" '
+            f'aria-label="autopilot-loop"><title>autopilot-loop</title>{svg_text(lines, 8, size + 2, size, colour)}</svg>\n')
 
     # Social preview 1280x640: white ASCII on black, centred, with the prompt line
     size = 22
