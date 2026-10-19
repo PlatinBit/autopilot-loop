@@ -1,4 +1,9 @@
-<p align="center"><img src="assets/logo.svg" width="360" alt="autopilot-loop"></p>
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/logo.svg">
+    <img src="assets/logo-light.svg" width="560" alt="autopilot-loop">
+  </picture>
+</p>
 
 <p align="center">
   <img src="https://img.shields.io/badge/license-MIT-blue" alt="License: MIT">
