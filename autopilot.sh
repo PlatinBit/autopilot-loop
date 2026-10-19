@@ -198,10 +198,11 @@ while [ "$i" -lt "$MAX" ]; do
     [ "$open_task" != "$last" ] && { last=$open_task; rejections=0; rm -f "$FEEDBACK"; }
     note "Run $i: $(echo "$open_task" | cut -c7-80)"
     prompt=$(cat "$PROMPT_FILE")
-    prompt=${prompt//\{TASKS_FILE\}/$TASKS_FILE}
-    prompt=${prompt//\{DECISIONS_FILE\}/$DECISIONS_FILE}
-    prompt=${prompt//\{TEST_CMD\}/$TEST_CMD}
-    prompt=${prompt//\{ACCEPT_CMD\}/${ACCEPT_CMD:-(no acceptance test)}}
+    # Quoted replacements: taken literally (no & from bash 5.2 patsub_replacement, no backslash handling)
+    prompt=${prompt//\{TASKS_FILE\}/"$TASKS_FILE"}
+    prompt=${prompt//\{DECISIONS_FILE\}/"$DECISIONS_FILE"}
+    prompt=${prompt//\{TEST_CMD\}/"$TEST_CMD"}
+    prompt=${prompt//\{ACCEPT_CMD\}/"${ACCEPT_CMD:-(no acceptance test)}"}
     prompt+=$(plan_section)
     [ -s "$FEEDBACK" ] && prompt+=$'\n\n## Feedback on the previous attempt\n'"$(cat "$FEEDBACK")"
     cost=$(CLAUDE_TIMEOUT=45m claude_run "$LOGS/run-$i.txt" --model "$WORKER_MODEL" --permission-mode acceptEdits \

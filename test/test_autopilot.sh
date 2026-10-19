@@ -281,5 +281,20 @@ grep -q "Run 2 rejected: .*submodule.*sub" "$T/e3/.autopilot/log/history.log" ||
 [ "$(cat sub/lib.txt)" = orig ] && [ ! -e sub/new.txt ] || fail "submodule files not back to the recorded state"
 MAX=1 "$TOOL_DIR/autopilot.sh" >"$T/e3/out.txt" 2>&1 || fail "submodule follow-up run ended with an error: $(tail -3 "$T/e3/out.txt")"
 grep -q "Run 1 accepted" "$T/e3/.autopilot/log/history.log" || fail "change outside the submodule rejected in a project with a submodule"
+# Prompt placeholders are filled in literally, even with & (bash 5.2 patsub_replacement) or a backslash
+new_round
+sample_project "$T/e4/work"
+printf -- '- [ ] 1. [x] one\n' >TASKS.md && git add -A && git commit -qm start
+printf 'WORKDIR=work\nTEST_CMD=%q\nACCEPT_CMD=%q\nALLOWED=%q\n' 'bash check.sh && true' 'printf "%s\n" x >/dev/null; bash accept.sh' \
+    '^(checks\.txt|TASKS\.md)$' >"$T/e4/autopilot.conf"
+echo "echo check >>checks.txt; $tick" >"$FAKE_DIR/steps/1.sh"
+echo "VERDICT: ACCEPT" >"$FAKE_DIR/verdicts"
+export AUTOPILOT_CONF="$T/e4/autopilot.conf"
+"$TOOL_DIR/menu.sh" trust "$AUTOPILOT_CONF" >/dev/null || fail "trust for the placeholder test failed"
+"$TOOL_DIR/menu.sh" approve >/dev/null || fail "approve for the placeholder test failed"
+MAX=1 "$TOOL_DIR/autopilot.sh" >"$T/e4/out.txt" 2>&1 || fail "placeholder run ended with an error: $(tail -3 "$T/e4/out.txt")"
+grep -qF 'Run `bash check.sh && true` and fix' "$FAKE_DIR/last-prompt" || fail "TEST_CMD with & not filled in literally: $(grep -m1 'and fix' "$FAKE_DIR/last-prompt")"
+grep -qF 'run `printf "%s\n" x >/dev/null; bash accept.sh`;' "$FAKE_DIR/last-prompt" || fail "ACCEPT_CMD with a backslash not filled in literally"
+grep -qF '{TEST_CMD}' "$FAKE_DIR/last-prompt" && fail "placeholder {TEST_CMD} left in the prompt"
 unset AUTOPILOT_CONF
 echo ok
