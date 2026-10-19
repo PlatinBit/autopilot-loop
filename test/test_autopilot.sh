@@ -41,7 +41,7 @@ STALL_WARN_AFTER=1
 EOF
 s=$FAKE_DIR/steps
 echo "echo check >>checks.txt; $tick"                            >"$s/1.sh"   # accepted (stall: acceptance stays 0)
-echo "echo check >>checks.txt"                                   >"$s/2.sh"   # not ticked off
+echo "echo check >>checks.txt; echo 'rtk gradlew build' >\"\$FAKE_DIR/denied\"" >"$s/2.sh"   # not ticked off, build refused
 echo "$tick"                                                     >"$s/3.sh"   # without a new test
 echo "echo check >>checks.txt; echo x >>accept.sh; $tick"        >"$s/4.sh"   # acceptance file: outside ALLOWED
 echo "echo check >>checks.txt; echo x >>plan.md; $tick"          >"$s/5.sh"   # plan file: allowed, but locked
@@ -75,7 +75,9 @@ v=$T/.autopilot/log/history.log
 for expected in "Goal reached" "no task ticked off" "without a new test" "outside allowed paths: accept.sh" \
                 "locked file changed: plan.md" "forbidden content" "Reviewer: too thin" "Task blocked" \
                 "dropped from 2 to 1" "tests red" "Stall" "Licence granted for task kind \"edge\"" \
-                "count line of the test command" "outside allowed paths: secret.txt"; do
+                "count line of the test command" "outside allowed paths: secret.txt" \
+                "tool calls denied (allow them in WORKER_TOOLS, or a hook rewrote them): rtk gradlew build" \
+                "denied tool calls: rtk gradlew build"; do
     grep -q "$expected" "$v" || fail "missing in history: $expected"
 done
 [ "$(grep -c '^- \[x\]' TASKS.md)" = 4 ] && grep -q '^- \[~\] 2\.' TASKS.md || fail "task list wrong: $(tr '\n' ' ' <TASKS.md)"

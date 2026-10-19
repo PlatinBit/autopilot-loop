@@ -9,7 +9,10 @@ for a in "$@"; do case "$a" in -p|--output-format|json) ;; --*) break ;; *) prom
 [ -n "$prompt" ] || prompt=$(cat)
 
 count() { local n=$(( $(cat "$d/$1" 2>/dev/null || echo 0) + 1 )); echo $n >"$d/$1"; echo $n; }
-answer() { jq -n --arg r "$1" '{type: "result", is_error: false, result: $r, total_cost_usd: 0.01}'; }
+answer() { # a step may write $FAKE_DIR/denied (one command per line): reported as refused tool calls
+    jq -n --arg r "$1" --arg d "$(cat "$d/denied" 2>/dev/null)" '{type: "result", is_error: false, result: $r, total_cost_usd: 0.01,
+        permission_denials: [$d | split("\n")[] | select(. != "") | {tool_name: "Bash", tool_input: {command: .}}]}'
+    rm -f "$d/denied"; }
 
 case "$prompt" in
     *"You are the reviewer"*) answer "Reasoning …

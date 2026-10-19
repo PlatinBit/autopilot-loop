@@ -200,11 +200,17 @@ while [ "$i" -lt "$MAX" ]; do
         note "Usage limit, waiting $((LIMIT_WAIT / 60)) min"; sleep "$LIMIT_WAIT"; continue
     fi
 
+    # Tool calls Claude Code refused (not in WORKER_TOOLS, or a hook rewrote the command): name them,
+    # otherwise a run without e.g. the build command only ends in a time-out with no visible reason.
+    denied=$(jq -r '[.permission_denials[]? | .tool_input.command // .tool_name] | unique | .[:3] | join(" | ")' \
+        "$LOGS/run-$i.txt.json" 2>/dev/null | tr '\n' ' ' | cut -c1-200)
+    [ -n "$denied" ] && note "Run $i: tool calls denied (allow them in WORKER_TOOLS, or a hook rewrote them): $denied"
+
     # Script checks: only green, not weakened work in allowed paths counts.
     g add -A
     task=$(g diff --cached --no-ext-diff -U0 -- "$TASKS_FILE" | grep -m1 '^+- \[[x~]\]' | cut -c4-90)
     if [ -z "$task" ]; then
-        reject "$before" "no task ticked off or blocked (rc $rc)" "$LOGS/run-$i.txt"
+        reject "$before" "no task ticked off or blocked (rc $rc)${denied:+; denied tool calls: $denied}" "$LOGS/run-$i.txt"
         # Time limit twice on the same task: too big for one run – block it instead of burning more runs.
         [ "$rc" -eq 124 ] && timeouts=$((timeouts + 1)) && [ "$timeouts" -ge 2 ] &&
             block_task "time limit reached twice – task too big for one run, please split it"
