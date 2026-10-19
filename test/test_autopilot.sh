@@ -55,8 +55,11 @@ echo "echo check >>checks.txt; touch red; $tick"                 >"$s/12.sh"  # 
 echo "printf 'check goal\ngoal\n' >>checks.txt; $tick"           >"$s/13.sh"  # acceptance 2 of 2
 echo "echo check >>checks.txt; $tick"                            >"$s/14.sh"
 echo "echo check >>checks.txt; $tick"                            >"$s/15.sh"
-echo "printf '[core]\n\tfsmonitor = touch $T/evil\n' >>.git/config; echo check >>checks.txt; $tick" >"$s/16.sh"  # .git tampering
-printf 'VERDICT: ACCEPT\nVERDICT: REJECT: too thin\nVERDICT: REJECT: too thin\nVERDICT: ACCEPT\nVERDICT: ACCEPT\nVERDICT: ACCEPT\n' >"$FAKE_DIR/verdicts"
+echo "echo check >>checks.txt; exit 124"                         >"$s/16.sh"  # time limit …
+echo "echo check >>checks.txt; exit 124"                         >"$s/17.sh"  # … twice on the same task: blocked
+echo "echo check >>checks.txt; $tick"                            >"$s/18.sh"  # next task goes on
+echo "printf '[core]\n\tfsmonitor = touch $T/evil\n' >>.git/config; echo check >>checks.txt; $tick" >"$s/19.sh"  # .git tampering
+printf 'VERDICT: ACCEPT\nVERDICT: REJECT: too thin\nVERDICT: REJECT: too thin\nVERDICT: ACCEPT\nVERDICT: ACCEPT\nVERDICT: ACCEPT\nVERDICT: ACCEPT\nVERDICT: ACCEPT\n' >"$FAKE_DIR/verdicts"
 export AUTOPILOT_CONF="$T/autopilot.conf"
 
 "$TOOL_DIR/menu.sh" status >/dev/null 2>&1; [ $? = 4 ] || fail "unconfirmed configuration was loaded"
@@ -90,8 +93,13 @@ grep -q ";accepted;.*;0.0200;" "$T/.autopilot/log/progress.csv" || fail "cost (w
 "$TOOL_DIR/menu.sh" result | grep -q "Autopilot: \[x\] 5. \[edge\] five" || fail "result wrong"
 k=$("$TOOL_DIR/menu.sh" chart) && grep -q "<svg" "$k" || fail "chart not created"
 grep -qx "User file" secret.txt || fail "foreign file lost through a rename"
+# A task that hits the time limit twice is blocked, and the loop moves on to the next one
+printf -- '- [ ] 6. [edge] six\n- [ ] 7. [edge] seven\n' >>TASKS.md && git add -A && git commit -qm "new tasks"
+"$TOOL_DIR/autopilot.sh" >/dev/null 2>&1 || fail "run with time limits ended with an error"
+grep -q "time limit reached twice" "$v" && grep -q '^- \[~\] 6\.' TASKS.md && grep -q '^- \[x\] 7\.' TASKS.md ||
+    fail "task with two time limits not blocked: $(tr '\n' ' ' <TASKS.md)"
 # Tampering with .git/config (fsmonitor would run code on the next git status): stop immediately
-printf -- '- [ ] 6. [edge] six\n' >>TASKS.md && git add -A && git commit -qm "new task"
+printf -- '- [ ] 8. [edge] eight\n' >>TASKS.md && git add -A && git commit -qm "new task"
 "$TOOL_DIR/autopilot.sh" >/dev/null 2>&1 && fail "change to .git/config not noticed"
 grep -q "changed .git (config, info or hooks)" "$v" || fail "no message about the .git change"
 [ ! -e "$T/evil" ] || fail "code from .git/config was executed"

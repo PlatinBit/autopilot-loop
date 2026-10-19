@@ -95,7 +95,7 @@ block_task() { # REASON: mark the first open task as [~] so the loop can move on
     [ "$(grep -c '^- \[ \]' "$TASKS_FILE")" -lt "$open_before" ] || { announce crit "Task could not be marked as blocked, stopped"; exit 1; }
     g add -A && g commit -q -m "Autopilot: blocked – $1"
     note "Task blocked: $1"
-    rm -f "$FEEDBACK"; failures=0; rejections=0
+    rm -f "$FEEDBACK"; failures=0; rejections=0; timeouts=0
 }
 
 # Second Claude with a fresh context and read-only access; prints the VERDICT line.
@@ -155,7 +155,7 @@ is_number "$target" || target=''
 fingerprint=$(git_fingerprint)
 announce info "Start: $count tests green${ACCEPT_CMD:+, Accept $acc of ${target:-?}}, at most $MAX runs, worker $WORKER_MODEL, reviewer $REVIEWER_MODEL"
 
-failures=0; waits=0; rejections=0; last=""; accepted=0; no_progress=0
+failures=0; waits=0; rejections=0; timeouts=0; last=""; accepted=0; no_progress=0
 while [ "$i" -lt "$MAX" ]; do
     [ -e "$STATE/STOP" ] && { rm -f "$STATE/STOP"; announce info "Stopped via STOP after $i runs"; exit 0; }
     if ! grep -q '^- \[ \]' "$TASKS_FILE"; then
@@ -173,7 +173,7 @@ while [ "$i" -lt "$MAX" ]; do
 
     i=$((i + 1)); start=$(date +%s); before=$(g rev-parse HEAD); cost=0
     open_task=$(grep -m1 '^- \[ \]' "$TASKS_FILE"); kind=$(kind_of "$open_task")
-    [ "$open_task" != "$last" ] && { last=$open_task; rejections=0; rm -f "$FEEDBACK"; }
+    [ "$open_task" != "$last" ] && { last=$open_task; rejections=0; timeouts=0; rm -f "$FEEDBACK"; }
     note "Run $i: $(echo "$open_task" | cut -c7-80)"
     prompt=$(cat "$PROMPT_FILE")
     prompt=${prompt//\{TASKS_FILE\}/$TASKS_FILE}
@@ -203,7 +203,13 @@ while [ "$i" -lt "$MAX" ]; do
     # Script checks: only green, not weakened work in allowed paths counts.
     g add -A
     task=$(g diff --cached --no-ext-diff -U0 -- "$TASKS_FILE" | grep -m1 '^+- \[[x~]\]' | cut -c4-90)
-    if [ -z "$task" ]; then reject "$before" "no task ticked off or blocked (rc $rc)" "$LOGS/run-$i.txt"; continue; fi
+    if [ -z "$task" ]; then
+        reject "$before" "no task ticked off or blocked (rc $rc)" "$LOGS/run-$i.txt"
+        # Time limit twice on the same task: too big for one run – block it instead of burning more runs.
+        [ "$rc" -eq 124 ] && timeouts=$((timeouts + 1)) && [ "$timeouts" -ge 2 ] &&
+            block_task "time limit reached twice – task too big for one run, please split it"
+        continue
+    fi
     foreign=$(changed | grep -Ev "$ALLOWED")
     if [ -n "$foreign" ]; then reject "$before" "change outside allowed paths: $(echo $foreign)"; continue; fi
     locked=$( { changed | grep -E "$ALWAYS_LOCKED"

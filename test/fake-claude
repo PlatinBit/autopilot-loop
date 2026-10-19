@@ -22,5 +22,6 @@ $(sed -n "$(count verdict-nr)p" "$d/verdicts")" ;;
         grep -q "## Plan being implemented" <<<"$prompt" && echo "$n" >>"$d/with-plan"
         grep -q "DECISIONS.md" <<<"$prompt" && echo "$n" >>"$d/with-decisions"
         [ -f "$d/steps/$n.sh" ] || { answer "no steps left"; exit 1; }
-        bash "$d/steps/$n.sh"; answer "Step $n done" ;;
+        bash "$d/steps/$n.sh"; [ $? = 124 ] && exit 124  # step simulates the time limit
+        answer "Step $n done" ;;
 esac

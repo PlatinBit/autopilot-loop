@@ -117,7 +117,7 @@ sequenceDiagram
 | 5 | **Acceptance test** (optional): a measurable overall goal, approved by you (checksum) | progress only on paper |
 | 6 | **Feedback**: the reason for each rejection goes into the next attempt | blindly repeating the same mistake |
 | 7 | **Grades and licence** per task kind; `SUPERVISED=on` waits for your OK until a kind has earned it | trust that was never earned |
-| 8 | **Brakes**: stop after n rejections in a row, tasks blocked after two reviewer rejections, a maximum number of runs, stall warning, waiting at the usage limit | endless loops that only burn quota |
+| 8 | **Brakes**: stop after n rejections in a row, tasks blocked after two reviewer rejections or two time-outs (too big for one run), a maximum number of runs, stall warning, waiting at the usage limit | endless loops that only burn quota |
 | 9 | **Planner**: list empty, goal open → proposes the next tasks, adopted only with your OK | standstill at "no tasks left" |
 | 10 | **Visibility**: cost per run, progress chart as a web page, daily report, status line in Claude Code | surprises in cost and progress |
 
