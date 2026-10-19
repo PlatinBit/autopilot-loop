@@ -90,7 +90,7 @@ status() {
 
 conditions() {
     if [ -n "$ACCEPT_LIST_CMD" ]; then (cd "$WORKDIR" && bash -c "$ACCEPT_LIST_CMD")
-    elif [ ${#ACCEPT_FILES[@]} -gt 0 ]; then (cd "$WORKDIR" && find "${ACCEPT_FILES[@]}" -type f | sort)
+    elif [ ${#ACCEPT_FILES[@]} -gt 0 ]; then (cd "$WORKDIR" && find "${ACCEPT_FILES[@]/#-/./-}" -type f | sort)
     else echo "No acceptance test set up (ACCEPT_FILES is empty)."; fi
 }
 notes() {

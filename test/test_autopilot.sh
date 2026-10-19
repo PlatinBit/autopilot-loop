@@ -208,5 +208,32 @@ mv "$T/d3/work/accept.sh" "$T/d3/work/accept.old"
 "$TOOL_DIR/menu.sh" approve >"$T/d3/out.txt" 2>&1 && fail "approve with a renamed acceptance file exits 0"
 grep -q "approved" "$T/d3/out.txt" && fail "approve with a renamed acceptance file says approved: $(cat "$T/d3/out.txt")"
 [ "$(sha256sum <"$T/d3/.autopilot/APPROVAL")" = "$before" ] || fail "approve with a renamed acceptance file changed APPROVAL"
+
+# ======== Part E: security ========
+# ACCEPT_FILES and LOCKED entries with a leading "-" are file names, not options
+new_round
+sample_project "$T/e1/work"
+mv accept.sh ./-accept.sh && mv plan.md ./-plan.md
+printf -- '- [ ] 1. [x] one\n' >TASKS.md && git add -A && git commit -qm start
+cat >"$T/e1/autopilot.conf" <<'EOF'
+WORKDIR=work
+TEST_CMD='bash check.sh'
+ACCEPT_CMD='bash ./-accept.sh'
+ACCEPT_FILES=(-accept.sh)
+LOCKED=(-plan.md)
+ALLOWED='^(checks\.txt|-accept\.sh|-plan\.md|TASKS\.md)$'
+EOF
+echo "echo check >>checks.txt; echo x >>./-accept.sh; $tick" >"$FAKE_DIR/steps/1.sh"
+echo "echo check >>checks.txt; echo x >>./-plan.md; $tick"   >"$FAKE_DIR/steps/2.sh"
+export AUTOPILOT_CONF="$T/e1/autopilot.conf"
+"$TOOL_DIR/menu.sh" trust "$AUTOPILOT_CONF" >/dev/null || fail "trust for the dash file test failed"
+"$TOOL_DIR/menu.sh" approve >"$T/e1/out.txt" 2>&1 || fail "approve with ACCEPT_FILES=(-accept.sh) failed: $(cat "$T/e1/out.txt")"
+"$TOOL_DIR/menu.sh" conditions | grep -qx -- './-accept.sh' || fail "conditions does not list -accept.sh"
+MAX=2 "$TOOL_DIR/autopilot.sh" >"$T/e1/out.txt" 2>&1 || fail "run with a dash acceptance file ended with an error: $(tail -3 "$T/e1/out.txt")"
+grep -q "NOT approved" "$T/e1/.autopilot/log/history.log" && fail "dash acceptance file not recognised as approved"
+grep -q "Run 1:" "$T/e1/.autopilot/log/history.log" || fail "run with a dash acceptance file did not get past the approval check"
+grep -q "Run 1 rejected: locked file changed: -accept.sh" "$T/e1/.autopilot/log/history.log" || fail "change to -accept.sh not rejected as locked"
+grep -q "Run 2 rejected: locked file changed: -plan.md" "$T/e1/.autopilot/log/history.log" || fail "change to LOCKED -plan.md not rejected as locked"
+[ "$(git log --oneline | wc -l)" = 1 ] && [ -z "$(git status --porcelain)" ] || fail "dash file change was committed or left behind"
 unset AUTOPILOT_CONF
 echo ok

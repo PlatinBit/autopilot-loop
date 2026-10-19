@@ -87,7 +87,7 @@ is_running() { tmux has-session -t "=$SESSION" 2>/dev/null; }
 # Checksum of the locked acceptance files (empty if there is no acceptance test)
 accept_checksum() {
     [ ${#ACCEPT_FILES[@]} -gt 0 ] || return 0
-    local list; list=$(cd "$WORKDIR" && find "${ACCEPT_FILES[@]}" -type f 2>/dev/null | LC_ALL=C sort)
+    local list; list=$(cd "$WORKDIR" && find "${ACCEPT_FILES[@]/#-/./-}" -type f 2>/dev/null | LC_ALL=C sort)  # ./-x: a name, not an option
     [ -n "$list" ] || { echo "Acceptance files not found: ${ACCEPT_FILES[*]}" >&2; return 1; }
     (cd "$WORKDIR" && while IFS= read -r d; do checksum "$d"; done <<<"$list" | hash_only)
 }
