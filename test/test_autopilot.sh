@@ -192,5 +192,21 @@ rm "$T/d2/work/My Tasks.md"
 "$TOOL_DIR/menu.sh" status >"$T/d2/out.txt" 2>&1 || fail "status without a task list exits non-zero: $(cat "$T/d2/out.txt")"
 grep -qF "$T/d2/work/My Tasks.md" "$T/d2/out.txt" || fail "status does not name the missing task list: $(cat "$T/d2/out.txt")"
 grep -q '^grep:' "$T/d2/out.txt" && fail "raw grep error in status: $(cat "$T/d2/out.txt")"
+# approve with the acceptance file gone: refused, APPROVAL untouched (absent stays absent, present stays identical)
+mkdir -p "$T/d3/work" && echo "echo ok" >"$T/d3/work/accept.sh"
+printf 'WORKDIR=work\nACCEPT_FILES=(accept.sh)\nALLOWED=x\n' >"$T/d3/autopilot.conf"
+export AUTOPILOT_CONF="$T/d3/autopilot.conf"
+"$TOOL_DIR/menu.sh" trust "$AUTOPILOT_CONF" >/dev/null || fail "trust for the approve test failed"
+mv "$T/d3/work/accept.sh" "$T/d3/work/accept.old"
+"$TOOL_DIR/menu.sh" approve >"$T/d3/out.txt" 2>&1 && fail "approve without acceptance files exits 0"
+grep -q "approved" "$T/d3/out.txt" && fail "approve without acceptance files says approved: $(cat "$T/d3/out.txt")"
+[ ! -e "$T/d3/.autopilot/APPROVAL" ] || fail "approve without acceptance files created APPROVAL"
+mv "$T/d3/work/accept.old" "$T/d3/work/accept.sh"
+"$TOOL_DIR/menu.sh" approve >/dev/null || fail "approve with the acceptance file failed"
+before=$(sha256sum <"$T/d3/.autopilot/APPROVAL")
+mv "$T/d3/work/accept.sh" "$T/d3/work/accept.old"
+"$TOOL_DIR/menu.sh" approve >"$T/d3/out.txt" 2>&1 && fail "approve with a renamed acceptance file exits 0"
+grep -q "approved" "$T/d3/out.txt" && fail "approve with a renamed acceptance file says approved: $(cat "$T/d3/out.txt")"
+[ "$(sha256sum <"$T/d3/.autopilot/APPROVAL")" = "$before" ] || fail "approve with a renamed acceptance file changed APPROVAL"
 unset AUTOPILOT_CONF
 echo ok

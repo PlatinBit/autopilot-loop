@@ -181,7 +181,8 @@ case "${1:-}" in
     report) report "${2:-}"; exit 0 ;;
     approve)
         [ ${#ACCEPT_FILES[@]} -gt 0 ] || { echo "No acceptance test set up."; exit 0; }
-        accept_checksum >"$STATE/APPROVAL"; echo "Acceptance test approved."; exit 0 ;;
+        s=$(accept_checksum) || { echo "Approval refused: fix ACCEPT_FILES in $CONF."; exit 1; }
+        echo "$s" >"$STATE/APPROVAL"; echo "Acceptance test approved."; exit 0 ;;
     continue)
         [ -e "$STATE/WAITING" ] || { echo "Nothing is waiting for your OK right now."; exit 0; }
         touch "$STATE/CONTINUE"; echo "OK given, continuing."; exit 0 ;;

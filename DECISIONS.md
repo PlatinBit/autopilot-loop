@@ -1,2 +1,3 @@
 - Task 1: the WORKDIR check sits only in autopilot.sh (before `cd`); a WORKDIR that exists but cannot be entered (no x permission) still shows the raw `cd:` error.
 - Task 2: only the full `menu.sh status` checks for the task list; the whiptail menu uses the same function, other commands that read TASKS_FILE (e.g. `suggestion accept`) were not changed.
+- Task 3: approve is only refused when none of the ACCEPT_FILES exist; if some exist and some are missing, the existing ones are approved as before (find's own error output is now silenced).
