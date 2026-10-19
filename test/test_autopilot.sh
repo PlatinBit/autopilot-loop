@@ -170,4 +170,16 @@ grep -q "separate project folder was created" "$T/draft3.txt" || fail "no note a
 [ ! -e "$T/home/readme-autopilot-autopilot" ] || fail "an unnecessary second folder was created"
 [ "$(ls -A "$T/home")" = "readme-autopilot
 readme.md" ] || fail "something else was created next to the plan: $(ls -A "$T/home" | tr '\n' ' ')"
+
+# ======== Part D: error messages ========
+mkdir -p "$T/d1"
+for w in "gone dir" "$T/absent/work"; do
+    printf 'WORKDIR=%q\nALLOWED=x\n' "$w" >"$T/d1/autopilot.conf"
+    case "$w" in /*) p=$w ;; *) p=$T/d1/$w ;; esac
+    AUTOPILOT_CONF="$T/d1/autopilot.conf" "$TOOL_DIR/menu.sh" trust "$T/d1/autopilot.conf" >/dev/null || fail "trust for the WORKDIR test failed"
+    AUTOPILOT_CONF="$T/d1/autopilot.conf" "$TOOL_DIR/autopilot.sh" >"$T/d1/out.txt" 2>&1 && fail "missing WORKDIR $w not refused"
+    grep -qF "$p" "$T/d1/out.txt" || fail "message does not name the missing path $p: $(cat "$T/d1/out.txt")"
+    grep -q "WORKDIR" "$T/d1/out.txt" || fail "message does not name WORKDIR: $(cat "$T/d1/out.txt")"
+    grep -qE '^cd:|line [0-9]+:' "$T/d1/out.txt" && fail "raw shell error for a missing WORKDIR: $(cat "$T/d1/out.txt")"
+done
 echo ok

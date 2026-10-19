@@ -1,0 +1,1 @@
+- Task 1: the WORKDIR check sits only in autopilot.sh (before `cd`); a WORKDIR that exists but cannot be entered (no x permission) still shows the raw `cd:` error.

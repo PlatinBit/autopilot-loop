@@ -27,6 +27,7 @@ CSV=$LOGS/progress.csv
 HEADER="time;run;result;open_tasks;tests;accept;seconds;cost_usd;kind;worker;reviewer"
 # What must never change, whatever ALLOWED says: Git, Claude, CI and autopilot management
 ALWAYS_LOCKED='^(\.git|\.claude/|\.github/|\.autopilot/|autopilot\.conf$|CLAUDE\.md$)'
+[ -d "$WORKDIR" ] || { echo "WORKDIR $WORKDIR from $CONF does not exist. Fix WORKDIR there (then: autopilot trust $CONF)." >&2; exit 1; }
 cd "$WORKDIR" || exit 1
 
 note() { echo "$(date '+%F %T') $1" | tee -a "$LOGS/history.log"; }
