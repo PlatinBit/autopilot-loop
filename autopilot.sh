@@ -45,6 +45,10 @@ add_extra_cost() { # add the cost of reviewer and image review to the run
     cost=$(add "$cost" "$(awk '{s += $1} END {print s + 0}' "$STATE/cost-extra")"); rm -f "$STATE/cost-extra"
 }
 is_number() { [[ ${1:-} =~ ^[0-9]+$ ]]; }
+# Like `cut -c FROM-TO`, but counts characters instead of bytes (GNU cut would cut an umlaut in half)
+cut_chars() { # FROM TO <lines
+    local l; while IFS= read -r l; do echo "${l:$1-1:$2-$1+1}"; done
+}
 
 # Fingerprint of the Git management (config, info, hooks): if a run changes it, the loop stops,
 # because the next Git call could run code through it.
@@ -98,7 +102,7 @@ reject() { # BEFORE REASON [LOGFILE]
 
 block_task() { # REASON: mark the first open task as [~] so the loop can move on
     local open_before; open_before=$(grep -c '^- \[ \]' "$TASKS_FILE")
-    echo "- $(date +%F), $(grep -m1 '^- \[ \]' "$TASKS_FILE" | cut -c7-60): $1" >>BLOCKED.md
+    echo "- $(date +%F), $(grep -m1 '^- \[ \]' "$TASKS_FILE" | cut_chars 7 60): $1" >>BLOCKED.md
     block_first_open "$TASKS_FILE"
     [ "$(grep -c '^- \[ \]' "$TASKS_FILE")" -lt "$open_before" ] || { announce crit "Task could not be marked as blocked, stopped"; exit 1; }
     g add -A && g commit -q -m "Autopilot: blocked – $1"
@@ -196,7 +200,7 @@ while [ "$i" -lt "$MAX" ]; do
     i=$((i + 1)); start=$(date +%s); before=$(g rev-parse HEAD); cost=0
     open_task=$(grep -m1 '^- \[ \]' "$TASKS_FILE"); kind=$(kind_of "$open_task")
     [ "$open_task" != "$last" ] && { last=$open_task; rejections=0; rm -f "$FEEDBACK"; }
-    note "Run $i: $(echo "$open_task" | cut -c7-80)"
+    note "Run $i: $(echo "$open_task" | cut_chars 7 80)"
     prompt=$(cat "$PROMPT_FILE")
     # Quoted replacements: taken literally (no & from bash 5.2 patsub_replacement, no backslash handling)
     prompt=${prompt//\{TASKS_FILE\}/"$TASKS_FILE"}
@@ -225,7 +229,7 @@ while [ "$i" -lt "$MAX" ]; do
 
     # Script checks: only green, not weakened work in allowed paths counts.
     g add -A
-    task=$(g diff --cached --no-ext-diff -U0 -- "$TASKS_FILE" | grep -m1 '^+- \[[x~]\]' | cut -c4-90)
+    task=$(g diff --cached --no-ext-diff -U0 -- "$TASKS_FILE" | grep -m1 '^+- \[[x~]\]' | cut_chars 4 90)
     if [ -z "$task" ]; then reject "$before" "no task ticked off or blocked (rc $rc)" "$LOGS/run-$i.txt"; continue; fi
     subs=$(changed_submodules)
     if [ -n "$subs" ]; then reject "$before" "change inside a submodule: $(echo $subs)"; continue; fi

@@ -296,5 +296,21 @@ MAX=1 "$TOOL_DIR/autopilot.sh" >"$T/e4/out.txt" 2>&1 || fail "placeholder run en
 grep -qF 'Run `bash check.sh && true` and fix' "$FAKE_DIR/last-prompt" || fail "TEST_CMD with & not filled in literally: $(grep -m1 'and fix' "$FAKE_DIR/last-prompt")"
 grep -qF 'run `printf "%s\n" x >/dev/null; bash accept.sh`;' "$FAKE_DIR/last-prompt" || fail "ACCEPT_CMD with a backslash not filled in literally"
 grep -qF '{TEST_CMD}' "$FAKE_DIR/last-prompt" && fail "placeholder {TEST_CMD} left in the prompt"
+# Shortened task text never cuts an umlaut in half (history.log, BLOCKED.md, commit message)
+new_round
+sample_project "$T/e5/work"
+u=$(printf 'ü%.0s' $(seq 1 60))
+printf -- '- [ ] 1. [x] %s\n- [ ] 2. [x] a%s\n' "$u" "$u" >TASKS.md && git add -A && git commit -qm start
+printf 'WORKDIR=work\nTEST_CMD=%q\nALLOWED=%q\n' 'bash check.sh' '^(checks\.txt|TASKS\.md|BLOCKED\.md)$' >"$T/e5/autopilot.conf"
+for n in 1 2 3; do echo "echo check >>checks.txt; $tick" >"$FAKE_DIR/steps/$n.sh"; done
+printf 'VERDICT: REJECT: no\nVERDICT: REJECT: no\nVERDICT: ACCEPT\n' >"$FAKE_DIR/verdicts"
+export AUTOPILOT_CONF="$T/e5/autopilot.conf"
+"$TOOL_DIR/menu.sh" trust "$AUTOPILOT_CONF" >/dev/null || fail "trust for the umlaut test failed"
+LC_ALL=C.UTF-8 MAX=3 "$TOOL_DIR/autopilot.sh" >"$T/e5/out.txt" 2>&1 || fail "umlaut run ended with an error: $(tail -3 "$T/e5/out.txt")"
+grep -q "Task blocked" "$T/e5/.autopilot/log/history.log" && grep -q "Run 3 accepted" "$T/e5/.autopilot/log/history.log" || fail "umlaut run did not block task 1 and accept task 2"
+iconv -f UTF-8 -t UTF-8 "$T/e5/.autopilot/log/history.log" >/dev/null 2>&1 || fail "history.log contains a cut umlaut"
+iconv -f UTF-8 -t UTF-8 BLOCKED.md >/dev/null 2>&1 || fail "BLOCKED.md contains a cut umlaut"
+git log -1 --format=%B | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1 || fail "commit message contains a cut umlaut"
+git log -1 --format=%B | grep -q "Autopilot: \[x\] 2\. \[x\] aü" || fail "commit message without the shortened umlaut task"
 unset AUTOPILOT_CONF
 echo ok
