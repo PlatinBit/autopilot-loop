@@ -1,0 +1,15 @@
+name: Selbsttest
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Syntax
+        run: |
+          for f in autopilot.sh menu.sh gemeinsam.sh vorhaben.sh helfer.sh install.sh test/test_autopilot.sh test/fake-claude; do bash -n "$f"; done
+          python3 -m py_compile kurve.py
+      - name: Regelkreis mit vorgetäuschtem claude
+        run: test/test_autopilot.sh

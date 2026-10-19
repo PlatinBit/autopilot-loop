@@ -1,0 +1,21 @@
+{
+  "name": "autopilot",
+  "displayName": "Autopilot (Regelkreis)",
+  "version": "0.1.0",
+  "description": "/autopilot: Plan-Datei angeben, Claude setzt sie Aufgabe für Aufgabe allein um – mit Skript-Prüfer, Gutachter, gesperrtem Ziel, Noten, Kosten und Planer.",
+  "author": {
+    "name": "PlatinBit",
+    "url": "https://github.com/PlatinBit"
+  },
+  "homepage": "https://github.com/PlatinBit/autopilot-loop",
+  "repository": "https://github.com/PlatinBit/autopilot-loop",
+  "license": "MIT",
+  "keywords": [
+    "autopilot",
+    "autonomous",
+    "loop",
+    "tests",
+    "review",
+    "regelkreis"
+  ]
+}

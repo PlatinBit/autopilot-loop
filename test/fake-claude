@@ -1,0 +1,25 @@
+#!/bin/bash
+# Testdouble für `claude -p --output-format json …` (nur für test/test_autopilot.sh).
+# Der Auftrag kommt als Argument (Umsetzer, Einrichter, Planer) oder über stdin (Gutachter, Bericht).
+# Steuerung über $FAKE_DIR: schritte/<n>.sh (Umsetzer-Durchläufe), urteile (eine Zeile je Gutachten),
+# einrichten.txt, planer.txt, bericht.txt (feste Antworten). Jede Antwort kostet 0.01 USD.
+d=$FAKE_DIR
+auftrag=''
+for a in "$@"; do case "$a" in -p|--output-format|json) ;; --*) break ;; *) auftrag=$a; break ;; esac; done
+[ -n "$auftrag" ] || auftrag=$(cat)
+
+zaehle() { local n=$(( $(cat "$d/$1" 2>/dev/null || echo 0) + 1 )); echo $n >"$d/$1"; echo $n; }
+antwort() { jq -n --arg r "$1" '{type: "result", is_error: false, result: $r, total_cost_usd: 0.01}'; }
+
+case "$auftrag" in
+    *"Du bist Gutachter"*) antwort "Begründung …
+$(sed -n "$(zaehle urteil-nr)p" "$d/urteile")" ;;
+    *"Du richtest einen Autopiloten"*) antwort "$(cat "$d/einrichten.txt")" ;;
+    *"Du bist der Planer"*) antwort "$(cat "$d/planer.txt")" ;;
+    *"Fasse das für den Projektinhaber"*) antwort "$(cat "$d/bericht.txt")" ;;
+    *)  n=$(zaehle schritt-nr)
+        grep -q "## Rückmeldung zum letzten Versuch" <<<"$auftrag" && echo "$n" >>"$d/mit-rueckmeldung"
+        grep -q "## Plan, der umgesetzt wird" <<<"$auftrag" && echo "$n" >>"$d/mit-plan"
+        [ -f "$d/schritte/$n.sh" ] || { antwort "keine Schritte mehr"; exit 1; }
+        bash "$d/schritte/$n.sh"; antwort "Schritt $n erledigt" ;;
+esac

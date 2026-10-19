@@ -1,0 +1,14 @@
+{
+  "name": "autopilot-loop",
+  "owner": {
+    "name": "PlatinBit",
+    "url": "https://github.com/PlatinBit"
+  },
+  "description": "Autopilot-Regelkreis für Claude Code: Plan-Datei angeben, Claude setzt sie Aufgabe für Aufgabe um – mit Skript-Prüfer, Gutachter und gesperrtem Ziel",
+  "plugins": [
+    {
+      "name": "autopilot",
+      "source": "./"
+    }
+  ]
+}
