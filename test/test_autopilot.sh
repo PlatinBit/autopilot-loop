@@ -235,5 +235,27 @@ grep -q "Run 1:" "$T/e1/.autopilot/log/history.log" || fail "run with a dash acc
 grep -q "Run 1 rejected: locked file changed: -accept.sh" "$T/e1/.autopilot/log/history.log" || fail "change to -accept.sh not rejected as locked"
 grep -q "Run 2 rejected: locked file changed: -plan.md" "$T/e1/.autopilot/log/history.log" || fail "change to LOCKED -plan.md not rejected as locked"
 [ "$(git log --oneline | wc -l)" = 1 ] && [ -z "$(git status --porcelain)" ] || fail "dash file change was committed or left behind"
+# Symlinks in allowed paths: pointing outside WORKDIR (absolute or ../) rejected, pointing inside allowed
+new_round
+sample_project "$T/e2/work"
+printf -- '- [ ] 1. [x] one\n' >TASKS.md && git add -A && git commit -qm start
+start_head=$(git rev-parse HEAD)
+printf 'WORKDIR=work\nTEST_CMD=%q\nALLOWED=%q\n' 'bash check.sh' '^(checks\.txt|out1|out2|in1|TASKS\.md)$' >"$T/e2/autopilot.conf"
+echo "secret" >"$T/e2/outside.txt"
+echo "echo check >>checks.txt; ln -s $T/e2/outside.txt out1; $tick" >"$FAKE_DIR/steps/1.sh"
+echo "echo check >>checks.txt; ln -s ../outside.txt out2; $tick"    >"$FAKE_DIR/steps/2.sh"
+echo "echo check >>checks.txt; ln -s checks.txt in1; $tick"         >"$FAKE_DIR/steps/3.sh"
+echo "VERDICT: ACCEPT" >"$FAKE_DIR/verdicts"
+export AUTOPILOT_CONF="$T/e2/autopilot.conf"
+"$TOOL_DIR/menu.sh" trust "$AUTOPILOT_CONF" >/dev/null || fail "trust for the symlink test failed"
+"$TOOL_DIR/menu.sh" approve >/dev/null || fail "approve for the symlink test failed"
+MAX=3 "$TOOL_DIR/autopilot.sh" >"$T/e2/out.txt" 2>&1 || fail "symlink run ended with an error: $(tail -3 "$T/e2/out.txt")"
+grep -q "Run 1 rejected: symlink .*out1" "$T/e2/.autopilot/log/history.log" || fail "absolute symlink outside WORKDIR not rejected"
+grep -q "Run 2 rejected: symlink .*out2" "$T/e2/.autopilot/log/history.log" || fail "../ symlink outside WORKDIR not rejected"
+grep -q "Run 3 accepted" "$T/e2/.autopilot/log/history.log" || fail "symlink inside WORKDIR not accepted"
+[ "$(git rev-parse HEAD~1)" = "$start_head" ] || fail "HEAD changed by a rejected symlink run"
+git ls-tree -r --name-only HEAD | grep -q '^out[12]$' && fail "outside symlink was committed"
+[ ! -L out1 ] && [ ! -L out2 ] || fail "outside symlink still lying around after the rejection"
+[ -L in1 ] && [ -z "$(git status --porcelain)" ] || fail "inside symlink missing or work directory not clean"
 unset AUTOPILOT_CONF
 echo ok

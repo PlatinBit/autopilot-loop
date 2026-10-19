@@ -29,6 +29,7 @@ HEADER="time;run;result;open_tasks;tests;accept;seconds;cost_usd;kind;worker;rev
 ALWAYS_LOCKED='^(\.git|\.claude/|\.github/|\.autopilot/|autopilot\.conf$|CLAUDE\.md$)'
 [ -d "$WORKDIR" ] || { echo "WORKDIR $WORKDIR from $CONF does not exist. Fix WORKDIR there (then: autopilot trust $CONF)." >&2; exit 1; }
 cd "$WORKDIR" || exit 1
+ROOT=$(pwd -P)
 
 note() { echo "$(date '+%F %T') $1" | tee -a "$LOGS/history.log"; }
 announce() { note "$2"; notify "$1" "$2" >/dev/null 2>&1 || true; }
@@ -139,6 +140,15 @@ supervised_stop() {
 
 # File names of the staged changes, without rename detection (otherwise the old path would drop out)
 changed() { g diff --cached --name-only --no-renames -- "$@"; }
+# New or changed symlinks whose target lies outside the work directory (tests and Claude would follow them)
+outside_links() {
+    local f t
+    g -c core.quotePath=false diff --cached --name-only --no-renames --diff-filter=d | while IFS= read -r f; do
+        [ -L "$f" ] || continue
+        t=$(readlink -f -- "$f") || t=''
+        case "$t" in "$ROOT"/*) ;; *) echo "$f" ;; esac
+    done
+}
 
 [ -n "$TEST_CMD" ] || { announce crit "TEST_CMD is not set in $CONF"; exit 1; }
 [ -n "$ALLOWED" ] || { announce crit "ALLOWED is not set in $CONF – which paths may Claude change?"; exit 1; }
@@ -210,6 +220,8 @@ while [ "$i" -lt "$MAX" ]; do
     locked=$( { changed | grep -E "$ALWAYS_LOCKED"
                 for p in ${LOCKED[@]+"${LOCKED[@]}"} ${ACCEPT_FILES[@]+"${ACCEPT_FILES[@]}"}; do changed "$p"; done; } | sort -u)
     if [ -n "$locked" ]; then reject "$before" "locked file changed: $(echo $locked)"; continue; fi
+    links=$(outside_links)
+    if [ -n "$links" ]; then reject "$before" "symlink pointing outside the work directory: $(echo $links)"; continue; fi
     added=$(g diff --cached --no-ext-diff --no-renames -U0 -- . ":(exclude)$TASKS_FILE" ":(exclude)BLOCKED.md" ":(exclude)$DECISIONS_FILE" |
         grep '^+' | grep -v '^+++' | sed 's/^+//')
     if [ -n "$FORBIDDEN_CONTENT" ] && grep -qE "$FORBIDDEN_CONTENT" <<<"$added"; then

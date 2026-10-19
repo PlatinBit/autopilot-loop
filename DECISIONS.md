@@ -2,3 +2,4 @@
 - Task 2: only the full `menu.sh status` checks for the task list; the whiptail menu uses the same function, other commands that read TASKS_FILE (e.g. `suggestion accept`) were not changed.
 - Task 3: approve is only refused when none of the ACCEPT_FILES exist; if some exist and some are missing, the existing ones are approved as before (find's own error output is now silenced).
 - Task 4: only entries starting with `-` get a `./` prefix for find (so checksums and existing approvals of normal names stay unchanged); the git checks already pass paths after `--` and needed no change.
+- Task 5: every new or changed symlink is resolved with `readlink -f` and must lie strictly below WORKDIR (a link to WORKDIR itself counts as outside); the check runs after the locked-file check and before the tests, so the test command never follows such a link.
