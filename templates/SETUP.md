@@ -1,0 +1,34 @@
+You are setting up an autopilot for this project. Below is a plan file describing what should be built. Another Claude will then implement it task by task, each time with a fresh context; after every task a script checks automatically whether the test command is green and whether the number of passed tests has risen.
+
+To do this, read the plan and look at the project (language, build system, existing tests). Change nothing.
+
+Answer in exactly this format and with nothing else after the first marker:
+
+===CONFIG===
+TEST_CMD='<one command that builds in the project directory and runs all tests, e.g. npm test, pytest -q, ./gradlew test, cargo test>'
+TEST_COUNT_REGEX='<regular expression (Bash, extended) whose first group reads the number of passed tests from the output, e.g. ([0-9]+) passed>'
+ALLOWED='<regular expression on file paths relative to the project that the worker may change, e.g. ^(src/|tests/)>'
+WORKER_TOOLS=(Read Edit Write Glob Grep 'Bash(<test command without arguments>:*)')
+
+(Instead of TEST_COUNT_REGEX you may write TEST_COUNT_CMD='<command>': it gets the output of the test command on stdin and prints only the number – for tools without a summary line. Proven values:
+ pytest: TEST_CMD='pytest -q', TEST_COUNT_REGEX='([0-9]+) passed' · Jest/Vitest: TEST_COUNT_REGEX='Tests:? +([0-9]+) passed' ·
+ Go: TEST_CMD='go test -v ./...', TEST_COUNT_CMD='grep -c -- "--- PASS"' ·
+ Rust: TEST_CMD='cargo test', TEST_COUNT_CMD='grep -o "[0-9]* passed" | awk "{s+=\$1} END {print s}"' ·
+ Maven: TEST_COUNT_REGEX='Tests run: ([0-9]+)' · .NET: TEST_COUNT_REGEX='Passed: +([0-9]+)' · PHPUnit: TEST_COUNT_REGEX='OK \(([0-9]+) tests?' ·
+ RSpec: TEST_COUNT_REGEX='([0-9]+) examples?, 0 failures' ·
+ Gradle/JUnit: TEST_CMD='./gradlew test', TEST_COUNT_CMD='cat build/test-results/test/*.xml | grep -c "<testcase"')
+===TASKS===
+# Tasks: <title of the project>
+
+<two to five sentences with the most important rules for the worker: language, style, what must not be touched>
+
+- [ ] 1. <small task>. Done when <automatically checkable criterion that a test can prove>.
+- [ ] 2. …
+
+Rules for the tasks:
+- Cut them small: every task can be implemented in at most 30 minutes and proven by new automated tests. Better 30 small ones than 5 big ones.
+- The order builds up step by step; if needed, the first tasks create the test scaffolding so that the test command delivers a number at all.
+- Every task ends with "Done when …" and names measurable conditions (inputs, expected results, limits), no feelings.
+- Whatever cannot be checked automatically (look, usability) does not belong in the list; instead mention it in one sentence under the rules as "Checked by a human".
+- The plan file itself is never changed; ALLOWED must not include it.
+- If there are no tests and no test command yet, choose the usual test tool of the language and let task 1 set it up; TEST_CMD must already run before task 1 (it may report 0 tests then).

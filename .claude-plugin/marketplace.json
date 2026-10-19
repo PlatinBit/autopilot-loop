@@ -4,7 +4,7 @@
     "name": "PlatinBit",
     "url": "https://github.com/PlatinBit"
   },
-  "description": "Autopilot-Regelkreis für Claude Code: Plan-Datei angeben, Claude setzt sie Aufgabe für Aufgabe um – mit Skript-Prüfer, Gutachter und gesperrtem Ziel",
+  "description": "Autopilot loop for Claude Code: point it at a plan file and Claude implements it task by task – guarded by script checks, a reviewer and a locked goal",
   "plugins": [
     {
       "name": "autopilot",

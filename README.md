@@ -1,134 +1,208 @@
-# autopilot-loop
+<p align="center"><img src="assets/logo.svg" width="360" alt="autopilot-loop"></p>
 
-**Gib eine Plan-Datei an – Claude Code setzt sie Aufgabe für Aufgabe allein um. Ein Regelkreis aus Skript-Prüfer, Gutachter und gesperrtem Ziel sorgt dafür, dass „fertig“ wirklich fertig heißt.**
+<p align="center">
+  <img src="https://img.shields.io/badge/license-MIT-blue" alt="License: MIT">
+  <img src="https://img.shields.io/badge/Claude%20Code-plugin-8b5cf6" alt="Claude Code plugin">
+</p>
 
-*English summary: Point it at a plan file (e.g. `README.md`) and an autonomous loop for [Claude Code](https://claude.com/claude-code) implements it. Claude drafts small, testable tasks, you approve the draft, then Claude takes one task per run with a fresh context and no git access. A shell script verifies each run (tests green, test count never drops, only allowed paths, plan file locked), a second read-only Claude reviews it, and only then is it committed – otherwise it is reset and the reason is fed into the next attempt. Includes per-task-type grades with an earned "driver's licence", cost tracking, a progress chart, a planner for follow-up tasks, a daily summary, a terminal menu and a Claude Code plugin (`/autopilot`, with status line). Docs are in German.*
+**Point it at a plan file and [Claude Code](https://claude.com/claude-code) implements it on its own, one task at a time. A loop of script checks, a read-only reviewer and a locked goal makes sure that "done" really means done.**
 
-## Die Idee
+## The idea
 
-Lässt man Claude einfach die ganze Nacht durchlaufen, meldet es am Morgen „Fertig!“ – und nichts läuft. Der Grund: Wer baut, prüft sich selbst. autopilot-loop trennt das:
+Let Claude run all night and in the morning it says "Done!" – and nothing works. The reason: whoever builds also checks their own work. autopilot-loop separates the two:
+
+- **Claude (the worker)** writes code, one small task per run, with a fresh context and no Git access.
+- **A shell script** checks the result with hard rules: tests green, test count never drops, only allowed paths touched, the goal untouched.
+- **A second Claude (the reviewer)** reads the diff with read-only tools and rejects weak tests and fakes.
+- **Only the script commits.** Anything that fails is reset, and the reason goes into the next attempt.
+
+## The flow
 
 ```mermaid
-flowchart LR
-    P[Plan-Datei] --> E[Entwurf: Aufgaben,<br/>Prüfbefehl, Pfade]
-    E -- dein OK --> A[Aufgabenliste]
-    A --> U[Umsetzer<br/>frischer Kontext, kein Git]
-    U --> S{Skript-Prüfer}
-    S -- rot / abgeschwächt / gesperrt --> R[Zurücksetzen<br/>+ Rückmeldung]
-    S -- grün --> G{Gutachter<br/>zweiter Claude, nur lesend}
-    G -- ablehnen --> R
-    G -- annehmen --> C[Commit + Note]
-    R --> U
-    C --> Z{Ziel erreicht?}
-    Z -- Liste leer, Ziel offen --> PL[Planer schlägt<br/>neue Aufgaben vor]
-    PL -- dein OK --> A
+flowchart TD
+    P[Plan file<br/>e.g. README.md] --> D[Draft: tasks,<br/>test command, allowed paths]
+    D -- your OK --> T[Task list]
+    T --> W[Worker: Claude<br/>fresh context, no Git]
+    W --> S{Script checks}
+    S -- red / weakened / locked file --> R[Reset + feedback]
+    S -- green --> V{Reviewer: second Claude<br/>read only}
+    V -- reject --> R
+    V -- accept --> C[Commit + grade]
+    R --> W
+    C --> G{Goal reached?}
+    G -- more tasks --> W
+    G -- list empty, goal open --> PL[Planner proposes<br/>new tasks]
+    PL -- your OK --> T
+    G -- yes --> E([Done])
+
+    classDef plan fill:#dbeafe,stroke:#3b82f6,color:#1e3a8a
+    classDef worker fill:#ede9fe,stroke:#8b5cf6,color:#4c1d95
+    classDef check fill:#ffedd5,stroke:#f97316,color:#7c2d12
+    classDef reviewer fill:#ccfbf1,stroke:#14b8a6,color:#134e4a
+    classDef commit fill:#dcfce7,stroke:#22c55e,color:#14532d
+    classDef reject fill:#fee2e2,stroke:#ef4444,color:#7f1d1d
+    classDef planner fill:#fef9c3,stroke:#eab308,color:#713f12
+    class P,D,T plan
+    class W worker
+    class S,G check
+    class V reviewer
+    class C,E commit
+    class R reject
+    class PL planner
 ```
 
-| Nr. | Baustein | Was er verhindert |
+| Colour | Meaning |
+|---|---|
+| Blue | Plan, draft and task list (your input, approved by you) |
+| Purple | Worker: Claude writing code |
+| Orange | Script checks: plain shell, no AI judgement |
+| Teal | Reviewer: a second Claude with read-only tools |
+| Green | Commit: only the script commits |
+| Red | Reject: reset the work directory and feed the reason back |
+| Yellow | Planner: proposes follow-up tasks, adopted only with your OK |
+
+### Life of one run
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant S as autopilot.sh
+    participant W as Worker (Claude)
+    participant R as Reviewer (Claude, read only)
+    participant G as Git
+    S->>W: prompt + first open task + plan + feedback
+    W->>W: edit code, write tests, run test command
+    W-->>S: task ticked off [x] (or blocked [~])
+    S->>S: allowed paths? locked files? forbidden content?
+    S->>S: run tests: green, count rose? acceptance not lower?
+    alt a check fails
+        S->>G: reset --hard + clean
+        S->>S: write reason to feedback.txt
+    else all checks pass
+        S->>R: task + full diff
+        R-->>S: VERDICT: ACCEPT or VERDICT: REJECT: reason
+        alt accepted
+            S->>G: commit "Autopilot: task"
+        else rejected
+            S->>G: reset --hard + clean
+            S->>S: feedback for the next attempt (2nd rejection blocks the task)
+        end
+    end
+```
+
+## How it works
+
+1. **Plan.** You point `autopilot plan <file>` at a description of what should be built. Claude reads the plan and the project (read only) and drafts small tasks, each ending with "Done when …", plus a test command and the paths it may change.
+2. **Approve.** You read the draft. Only a few settings are taken over, in a strictly checked form. `autopilot plan accept` creates a separate worktree on a branch `autopilot`, so your own working copy stays untouched.
+3. **Run.** Each run starts a fresh `claude -p` with the first open task, the plan and – after a rejection – the reason. Claude has only the allowed tools and no Git.
+4. **Check.** The script stages the changes and rejects the run if no task was ticked off, a file outside `ALLOWED` or a locked file changed, forbidden content was added, the tests are red, the test count dropped, a task was ticked off without a new test, or the acceptance count dropped.
+5. **Review.** For a completed task a second Claude reads the task and the full diff with read-only tools and answers `VERDICT: ACCEPT` or `VERDICT: REJECT: <reason>`. Two rejections of the same task mark it as blocked (`- [~]`) and move on.
+6. **Commit or reset.** Accepted work is committed by the script; everything else is reset with `git reset --hard` and the reason is passed to the next attempt.
+7. **Grade.** Every result counts towards the task kind (`[tag]`). A kind earns a licence at 95 % over 20 runs and loses it below 90 %. With `SUPERVISED=on`, kinds without a licence pause after each task until you say `autopilot continue`.
+8. **Finish or plan more.** When the list is empty and the goal is reached, the loop ends (optionally with a smoke test). If the acceptance test is still open, the planner proposes the next tasks – adopted only with your OK.
+
+## Safeguards
+
+| No. | Building block | What it prevents |
 |---|---|---|
-| 1 | **Plan-Datei als Ziel**: Claude entwirft daraus kleine Aufgaben mit „Fertig, wenn …“; die Datei wird jedem Durchlauf mitgegeben und ist gesperrt | dass die Schleife ihr Ziel umschreibt |
-| 2 | **Eine Aufgabe je Durchlauf, frischer Kontext** | Verlieren in alten Fehlversuchen, volllaufender Kontext |
-| 3 | **Skript-Prüfer** (kein KI-Urteil): Prüfbefehl grün, Zahl der Tests sinkt nie, jede abgehakte Aufgabe bringt neue Tests, nur erlaubte Pfade, gesperrte Dateien unberührt, keine verbotenen Inhalte | „Fertig“ ohne Nachweis, gelöschte Tests, Eingriffe in Prüfer oder Plan |
-| 4 | **Gutachter**: zweite Claude-Sitzung, nur Leserechte, wahlweise anderes Modell | schwache Tests, Attrappen mit festen Zahlen |
-| 5 | **Abnahmetest** (optional): messbares Gesamtziel, von dir freigegeben (Prüfsumme) | Fortschritt nur auf dem Papier |
-| 6 | **Rückmeldung**: der Grund jeder Ablehnung geht in den nächsten Versuch | blindes Wiederholen desselben Fehlers |
-| 7 | **Noten und Führerschein** je Aufgabenart: ab 20 Durchläufen mit 95 % darf eine Art allein fahren, unter 90 % wird der Führerschein entzogen; mit `FAHRSCHULE=an` wartet jede Art ohne Führerschein nach jeder Aufgabe auf dein OK | geschenktes Vertrauen – Autonomie wird verdient |
-| 8 | **Notbremsen**: Halt nach n Ablehnungen in Folge, Aufgaben nach zwei Gutachter-Ablehnungen blockiert, Obergrenze an Durchläufen, Stillstand-Warnung, Warten beim Nutzungslimit | Endlosschleifen, die nur Kontingent verbrennen |
-| 9 | **Planer**: Ist die Liste leer und das Ziel offen, schlägt Claude die nächsten Aufgaben vor – übernommen erst mit deinem OK | Stillstand bei „keine Aufgaben mehr“ |
-| 10 | **Sichtbarkeit**: Kosten je Durchlauf, Fortschrittskurve als Webseite, täglicher Bericht, Statuszeile in Claude Code | Überraschungen bei Kosten und Stand |
+| 1 | **Plan file as the goal**: passed to every run and locked | the loop rewriting its own goal |
+| 2 | **One task per run, fresh context** | getting lost in old failed attempts, a full context |
+| 3 | **Script checks** (no AI judgement): tests green, count never drops, every ticked-off task adds tests, only allowed paths, locked files untouched, no forbidden content | "done" without proof, deleted tests, tampering with the checks or the plan |
+| 4 | **Reviewer**: second Claude session, read only, optionally a different model | weak tests, fakes with fixed numbers |
+| 5 | **Acceptance test** (optional): a measurable overall goal, approved by you (checksum) | progress only on paper |
+| 6 | **Feedback**: the reason for each rejection goes into the next attempt | blindly repeating the same mistake |
+| 7 | **Grades and licence** per task kind; `SUPERVISED=on` waits for your OK until a kind has earned it | trust that was never earned |
+| 8 | **Brakes**: stop after n rejections in a row, tasks blocked after two reviewer rejections, a maximum number of runs, stall warning, waiting at the usage limit | endless loops that only burn quota |
+| 9 | **Planner**: list empty, goal open → proposes the next tasks, adopted only with your OK | standstill at "no tasks left" |
+| 10 | **Visibility**: cost per run, progress chart as a web page, daily report, status line in Claude Code | surprises in cost and progress |
 
-Claude bekommt in der Schleife nur die freigegebenen Werkzeuge und **kein Git**: committet wird ausschließlich vom Skript. Einstellungen, die Claude im Entwurf vorschlägt, werden nur in streng geprüfter Form übernommen (Prüfbefehl, Muster, Pfade, Werkzeuge) und erst nach deinem OK aktiv.
+## Requirements
 
-## Voraussetzungen
-
-Linux oder WSL (macOS ab 12.3 ungetestet, siehe [Sicherheit](#sicherheit)), Bash 4.4 oder neuer, `git`, `tmux`, `jq`, `python3`, `timeout` (macOS: `gtimeout`), [Claude Code](https://claude.com/claude-code) mit Anmeldung (Abo oder API-Schlüssel); `whiptail` nur für das Terminal-Menü.
+Linux or WSL (macOS 12.3+ untested), Bash 4.4 or newer, `git`, `tmux`, `jq`, `python3`, `timeout` (macOS: `gtimeout`), [Claude Code](https://claude.com/claude-code) with a login (subscription or API key); `whiptail` only for the terminal menu.
 
 ## Installation
 
-**Als Claude-Code-Plugin** (enthält alles) – in einer Claude-Code-Sitzung eingeben:
+**As a Claude Code plugin** (contains everything) – in a Claude Code session:
 
 ```
 /plugin marketplace add PlatinBit/autopilot-loop
 /plugin install autopilot@autopilot-loop
 ```
 
-Oder im Terminal: `claude plugin marketplace add PlatinBit/autopilot-loop` und `claude plugin install autopilot@autopilot-loop`. Danach öffnet `/autopilot` das Menü als Auswahlliste, und laufende Vorhaben stehen in der Statuszeile. Aktualisieren: `/plugin` → Marketplaces → autopilot-loop → Update (neue Versionen kommen an, sobald die `version` in `.claude-plugin/plugin.json` steigt).
+Afterwards `/autopilot` opens the menu as a selection list, and running projects show up in the status line. Update: `/plugin` → Marketplaces → autopilot-loop → Update.
 
-**Zusätzlich im Terminal** (optional, für den Befehl `autopilot` ohne Claude, z. B. für cron):
+**Optionally in the terminal** (for the `autopilot` command without Claude, e.g. for cron):
 
 ```bash
 git clone https://github.com/PlatinBit/autopilot-loop.git ~/autopilot-loop
-~/autopilot-loop/install.sh                 # prüft die Voraussetzungen und legt `autopilot` in ~/.local/bin an
+~/autopilot-loop/install.sh        # checks the requirements and links `autopilot` into ~/.local/bin
 ```
 
-## Schnellstart: Plan-Datei angeben
+## Quick start
 
 ```bash
-autopilot plan ~/mein-projekt/README.md     # Claude liest Plan und Projekt und entwirft Aufgaben, Prüfbefehl, Pfade
-autopilot plan annehmen                     # nach dem Lesen: Arbeitszweig „autopilot“ neben dem Projekt einrichten
-autopilot                                   # Menü → Starten
+autopilot plan ~/my-project/README.md   # Claude drafts tasks, test command and paths
+autopilot plan accept                   # after reading: set up the "autopilot" worktree next to the project
+autopilot                               # menu → Start
 ```
 
-Oder in Claude Code einfach `/autopilot` → „Neues Vorhaben aus Datei“. Die Datei muss in einem Git-Projekt mit mindestens einem Commit liegen. Gearbeitet wird in einem eigenen Worktree (`<projekt>-autopilot`, Zweig `autopilot`) – deine Arbeitskopie bleibt unberührt, bis du übernimmst: `git merge autopilot`.
+Or in Claude Code: `/autopilot` → "New project from file". The file must be inside a Git project with at least one commit. Work happens in `<project>-autopilot` on branch `autopilot`; adopt the result with `git merge autopilot`.
 
-**Je besser der Plan, desto weiter fährt der Autopilot allein.** Beschreibe, was am Ende funktionieren soll, möglichst mit Beispielen und Grenzwerten. Was sich nicht automatisch prüfen lässt (Aussehen, Bedienung), prüfst du selbst.
+**The better the plan, the further the autopilot gets on its own.** Describe what should work in the end, ideally with examples and limits. Whatever cannot be checked automatically (look, usability) is yours to check.
 
-Von Hand einrichten geht auch: `autopilot einrichten` legt eine kommentierte [`autopilot.conf`](vorlagen/autopilot.conf) an; Beispiel für Gradle: [`beispiele/gradle.conf`](beispiele/gradle.conf).
+Manual setup also works: `autopilot setup` creates a commented [`autopilot.conf`](templates/autopilot.conf); a Gradle example is in [`examples/gradle.conf`](examples/gradle.conf).
 
-## Bedienung
+## Commands
 
-| Nr. | Befehl | Wirkung |
+| No. | Command | Effect |
 |---|---|---|
-| 1 | `autopilot` / `/autopilot` | Menü |
-| 2 | `autopilot plan <datei>` / `plan annehmen` | neues Vorhaben aus einer Plan-Datei entwerfen / einrichten |
-| 3 | `autopilot start 10 sonnet 3 opus` | 10 Durchläufe, Gutachter sonnet, Halt nach 3 Ablehnungen, Umsetzer opus |
-| 4 | `autopilot status` | Stand: läuft?, Abnahme, Aufgaben, letzte Ereignisse |
-| 5 | `autopilot weiter` | Fahrstunde freigeben (bei `FAHRSCHULE=an`) |
-| 6 | `autopilot stop` / `abbrechen` | nach dem laufenden Durchlauf anhalten / sofort, Angefangenes wird verworfen |
-| 7 | `autopilot noten` / `kosten` / `kurve` | Notentafel / Kosten je Tag und Modell / Fortschrittskurve als HTML-Seite |
-| 8 | `autopilot planen` / `vorschlag [annehmen\|verwerfen]` | Planer anstoßen / seinen Vorschlag ansehen und übernehmen |
-| 9 | `autopilot bericht [--wenn-neu]` | Zusammenfassung der letzten 24 Stunden (Haiku), auch per Benachrichtigung |
-| 10 | `autopilot freigeben` / `bedingungen` | Abnahmetest freigeben / seine Bedingungen zeigen |
-| 11 | `autopilot notizen` / `ergebnis` | Entscheidungen und Blockiertes / neue Commits |
+| 1 | `autopilot` / `/autopilot` | menu |
+| 2 | `autopilot plan <file>` / `plan show` / `plan accept` | draft a new project from a plan file / show the draft / set it up |
+| 3 | `autopilot start 10 sonnet 3 opus` | 10 runs, reviewer sonnet, stop after 3 rejections in a row, worker opus |
+| 4 | `autopilot status [--short]` | running?, acceptance, tasks, latest events |
+| 5 | `autopilot continue` | approve the supervised step (with `SUPERVISED=on`) |
+| 6 | `autopilot stop` / `abort` | stop after the current run / stop now and discard the unfinished run |
+| 7 | `autopilot grades` / `costs` / `chart` | grade table / cost per day and model / progress chart as an HTML page |
+| 8 | `autopilot propose` / `suggestion [accept\|discard]` | run the planner / view and adopt its suggestion |
+| 9 | `autopilot report [--if-new]` | summary of the last 24 hours, also sent as a notification |
+| 10 | `autopilot approve` / `conditions` | approve the acceptance test / list its conditions |
+| 11 | `autopilot notes` / `result` | decisions and blocked tasks / new commits |
+| 12 | `autopilot trust [file]` | confirm a hand-written or changed `autopilot.conf` |
 
-Täglicher Bericht per cron (`crontab -e`): `30 7 * * * $HOME/.local/bin/autopilot bericht --wenn-neu`. Benachrichtigungen (Mail, Desktop, Chat) richtest du mit einer Funktion `benachrichtigen()` in der `autopilot.conf` ein.
+Daily report via cron (`crontab -e`): `30 7 * * * $HOME/.local/bin/autopilot report --if-new`. Notifications (mail, desktop, chat) are set up with a function `notify()` in `autopilot.conf`.
 
-Logs, Fortschritt, Noten, Freigabe und Vorschläge liegen in `.autopilot/` neben der `autopilot.conf`; der Arbeitsordner wird dafür über `.git/info/exclude` sauber gehalten.
+Logs, progress, grades, approval and suggestions live in `.autopilot/` next to `autopilot.conf`; the work directory is kept clean through `.git/info/exclude`.
 
-## Grenzen
+## Limits
 
-| Nr. | Grenze | Umgang |
+| No. | Limit | How to deal with it |
 |---|---|---|
-| 1 | Prüfen kann nur, was sich automatisch prüfen lässt | Aussehen, Spielgefühl, UX bleiben Menschensache; für Apps und Spiele gibt es den Haken `SPIELTEST` mit optionaler Bildkritik |
-| 2 | Der Gutachter kann irren (in beide Richtungen) | Höchstens zwei Ablehnungen je Aufgabe, dann landet sie bei dir |
-| 3 | Kosten | Mit Abo pausiert die Schleife beim Nutzungslimit; mit API-Schlüssel immer eine Obergrenze an Durchläufen setzen; `autopilot kosten` zeigt den Verbrauch |
-| 4 | Sicherheit | siehe unten |
+| 1 | Only what can be checked automatically is checked | look, feel and UX stay with humans; for apps and games there is `SMOKE_TEST_CMD` with an optional image review |
+| 2 | The reviewer can be wrong (both ways) | at most two rejections per task, then it lands with you |
+| 3 | Cost | with a subscription the loop pauses at the usage limit; with an API key always set a maximum number of runs; `autopilot costs` shows usage |
+| 4 | Security | see below |
 
-## Sicherheit
+## Security
 
-Die Prüfungen sichern die **Qualität** der Arbeit. Eine **Sicherheitsgrenze** sind sie nicht: Der Prüfbefehl führt Code aus, den Claude geschrieben hat, mit deinen Rechten. Was eingebaut ist:
+The checks protect the **quality** of the work. They are **not a security boundary**: the test command runs code Claude wrote, with your permissions. What is built in:
 
-| Nr. | Schutz | Wogegen |
+| No. | Protection | Against |
 |---|---|---|
-| 1 | Eine `autopilot.conf` wird nur geladen, wenn du sie bestätigt hast (`autopilot vertrauen`, nach `plan annehmen` automatisch); jede Änderung braucht eine neue Bestätigung | fremde Repos mit präparierter `autopilot.conf`, Änderungen durch den Umsetzer |
-| 2 | Aus Claudes Entwurf werden nur wenige Einstellungen in streng geprüfter Form übernommen; Werkzeuge nur `Read`, `Edit`, `Write`, `Glob`, `Grep` und `Bash` für einen einzelnen Befehl | Prompt-Injection über Plan oder Projekt |
-| 3 | Pfade und Namen werden beim Schreiben der Konfiguration sicher quotiert | präparierte Datei- und Branch-Namen |
-| 4 | Alle Claude-Läufe ohne Projekteinstellungen (`--setting-sources user`) und ohne Schreibrecht auf `.git`, `.claude`, `.autopilot`, `autopilot.conf` | Hooks und Rechte aus fremden `.claude/settings.json` |
-| 5 | Git ohne Hooks, fsmonitor und externe Diff-Programme; ändert ein Durchlauf `.git` (config, info, hooks), hält der Autopilot sofort an | Codeausführung über die Git-Verwaltung |
-| 6 | `.git*`, `.github/`, `.claude/`, `.autopilot/`, `autopilot.conf`, `CLAUDE.md` sind immer gesperrt; Umbenennungen werden mit altem und neuem Pfad geprüft | Umgehen der Pfadprüfung |
-| 7 | Zahlen müssen Zahlen sein; neuer Code, der die Zählzeile selbst ausgibt, wird verworfen | gefälschte Testzahlen |
+| 1 | An `autopilot.conf` is only loaded once you confirmed it (`autopilot trust`, automatic after `plan accept`); every change needs a new confirmation | foreign repos with a prepared `autopilot.conf`, changes by the worker |
+| 2 | Only a few settings from Claude's draft are adopted, in a strictly checked form; tools only `Read`, `Edit`, `Write`, `Glob`, `Grep` and `Bash` for a single command | prompt injection through the plan or the project |
+| 3 | Paths and names are quoted safely when the configuration is written | prepared file and branch names |
+| 4 | All Claude runs without project settings (`--setting-sources user`) and without write access to `.git`, `.claude`, `.autopilot`, `autopilot.conf` | hooks and permissions from a foreign `.claude/settings.json` |
+| 5 | Git without hooks, fsmonitor and external diff programs; if a run changes `.git` (config, info, hooks), the autopilot stops immediately | code execution through Git management files |
+| 6 | `.git*`, `.github/`, `.claude/`, `.autopilot/`, `autopilot.conf`, `CLAUDE.md` are always locked; renames are checked with old and new path | bypassing the path check |
+| 7 | Numbers must be numbers; new code that prints the count line itself is rejected | faked test counts |
 
-**Empfehlung:** Für eigene Pläne in eigenen Projekten genügt das. Für fremde Pläne oder fremde Repos den Autopiloten in einem Container oder einer VM laufen lassen, ohne Zugriff auf Schlüssel und private Daten. Nie `--dangerously-skip-permissions` auf dem eigenen System. Entwürfe vor dem Annehmen lesen: `PRUEFEN`, `PRUEF_ZAEHLER` und `ABNAHME` werden als Shell-Befehle ausgeführt.
+**Recommendation:** for your own plans in your own projects this is enough. For plans or repos from others, run the autopilot in a container or VM without access to keys and private data. Never use `--dangerously-skip-permissions` on your own system. Read drafts before accepting them: `TEST_CMD`, `TEST_COUNT_CMD` and `ACCEPT_CMD` are run as shell commands.
 
-Plattformen: Linux und WSL (getestet), macOS ab 12.3 mit `brew install bash coreutils jq tmux newt` (nicht getestet). Bash 4.4 oder neuer.
-
-## Selbsttest
+## Self-test
 
 ```bash
-test/test_autopilot.sh             # vorgetäuschtes `claude`: Regelkreis, Plan-Datei, Sicherheitsfilter, Fahrschule, Planer, Bericht → „ok“
+test/test_autopilot.sh       # fake `claude`: loop, plan file, security filter, supervised mode, planner, report → "ok"
 claude plugin validate . && claude plugin test .
 ```
 
-## Herkunft
-
-Entstanden beim Bau der Minecraft-Mod „Rise of Realms“, angeregt von der „Agentic OS“-Idee (Aufgabenliste, Manager, frischer Prüfer, Notensystem mit verdientem Führerschein). Lizenz: MIT.
+License: MIT.

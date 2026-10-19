@@ -1,103 +1,103 @@
 import type { Engine, Register } from 'claude-code'
 
-// Alle Arbeit macht menu.sh, das mit dem Plugin ausgeliefert wird (das Repo ist das Plugin); dieses Plugin fragt in
-// der Auswahlliste von Claude Code ab und zeigt laufende Vorhaben in der Statuszeile. Welches Vorhaben gemeint ist,
-// findet menu.sh selbst: ./autopilot.conf im Ordner der Sitzung, sonst das zuletzt angelegte Vorhaben.
+// All the work is done by menu.sh, which ships with the plugin (the repo is the plugin); this plugin asks questions
+// in Claude Code's selection list and shows running projects in the status line. Which project is meant is found
+// by menu.sh itself: ./autopilot.conf in the session directory, otherwise the most recently set up project.
 async function autopilot($: Engine, args: readonly string[], timeoutMs = 60_000): Promise<string> {
   const r = await $.process.run([`${$.plugin.root}/menu.sh`, ...args], { timeoutMs })
   return (r.stdout + r.stderr).trim()
 }
 
-const zahl = (antwort: string) => antwort.match(/\d+/)?.[0]
-const erstesWort = (antwort: string) => antwort.split(' ')[0].toLowerCase()
-const frage = ($: Engine, text: string, header: string, options: string[]) => $.ui.ask(text, { header, options })
+const number = (answer: string) => answer.match(/\d+/)?.[0]
+const firstWord = (answer: string) => answer.split(' ')[0].toLowerCase()
+const ask = ($: Engine, text: string, header: string, options: string[]) => $.ui.ask(text, { header, options })
 
-async function starten($: Engine): Promise<string> {
-  const n = zahl(await frage($, 'Wie viele Durchläufe höchstens (eine Aufgabe je Durchlauf)?', 'Durchläufe', ['5 (Empfohlen)', '10', '20', '30']))
-  if (!n) return 'Abgebrochen: keine Zahl gewählt.'
-  const umsetzer = erstesWort(await frage($, 'Welches Modell soll die Aufgaben umsetzen (den Code schreiben)?', 'Umsetzer',
-    ['opus (Empfohlen, stärkstes Modell)', 'sonnet (günstiger, schneller)']))
-  const gutachter = erstesWort(await frage($, 'Welches Modell soll als Gutachter jede Aufgabe prüfen?', 'Gutachter',
-    ['sonnet (Empfohlen, ausgewogen)', 'opus (gründlicher, teurer)', 'haiku (günstig, weniger streng)']))
-  const fehler = zahl(await frage($, 'Nach wie vielen Ablehnungen in Folge soll er anhalten?', 'Notbremse', ['3 (Empfohlen)', '2', '5']))
-  if (!fehler) return 'Abgebrochen: keine Zahl gewählt.'
-  const ok = await frage($, `Starten mit ${n} Durchläufen, Umsetzer ${umsetzer}, Gutachter ${gutachter}, Halt nach ${fehler} Ablehnungen in Folge?`,
-    'Bestätigen', ['Starten', 'Abbrechen'])
-  return ok === 'Starten' ? autopilot($, ['start', n, gutachter, fehler, umsetzer]) : 'Nicht gestartet.'
+async function start($: Engine): Promise<string> {
+  const n = number(await ask($, 'How many runs at most (one task per run)?', 'Runs', ['5 (Recommended)', '10', '20', '30']))
+  if (!n) return 'Cancelled: no number chosen.'
+  const worker = firstWord(await ask($, 'Which model should implement the tasks (write the code)?', 'Worker',
+    ['opus (Recommended, strongest model)', 'sonnet (cheaper, faster)']))
+  const reviewer = firstWord(await ask($, 'Which model should review every task?', 'Reviewer',
+    ['sonnet (Recommended, balanced)', 'opus (more thorough, more expensive)', 'haiku (cheap, less strict)']))
+  const rejections = number(await ask($, 'Stop after how many rejections in a row?', 'Brake', ['3 (Recommended)', '2', '5']))
+  if (!rejections) return 'Cancelled: no number chosen.'
+  const ok = await ask($, `Start with ${n} runs, worker ${worker}, reviewer ${reviewer}, stop after ${rejections} rejections in a row?`,
+    'Confirm', ['Start', 'Cancel'])
+  return ok === 'Start' ? autopilot($, ['start', n, reviewer, rejections, worker]) : 'Not started.'
 }
 
-// Neues Vorhaben: Plan-Datei wählen (Vorschläge aus dem Ordner der Sitzung oder eigener Pfad unter „Other“).
-async function neuesVorhaben($: Engine): Promise<string> {
+// New project: choose a plan file (suggestions from the session directory or your own path under "Other").
+async function newProject($: Engine): Promise<string> {
   const r = await $.process.run(['bash', '-c', 'ls -1 *.md 2>/dev/null | head -3'])
-  const dateien = r.stdout.split('\n').map(z => z.trim()).filter(Boolean)
-  const optionen = dateien.length >= 2 ? dateien : [...dateien, 'Pfad selbst eingeben (unter „Other“)']
-  const datei = await frage($, 'Welche Datei beschreibt, was umgesetzt werden soll? (eigener Pfad: „Other“)', 'Plan-Datei', optionen)
-  if (datei.startsWith('Pfad selbst')) return 'Bitte den Pfad unter „Other“ eintippen: /autopilot erneut aufrufen.'
-  const entwurf = await autopilot($, ['plan', datei], 600_000)
-  if (!entwurf.includes('Einrichten: autopilot plan annehmen')) return entwurf
-  const ja = await frage($, `${entwurf}\n\nSo einrichten?`, 'Entwurf', ['Einrichten', 'Verwerfen'])
-  return ja === 'Einrichten' ? autopilot($, ['plan', 'annehmen']) : 'Entwurf nicht übernommen (ansehen: autopilot plan zeigen).'
+  const files = r.stdout.split('\n').map(z => z.trim()).filter(Boolean)
+  const options = files.length >= 2 ? files : [...files, 'Enter a path yourself (under "Other")']
+  const file = await ask($, 'Which file describes what should be built? (own path: "Other")', 'Plan file', options)
+  if (file.startsWith('Enter a path')) return 'Please type the path under "Other": run /autopilot again.'
+  const draft = await autopilot($, ['plan', file], 600_000)
+  if (!draft.includes('Set up: autopilot plan accept')) return draft
+  const yes = await ask($, `${draft}\n\nSet it up like this?`, 'Draft', ['Set up', 'Discard'])
+  return yes === 'Set up' ? autopilot($, ['plan', 'accept']) : 'Draft not adopted (view it: autopilot plan show).'
 }
 
-async function planer($: Engine): Promise<string> {
-  const vorschlag = await autopilot($, ['vorschlag'])
-  const hat = vorschlag.startsWith('Vorschlag des Planers')
-  const wahl = await frage($, hat ? `${vorschlag}\n\nWas tun?` : 'Kein Vorschlag vorhanden. Was tun?', 'Planer',
-    hat ? ['Vorschlag übernehmen', 'Vorschlag verwerfen', 'Neues Vorhaben aus Datei']
-      : ['Neue Aufgaben planen lassen', 'Neues Vorhaben aus Datei', 'Zurück'])
-  switch (wahl) {
-    case 'Vorschlag übernehmen': return autopilot($, ['vorschlag', 'annehmen'])
-    case 'Vorschlag verwerfen': return autopilot($, ['vorschlag', 'verwerfen'])
-    case 'Neue Aufgaben planen lassen': return autopilot($, ['planen'], 600_000)
-    case 'Neues Vorhaben aus Datei': return neuesVorhaben($)
-    default: return 'Zurück.'
+async function planner($: Engine): Promise<string> {
+  const suggestion = await autopilot($, ['suggestion'])
+  const has = suggestion.startsWith('Planner suggestion')
+  const choice = await ask($, has ? `${suggestion}\n\nWhat now?` : 'No suggestion available. What now?', 'Planner',
+    has ? ['Adopt suggestion', 'Discard suggestion', 'New project from file']
+      : ['Let the planner propose tasks', 'New project from file', 'Back'])
+  switch (choice) {
+    case 'Adopt suggestion': return autopilot($, ['suggestion', 'accept'])
+    case 'Discard suggestion': return autopilot($, ['suggestion', 'discard'])
+    case 'Let the planner propose tasks': return autopilot($, ['propose'], 600_000)
+    case 'New project from file': return newProject($)
+    default: return 'Back.'
   }
 }
 
-async function mehr($: Engine): Promise<string> {
-  const wahl = await frage($, 'Was möchtest du sehen?', 'Mehr', ['Kosten und Kurve', 'Entscheidungen lesen', 'Ergebnis ansehen', 'Bericht jetzt'])
-  switch (wahl) {
-    case 'Kosten und Kurve': return `${await autopilot($, ['kosten'])}\n\nKurve: ${await autopilot($, ['kurve'])}`
-    case 'Entscheidungen lesen': return autopilot($, ['notizen'])
-    case 'Ergebnis ansehen': return autopilot($, ['ergebnis'])
-    case 'Bericht jetzt': return autopilot($, ['bericht'], 300_000)
-    default: return `Unbekannte Auswahl: ${wahl}`
+async function more($: Engine): Promise<string> {
+  const choice = await ask($, 'What would you like to see?', 'More', ['Costs and chart', 'Read decisions', 'View result', 'Report now'])
+  switch (choice) {
+    case 'Costs and chart': return `${await autopilot($, ['costs'])}\n\nChart: ${await autopilot($, ['chart'])}`
+    case 'Read decisions': return autopilot($, ['notes'])
+    case 'View result': return autopilot($, ['result'])
+    case 'Report now': return autopilot($, ['report'], 300_000)
+    default: return `Unknown choice: ${choice}`
   }
 }
 
-async function menue($: Engine): Promise<string> {
-  const stand = await autopilot($, ['status'])
-  if (!stand.startsWith('Zustand:')) {  // noch kein Vorhaben
-    const ja = await frage($, `${stand}\n\nNeues Vorhaben aus einer Plan-Datei anlegen?`, 'Autopilot', ['Neues Vorhaben aus Datei', 'Abbrechen'])
-    return ja === 'Neues Vorhaben aus Datei' ? neuesVorhaben($) : 'Abgebrochen.'
+async function menu($: Engine): Promise<string> {
+  const status = await autopilot($, ['status'])
+  if (!status.startsWith('Status:')) {  // no project yet
+    const yes = await ask($, `${status}\n\nCreate a new project from a plan file?`, 'Autopilot', ['New project from file', 'Cancel'])
+    return yes === 'New project from file' ? newProject($) : 'Cancelled.'
   }
-  const laeuft = /^Zustand:\s+läuft/m.test(stand)
-  const wartet = stand.includes('WARTET auf dein OK')
-  const frei = !stand.includes('NICHT freigegeben')
-  const kopf = stand.split('\n').filter(z => /^(Zustand|Abnahmetest|Plan|Aufgaben|Nächste|Vorschlag):/.test(z)).join('\n')
-  const optionen = wartet ? ['Weiter (Fahrstunde OK)', 'Stand und Noten', 'Sanft anhalten', 'Mehr …']
-    : laeuft ? ['Stand und Noten', 'Sanft anhalten', 'Sofort abbrechen', 'Mehr …']
-      : frei ? ['Starten', 'Stand und Noten', 'Planer und neue Vorhaben', 'Mehr …']
-        : ['Abnahmetest freigeben', 'Stand und Noten', 'Planer und neue Vorhaben', 'Mehr …']
-  const wahl = await frage($, `${kopf}\n\nWas möchtest du tun?`, 'Autopilot', optionen)
+  const running = /^Status:\s+running/m.test(status)
+  const waiting = status.includes('WAITING for your OK')
+  const approved = !status.includes('NOT approved')
+  const head = status.split('\n').filter(z => /^(Status|Acceptance|Plan|Tasks|Next|Suggestion):/.test(z)).join('\n')
+  const options = waiting ? ['Continue (supervised OK)', 'Status and grades', 'Stop gently', 'More …']
+    : running ? ['Status and grades', 'Stop gently', 'Abort now', 'More …']
+      : approved ? ['Start', 'Status and grades', 'Planner and new projects', 'More …']
+        : ['Approve acceptance test', 'Status and grades', 'Planner and new projects', 'More …']
+  const choice = await ask($, `${head}\n\nWhat would you like to do?`, 'Autopilot', options)
 
-  switch (wahl) {
-    case 'Starten': return starten($)
-    case 'Weiter (Fahrstunde OK)': return autopilot($, ['weiter'])
-    case 'Stand und Noten': return `${stand}\n\nNotentafel:\n${await autopilot($, ['noten'])}`
-    case 'Sanft anhalten': return autopilot($, ['stop'])
-    case 'Sofort abbrechen': {
-      const sicher = await frage($, 'Wirklich sofort abbrechen? Der laufende Durchlauf wird verworfen, Angenommenes bleibt.', 'Abbrechen', ['Ja, abbrechen', 'Nein'])
-      return sicher === 'Ja, abbrechen' ? autopilot($, ['abbrechen']) : 'Läuft weiter.'
+  switch (choice) {
+    case 'Start': return start($)
+    case 'Continue (supervised OK)': return autopilot($, ['continue'])
+    case 'Status and grades': return `${status}\n\nGrades:\n${await autopilot($, ['grades'])}`
+    case 'Stop gently': return autopilot($, ['stop'])
+    case 'Abort now': {
+      const sure = await ask($, 'Really abort now? The current run is discarded, accepted work stays.', 'Abort', ['Yes, abort', 'No'])
+      return sure === 'Yes, abort' ? autopilot($, ['abort']) : 'Keeps running.'
     }
-    case 'Abnahmetest freigeben': {
-      const bedingungen = await autopilot($, ['bedingungen'])
-      const ja = await frage($, `Ziel des Vorhabens:\n${bedingungen}\n\nSo freigeben? Danach darf der Autopilot den Test nicht mehr ändern.`, 'Freigabe', ['Ja, freigeben', 'Nein'])
-      return ja === 'Ja, freigeben' ? autopilot($, ['freigeben']) : 'Nicht freigegeben.'
+    case 'Approve acceptance test': {
+      const conditions = await autopilot($, ['conditions'])
+      const yes = await ask($, `Goal of the project:\n${conditions}\n\nApprove like this? Afterwards the autopilot may no longer change the test.`, 'Approval', ['Yes, approve', 'No'])
+      return yes === 'Yes, approve' ? autopilot($, ['approve']) : 'Not approved.'
     }
-    case 'Planer und neue Vorhaben': return planer($)
-    case 'Mehr …': return mehr($)
-    default: return `Unbekannte Auswahl: ${wahl}`
+    case 'Planner and new projects': return planner($)
+    case 'More …': return more($)
+    default: return `Unknown choice: ${choice}`
   }
 }
 
@@ -105,27 +105,27 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'autopilot',
-      description: 'Autopilot-Menü: Vorhaben aus Plan-Datei, starten, anhalten, Stand, Planer, Kosten',
-      argumentHint: '[status|stop|weiter|plan <datei>|start <n> [gutachter] [ablehnungen] [umsetzer]]',
+      description: 'Autopilot menu: project from a plan file, start, stop, status, planner, costs',
+      argumentHint: '[status|stop|continue|plan <file>|start <runs> [reviewer] [max-rejections] [worker]]',
     })
-    // Statuszeile: läuft ein Vorhaben, steht sein Stand unter der Eingabe (jede Minute aktualisiert).
-    const zeigeStand = async () => {
-      const zeile = await autopilot($, ['status', '--kurz']).catch(() => '')
-      $.ui.status(zeile.startsWith('Autopilot ') ? zeile : undefined)
+    // Status line: while a project runs, its progress shows below the input (refreshed every minute).
+    const showStatus = async () => {
+      const line = await autopilot($, ['status', '--short']).catch(() => '')
+      $.ui.status(line.startsWith('Autopilot ') ? line : undefined)
     }
-    void zeigeStand()
-    $.clock.every(60_000, () => void zeigeStand())
+    void showStatus()
+    $.clock.every(60_000, () => void showStatus())
     return next(e)
   })
 
-  // Ohne Argument: Auswahlmenü; mit Argument direkt an den Befehl `autopilot` (z. B. „/autopilot status“).
+  // Without an argument: selection menu; with an argument straight to the `autopilot` command (e.g. "/autopilot status").
   on('command.run', { command: 'autopilot' }, async ($, e) => {
     try {
       const args = e.args.trim()
       if (args.startsWith('plan ')) return { text: await autopilot($, ['plan', args.slice(5).trim()], 600_000) }
-      return { text: args ? await autopilot($, args.split(/\s+/)) : await menue($) }
+      return { text: args ? await autopilot($, args.split(/\s+/)) : await menu($) }
     } catch {
-      return { text: 'Autopilot-Menü geschlossen.' }
+      return { text: 'Autopilot menu closed.' }
     }
   })
 }

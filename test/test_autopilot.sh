@@ -1,159 +1,160 @@
 #!/bin/bash
-# Selbsttest für autopilot-loop mit vorgetäuschtem `claude` (test/fake-claude): kostet nichts, startet nichts Echtes,
-# fasst keine echten Einstellungen an (eigenes XDG_CONFIG_HOME). Ausgabe „ok“ = alles bestanden.
+# Self-test for autopilot-loop with a fake `claude` (test/fake-claude): costs nothing, starts nothing real,
+# touches no real settings (own XDG_CONFIG_HOME). Output "ok" = everything passed.
 set -u
-WERKZEUG=$(readlink -f "$(dirname "$0")/..")
+TOOL_DIR=$(readlink -f "$(dirname "$0")/..")
 T=$(mktemp -d)
 trap 'kill $(jobs -p) 2>/dev/null; rm -rf "$T"' EXIT
-fehlschlag() { echo "FEHLER: $1"; for v in "$T"/.autopilot/log/verlauf.txt "$T"/p2/.autopilot/log/verlauf.txt; do [ -f "$v" ] && { echo "--- $v"; cat "$v"; }; done; exit 1; }
+fail() { echo "FAILED: $1"; for v in "$T"/.autopilot/log/history.log "$T"/p2/.autopilot/log/history.log; do [ -f "$v" ] && { echo "--- $v"; cat "$v"; }; done; exit 1; }
 mkdir -p "$T/bin" "$T/config"
-ln -s "$WERKZEUG/test/fake-claude" "$T/bin/claude"
-export PATH="$T/bin:$PATH" XDG_CONFIG_HOME="$T/config" FAKE_DIR="$T/fake" AUTOPILOT_WARTEN=0 AUTOPILOT_NACHFRAGE=1 MAX=30 MAX_FEHLER=10
-neue_runde() { rm -rf "$FAKE_DIR"; mkdir -p "$FAKE_DIR/schritte"; }
-haken='sed -i "0,/^- \[ \]/s//- [x]/" TASKS.md'
-probeprojekt() { # ORDNER: Git-Projekt mit Prüf- und Abnahmeskript
+ln -s "$TOOL_DIR/test/fake-claude" "$T/bin/claude"
+export PATH="$T/bin:$PATH" XDG_CONFIG_HOME="$T/config" FAKE_DIR="$T/fake" AUTOPILOT_LIMIT_WAIT=0 AUTOPILOT_POLL=1 MAX=30 MAX_REJECTIONS=10
+new_round() { rm -rf "$FAKE_DIR"; mkdir -p "$FAKE_DIR/steps"; }
+tick='sed -i "0,/^- \[ \]/s//- [x]/" TASKS.md'
+sample_project() { # DIR: Git project with test and acceptance script
     mkdir -p "$1" && cd "$1" || exit 1
     git init -q -b main . && git config user.email test@example.org && git config user.name Test
     echo check >checks.txt
-    echo 'test -e rot && exit 1; echo "PRUEFUNGEN: $(grep -c check checks.txt) bestanden"' >pruefe.sh
-    echo 'echo "ABNAHME: $(grep -c ziel checks.txt) von 2"' >abnahme.sh
-    echo "Plan: Zahlen zählen." >plan.md
+    echo 'test -e red && exit 1; echo "TESTS: $(grep -c check checks.txt) passed"' >check.sh
+    echo 'echo "ACCEPT: $(grep -c goal checks.txt) of 2"' >accept.sh
+    echo "Plan: count numbers." >plan.md
 }
 
-# ================================ Teil A: der Regelkreis ================================
-neue_runde
-probeprojekt "$T/projekt"
-printf -- '- [ ] 1. [kern] eins\n- [ ] 2. [kern] zwei\n- [ ] 3. [rand] drei\n- [ ] 4. [rand] vier\n- [ ] 5. [rand] fünf\n' >TASKS.md
-echo "Datei des Nutzers" >geheim.txt
+# ================================ Part A: the loop ================================
+new_round
+sample_project "$T/project"
+printf -- '- [ ] 1. [core] one\n- [ ] 2. [core] two\n- [ ] 3. [edge] three\n- [ ] 4. [edge] four\n- [ ] 5. [edge] five\n' >TASKS.md
+echo "User file" >secret.txt
 git add -A && git commit -qm start && git checkout -qb autopilot
 cat >"$T/autopilot.conf" <<'EOF'
-NAME=selbsttest
-ARBEITSORDNER=projekt
-PRUEFEN='bash pruefe.sh'
-ABNAHME='bash abnahme.sh'
-ABNAHME_DATEIEN=(abnahme.sh)
-PLAN_DATEI=projekt/plan.md
-GESPERRT=(plan.md)
-ERLAUBT='^(checks\.txt|code\.txt|rot|plan\.md|TASKS\.md|BLOCKED\.md|ENTSCHEIDUNGEN\.md)$'
-VERBOTEN_INHALT='VERBOTEN'
-FUEHRERSCHEIN_AB=2
-STILLSTAND=1
+NAME=selftest
+WORKDIR=project
+TEST_CMD='bash check.sh'
+ACCEPT_CMD='bash accept.sh'
+ACCEPT_FILES=(accept.sh)
+PLAN_FILE=project/plan.md
+LOCKED=(plan.md)
+ALLOWED='^(checks\.txt|code\.txt|red|plan\.md|TASKS\.md|BLOCKED\.md|DECISIONS\.md)$'
+FORBIDDEN_CONTENT='FORBIDDEN'
+LICENCE_MIN_RUNS=2
+STALL_WARN_AFTER=1
 EOF
-s=$FAKE_DIR/schritte
-echo "echo check >>checks.txt; $haken"                          >"$s/1.sh"   # angenommen (Stillstand: Abnahme bleibt 0)
-echo "echo check >>checks.txt"                                  >"$s/2.sh"   # nicht abgehakt
-echo "$haken"                                                   >"$s/3.sh"   # ohne neue Prüfung
-echo "echo check >>checks.txt; echo x >>abnahme.sh; $haken"     >"$s/4.sh"   # Abnahme-Datei: außerhalb ERLAUBT
-echo "echo check >>checks.txt; echo x >>plan.md; $haken"        >"$s/5.sh"   # Plan-Datei: erlaubt, aber gesperrt
-echo "echo check >>checks.txt; echo VERBOTEN >code.txt; $haken" >"$s/6.sh"   # verbotener Inhalt
-echo "echo check >>checks.txt; echo \"echo 'PRUEFUNGEN: 99'\" >code.txt; $haken" >"$s/7.sh"  # fälscht die Zählzeile
-echo "echo check >>checks.txt; mv geheim.txt code.txt; $haken"  >"$s/8.sh"   # Umbenennung: fremde Datei weg
-echo "echo check >>checks.txt; $haken"                          >"$s/9.sh"   # Gutachter lehnt ab
-echo "echo check >>checks.txt; $haken"                          >"$s/10.sh"  # … zweimal: blockiert
-echo "sed -i 1d checks.txt; $haken"                             >"$s/11.sh"  # Prüfungen gesunken
-echo "echo check >>checks.txt; touch rot; $haken"               >"$s/12.sh"  # Prüfung rot
-echo "printf 'check ziel\nziel\n' >>checks.txt; $haken"         >"$s/13.sh"  # Abnahme 2 von 2
-echo "echo check >>checks.txt; $haken"                          >"$s/14.sh"
-echo "echo check >>checks.txt; $haken"                          >"$s/15.sh"
-echo "printf '[core]\n\tfsmonitor = touch $T/boese\n' >>.git/config; echo check >>checks.txt; $haken" >"$s/16.sh"  # .git-Eingriff
-printf 'URTEIL: ANNEHMEN\nURTEIL: ABLEHNEN: zu dünn\nURTEIL: ABLEHNEN: zu dünn\nURTEIL: ANNEHMEN\nURTEIL: ANNEHMEN\nURTEIL: ANNEHMEN\n' >"$FAKE_DIR/urteile"
+s=$FAKE_DIR/steps
+echo "echo check >>checks.txt; $tick"                            >"$s/1.sh"   # accepted (stall: acceptance stays 0)
+echo "echo check >>checks.txt"                                   >"$s/2.sh"   # not ticked off
+echo "$tick"                                                     >"$s/3.sh"   # without a new test
+echo "echo check >>checks.txt; echo x >>accept.sh; $tick"        >"$s/4.sh"   # acceptance file: outside ALLOWED
+echo "echo check >>checks.txt; echo x >>plan.md; $tick"          >"$s/5.sh"   # plan file: allowed, but locked
+echo "echo check >>checks.txt; echo FORBIDDEN >code.txt; $tick"  >"$s/6.sh"   # forbidden content
+echo "echo check >>checks.txt; echo \"echo 'TESTS: 99'\" >code.txt; $tick" >"$s/7.sh"  # fakes the count line
+echo "echo check >>checks.txt; mv secret.txt code.txt; $tick"    >"$s/8.sh"   # rename: foreign file gone
+echo "echo check >>checks.txt; $tick"                            >"$s/9.sh"   # reviewer rejects
+echo "echo check >>checks.txt; $tick"                            >"$s/10.sh"  # … twice: blocked
+echo "sed -i 1d checks.txt; $tick"                               >"$s/11.sh"  # tests dropped
+echo "echo check >>checks.txt; touch red; $tick"                 >"$s/12.sh"  # tests red
+echo "printf 'check goal\ngoal\n' >>checks.txt; $tick"           >"$s/13.sh"  # acceptance 2 of 2
+echo "echo check >>checks.txt; $tick"                            >"$s/14.sh"
+echo "echo check >>checks.txt; $tick"                            >"$s/15.sh"
+echo "printf '[core]\n\tfsmonitor = touch $T/evil\n' >>.git/config; echo check >>checks.txt; $tick" >"$s/16.sh"  # .git tampering
+printf 'VERDICT: ACCEPT\nVERDICT: REJECT: too thin\nVERDICT: REJECT: too thin\nVERDICT: ACCEPT\nVERDICT: ACCEPT\nVERDICT: ACCEPT\n' >"$FAKE_DIR/verdicts"
 export AUTOPILOT_CONF="$T/autopilot.conf"
 
-"$WERKZEUG/menu.sh" status >/dev/null 2>&1; [ $? = 4 ] || fehlschlag "nicht bestätigte Konfiguration wurde geladen"
-"$WERKZEUG/menu.sh" vertrauen "$T/autopilot.conf" >/dev/null || fehlschlag "vertrauen fehlgeschlagen"
-"$WERKZEUG/autopilot.sh" >/dev/null 2>&1 && fehlschlag "Start ohne Freigabe nicht verweigert"
-grep -q "nicht freigegeben" "$T/.autopilot/log/verlauf.txt" || fehlschlag "keine Meldung zur fehlenden Freigabe"
-[ -f "$FAKE_DIR/schritt-nr" ] && fehlschlag "Claude wurde trotz fehlender Freigabe gestartet"
-"$WERKZEUG/menu.sh" start 5 gpt >/dev/null && fehlschlag "ungültiges Modell angenommen"
-"$WERKZEUG/menu.sh" freigeben >/dev/null || fehlschlag "freigeben fehlgeschlagen"
-"$WERKZEUG/autopilot.sh" >"$T/ausgabe.txt" 2>&1 || fehlschlag "Lauf endete mit Fehler: $(tail -3 "$T/ausgabe.txt")"
+"$TOOL_DIR/menu.sh" status >/dev/null 2>&1; [ $? = 4 ] || fail "unconfirmed configuration was loaded"
+"$TOOL_DIR/menu.sh" trust "$T/autopilot.conf" >/dev/null || fail "trust failed"
+"$TOOL_DIR/autopilot.sh" >/dev/null 2>&1 && fail "start without approval not refused"
+grep -q "NOT approved" "$T/.autopilot/log/history.log" || fail "no message about the missing approval"
+[ -f "$FAKE_DIR/step-nr" ] && fail "Claude was started despite missing approval"
+"$TOOL_DIR/menu.sh" start 5 gpt >/dev/null && fail "invalid model accepted"
+"$TOOL_DIR/menu.sh" approve >/dev/null || fail "approve failed"
+"$TOOL_DIR/autopilot.sh" >"$T/output.txt" 2>&1 || fail "run ended with an error: $(tail -3 "$T/output.txt")"
 
-v=$T/.autopilot/log/verlauf.txt
-for erwartet in "Ziel erreicht" "keine Aufgabe abgehakt" "ohne neue Prüfung" "außerhalb erlaubter Pfade: abnahme.sh" \
-                "gesperrte Datei geändert: plan.md" "verbotener Inhalt" "Gutachter: zu dünn" "Aufgabe blockiert" \
-                "von 2 auf 1 gesunken" "Prüfung rot" "Stillstand" "Führerschein für Aufgabenart „rand“" \
-                "Zählzeile des Prüfbefehls" "außerhalb erlaubter Pfade: geheim.txt"; do
-    grep -q "$erwartet" "$v" || fehlschlag "im Verlauf fehlt: $erwartet"
+v=$T/.autopilot/log/history.log
+for expected in "Goal reached" "no task ticked off" "without a new test" "outside allowed paths: accept.sh" \
+                "locked file changed: plan.md" "forbidden content" "Reviewer: too thin" "Task blocked" \
+                "dropped from 2 to 1" "tests red" "Stall" "Licence granted for task kind \"edge\"" \
+                "count line of the test command" "outside allowed paths: secret.txt"; do
+    grep -q "$expected" "$v" || fail "missing in history: $expected"
 done
-[ "$(grep -c '^- \[x\]' TASKS.md)" = 4 ] && grep -q '^- \[~\] 2\.' TASKS.md || fehlschlag "Aufgabenliste falsch: $(tr '\n' ' ' <TASKS.md)"
-[ "$(git log --oneline | wc -l)" = 6 ] || fehlschlag "erwartet 6 Commits: $(git log --oneline | tr '\n' '|')"
-git diff --quiet main -- abnahme.sh plan.md || fehlschlag "gesperrte Datei wurde geändert"
-[ -z "$(git status --porcelain)" ] || fehlschlag "Arbeitsordner nicht sauber: $(git status --porcelain)"
-[ ! -e code.txt ] && [ ! -e rot ] || fehlschlag "verworfene Änderungen liegen noch herum"
-grep -qx 3 "$FAKE_DIR/mit-rueckmeldung" && ! grep -qx 1 "$FAKE_DIR/mit-rueckmeldung" || fehlschlag "Rückmeldung nicht (nur) nach Ablehnung weitergegeben"
-grep -qx 1 "$FAKE_DIR/mit-plan" || fehlschlag "Plan wurde dem Umsetzer nicht mitgegeben"
-grep -q ";angenommen;.*;0.0200;" "$T/.autopilot/log/fortschritt.csv" || fehlschlag "Kosten (Umsetzer + Gutachter) fehlen in der CSV"
-"$WERKZEUG/menu.sh" noten | grep -q "^kern" || fehlschlag "Notentafel ohne Art „kern“"
-"$WERKZEUG/menu.sh" kosten | grep -q "Durchläufe gesamt: 0.21 USD" || fehlschlag "Kostenübersicht falsch: $("$WERKZEUG/menu.sh" kosten | head -1)"
-"$WERKZEUG/menu.sh" status | grep -q "4 erledigt, 0 offen, 1 blockiert" || fehlschlag "Status falsch"
-"$WERKZEUG/menu.sh" ergebnis | grep -q "Autopilot: \[x\] 5. \[rand\] fünf" || fehlschlag "Ergebnis falsch"
-k=$("$WERKZEUG/menu.sh" kurve) && grep -q "<svg" "$k" || fehlschlag "Kurve nicht erzeugt"
-grep -qx "Datei des Nutzers" geheim.txt || fehlschlag "fremde Datei über Umbenennung verloren"
-# Eingriff in .git/config (fsmonitor würde beim nächsten git status Code ausführen): sofort anhalten
-printf -- '- [ ] 6. [rand] sechs\n' >>TASKS.md && git add -A && git commit -qm "neue Aufgabe"
-"$WERKZEUG/autopilot.sh" >/dev/null 2>&1 && fehlschlag "Änderung an .git/config nicht bemerkt"
-grep -q "hat .git (config, info oder hooks) verändert" "$v" || fehlschlag "keine Meldung zur .git-Änderung"
-[ ! -e "$T/boese" ] || fehlschlag "Code aus .git/config wurde ausgeführt"
+[ "$(grep -c '^- \[x\]' TASKS.md)" = 4 ] && grep -q '^- \[~\] 2\.' TASKS.md || fail "task list wrong: $(tr '\n' ' ' <TASKS.md)"
+[ "$(git log --oneline | wc -l)" = 6 ] || fail "expected 6 commits: $(git log --oneline | tr '\n' '|')"
+git diff --quiet main -- accept.sh plan.md || fail "locked file was changed"
+[ -z "$(git status --porcelain)" ] || fail "work directory not clean: $(git status --porcelain)"
+[ ! -e code.txt ] && [ ! -e red ] || fail "rejected changes are still lying around"
+grep -qx 3 "$FAKE_DIR/with-feedback" && ! grep -qx 1 "$FAKE_DIR/with-feedback" || fail "feedback not passed on (only) after a rejection"
+grep -qx 1 "$FAKE_DIR/with-plan" || fail "plan was not passed to the worker"
+grep -qx 1 "$FAKE_DIR/with-decisions" || fail "{DECISIONS_FILE} was not filled into the prompt"
+grep -q ";accepted;.*;0.0200;" "$T/.autopilot/log/progress.csv" || fail "cost (worker + reviewer) missing in the CSV"
+"$TOOL_DIR/menu.sh" grades | grep -q "^core" || fail "grade table without kind \"core\""
+"$TOOL_DIR/menu.sh" costs | grep -q "Runs total: 0.21 USD" || fail "cost overview wrong: $("$TOOL_DIR/menu.sh" costs | head -1)"
+"$TOOL_DIR/menu.sh" status | grep -q "4 done, 0 open, 1 blocked" || fail "status wrong"
+"$TOOL_DIR/menu.sh" result | grep -q "Autopilot: \[x\] 5. \[edge\] five" || fail "result wrong"
+k=$("$TOOL_DIR/menu.sh" chart) && grep -q "<svg" "$k" || fail "chart not created"
+grep -qx "User file" secret.txt || fail "foreign file lost through a rename"
+# Tampering with .git/config (fsmonitor would run code on the next git status): stop immediately
+printf -- '- [ ] 6. [edge] six\n' >>TASKS.md && git add -A && git commit -qm "new task"
+"$TOOL_DIR/autopilot.sh" >/dev/null 2>&1 && fail "change to .git/config not noticed"
+grep -q "changed .git (config, info or hooks)" "$v" || fail "no message about the .git change"
+[ ! -e "$T/evil" ] || fail "code from .git/config was executed"
 unset AUTOPILOT_CONF
 
-# ======== Teil B: Vorhaben aus Plan-Datei, Sicherheitsfilter, Fahrschule, Planer, Bericht ========
-neue_runde
-probeprojekt "$T/p2"
-plan="$T/p2/Plan 'x' \$(touch ausgeloest).md"   # Dateiname mit eingeschleustem Befehl
-printf '# Zählwerk\nEs soll gezählt werden.\n' >"$plan"
+# ======== Part B: project from a plan file, security filter, supervised mode, planner, report ========
+new_round
+sample_project "$T/p2"
+plan="$T/p2/Plan 'x' \$(touch triggered).md"   # file name with an injected command
+printf '# Counter\nIt should count.\n' >"$plan"
 git add -A && git commit -qm start
-cat >"$FAKE_DIR/einrichten.txt" <<'EOF'
-Ich habe mir das Projekt angesehen.
-===KONF===
-PRUEFEN='bash pruefe.sh'
-PRUEF_ZAEHLER='grep -o "PRUEFUNGEN: [0-9]*" | grep -o "[0-9]*"'
-ERLAUBT='^checks\.txt$'
-UMSETZER_WERKZEUGE=(Read Edit 'Bash(bash pruefe.sh:*)')
-UMSETZER_WERKZEUGE=(Read Bash)
-UMSETZER_WERKZEUGE=(Read 'Bash(*)')
-PRUEF_ZAHL='(.*) passed'
+cat >"$FAKE_DIR/setup.txt" <<'EOF'
+I have looked at the project.
+===CONFIG===
+TEST_CMD='bash check.sh'
+TEST_COUNT_CMD='grep -o "TESTS: [0-9]*" | grep -o "[0-9]*"'
+ALLOWED='^checks\.txt$'
+WORKER_TOOLS=(Read Edit 'Bash(bash check.sh:*)')
+WORKER_TOOLS=(Read Bash)
+WORKER_TOOLS=(Read 'Bash(*)')
+TEST_COUNT_REGEX='(.*) passed'
 rm -rf "$HOME"
-PRUEFEN2=$(touch /tmp/eingeschleust)
-ERLAUBT='.'; touch /tmp/eingeschleust
-===AUFGABEN===
-# Aufgaben: Zählwerk
-Nur checks.txt ändern.
+TEST_CMD2=$(touch /tmp/injected)
+ALLOWED='.'; touch /tmp/injected
+===TASKS===
+# Tasks: counter
+Only change checks.txt.
 
-- [ ] 1. [neu] eins. Fertig, wenn eine Prüfung mehr besteht.
+- [ ] 1. [new] one. Done when one more test passes.
 EOF
-"$WERKZEUG/menu.sh" plan "$plan" >"$T/entwurf.txt" 2>&1 || fehlschlag "Entwurf fehlgeschlagen: $(tail -3 "$T/entwurf.txt")"
-grep -q "rm -rf" "$T/entwurf.txt" && grep -q "Aus Sicherheitsgründen nicht übernommen" "$T/entwurf.txt" || fehlschlag "gefährliche Zeilen nicht als verworfen gemeldet"
-[ ! -e "$T/p2-autopilot" ] || fehlschlag "Entwurf hat schon eingerichtet"
-"$WERKZEUG/menu.sh" plan annehmen >/dev/null || fehlschlag "Annehmen fehlgeschlagen"
-konf=$T/p2/autopilot.conf
-grep -q "rm -rf\|PRUEFEN2\|eingeschleust\|(Read Bash)\|Bash(\*)\|(\.\*) passed" "$konf" && fehlschlag "gefährliche Zeile in die Konfiguration übernommen: $(cat "$konf")"
-( . "$konf"; [ "$PLAN_DATEI" = "$plan" ] && [ "${GESPERRT[0]}" = "${plan#"$T/p2/"}" ] ) || fehlschlag "Plan nicht korrekt eingetragen"
-[ -z "$(find "$T" -name ausgeloest)" ] || fehlschlag "Befehl aus dem Dateinamen wurde ausgeführt"
-grep -q "^PRUEF_ZAEHLER=" "$konf" || fehlschlag "PRUEF_ZAEHLER nicht übernommen"
-[ "$(readlink -f "$T/config/autopilot-loop/standard.conf")" = "$konf" ] || fehlschlag "standard.conf zeigt nicht auf das neue Vorhaben"
-[ -f "$T/p2-autopilot/AUTOPILOT-AUFGABEN.md" ] || fehlschlag "Aufgabenliste nicht im Arbeitszweig"
-git -C "$T/p2" status --porcelain | grep -q . && fehlschlag "Projekt durch Statusdateien verschmutzt: $(git -C "$T/p2" status --porcelain)"
-echo "FAHRSCHULE=an" >>"$konf"
-"$WERKZEUG/menu.sh" status >/dev/null 2>&1; [ $? = 4 ] || fehlschlag "geänderte Konfiguration ohne neue Bestätigung geladen"
-"$WERKZEUG/menu.sh" vertrauen "$konf" >/dev/null || fehlschlag "erneutes Vertrauen fehlgeschlagen"
+"$TOOL_DIR/menu.sh" plan "$plan" >"$T/draft.txt" 2>&1 || fail "draft failed: $(tail -3 "$T/draft.txt")"
+grep -q "rm -rf" "$T/draft.txt" && grep -q "Not adopted for security reasons" "$T/draft.txt" || fail "dangerous lines not reported as discarded"
+[ ! -e "$T/p2-autopilot" ] || fail "draft already set things up"
+"$TOOL_DIR/menu.sh" plan accept >/dev/null || fail "accept failed"
+conf=$T/p2/autopilot.conf
+grep -q "rm -rf\|TEST_CMD2\|injected\|(Read Bash)\|Bash(\*)\|(\.\*) passed" "$conf" && fail "dangerous line adopted into the configuration: $(cat "$conf")"
+( . "$conf"; [ "$PLAN_FILE" = "$plan" ] && [ "${LOCKED[0]}" = "${plan#"$T/p2/"}" ] ) || fail "plan not entered correctly"
+[ -z "$(find "$T" -name triggered)" ] || fail "command from the file name was executed"
+grep -q "^TEST_COUNT_CMD=" "$conf" || fail "TEST_COUNT_CMD not adopted"
+[ "$(readlink -f "$T/config/autopilot-loop/standard.conf")" = "$conf" ] || fail "standard.conf does not point to the new project"
+[ -f "$T/p2-autopilot/AUTOPILOT-TASKS.md" ] || fail "task list not in the work branch"
+git -C "$T/p2" status --porcelain | grep -q . && fail "project polluted by state files: $(git -C "$T/p2" status --porcelain)"
+echo "SUPERVISED=on" >>"$conf"
+"$TOOL_DIR/menu.sh" status >/dev/null 2>&1; [ $? = 4 ] || fail "changed configuration loaded without a new confirmation"
+"$TOOL_DIR/menu.sh" trust "$conf" >/dev/null || fail "trusting again failed"
 
-mkdir -p "$T/woanders" && cd "$T/woanders" || exit 1   # ab jetzt ohne Pfadangabe: standard.conf
-echo "echo check >>checks.txt; sed -i '0,/^- \[ \]/s//- [x]/' AUTOPILOT-AUFGABEN.md" >"$FAKE_DIR/schritte/1.sh"
-echo "URTEIL: ANNEHMEN" >"$FAKE_DIR/urteile"
-"$WERKZEUG/autopilot.sh" >"$T/ausgabe2.txt" 2>&1 &
-for _ in $(seq 1 40); do [ -e "$T/p2/.autopilot/WARTET" ] && break; sleep 0.5; done
-[ -e "$T/p2/.autopilot/WARTET" ] || fehlschlag "Fahrschule wartet nicht auf das OK"
-"$WERKZEUG/menu.sh" status | grep -q "WARTET auf dein OK" || fehlschlag "Status zeigt das Warten nicht"
-"$WERKZEUG/menu.sh" weiter | grep -q "OK gegeben" || fehlschlag "weiter fehlgeschlagen"
-wait $! || fehlschlag "Lauf nach der Fahrstunde mit Fehler beendet: $(tail -3 "$T/ausgabe2.txt")"
-grep -q "Ziel erreicht" "$T/p2/.autopilot/log/verlauf.txt" || fehlschlag "Vorhaben nicht abgeschlossen"
+mkdir -p "$T/elsewhere" && cd "$T/elsewhere" || exit 1   # from now on without a path: standard.conf
+echo "echo check >>checks.txt; sed -i '0,/^- \[ \]/s//- [x]/' AUTOPILOT-TASKS.md" >"$FAKE_DIR/steps/1.sh"
+echo "VERDICT: ACCEPT" >"$FAKE_DIR/verdicts"
+"$TOOL_DIR/autopilot.sh" >"$T/output2.txt" 2>&1 &
+for _ in $(seq 1 40); do [ -e "$T/p2/.autopilot/WAITING" ] && break; sleep 0.5; done
+[ -e "$T/p2/.autopilot/WAITING" ] || fail "supervised mode does not wait for the OK"
+"$TOOL_DIR/menu.sh" status | grep -q "WAITING for your OK" || fail "status does not show the waiting"
+"$TOOL_DIR/menu.sh" continue | grep -q "OK given" || fail "continue failed"
+wait $! || fail "run ended with an error after the supervised step: $(tail -3 "$T/output2.txt")"
+grep -q "Goal reached" "$T/p2/.autopilot/log/history.log" || fail "project not completed"
 
-printf -- '- [ ] 2. [neu] zwei. Fertig, wenn zwei Prüfungen mehr bestehen.\nKein gültiger Satz\n- [ ] 3. ohne Kriterium\n' >"$FAKE_DIR/planer.txt"
-"$WERKZEUG/menu.sh" planen | grep -q "1 Aufgaben vorgeschlagen" || fehlschlag "Planer-Vorschlag nicht gefiltert"
-"$WERKZEUG/menu.sh" vorschlag annehmen | grep -q "übernommen" || fehlschlag "Vorschlag nicht übernommen"
-grep -q '^- \[ \] 2\. \[neu\] zwei' "$T/p2-autopilot/AUTOPILOT-AUFGABEN.md" || fehlschlag "Vorschlag fehlt in der Aufgabenliste"
-echo "Kurzbericht: alles gut." >"$FAKE_DIR/bericht.txt"
-"$WERKZEUG/menu.sh" bericht | grep -q "Kurzbericht: alles gut" || fehlschlag "Bericht falsch"
-[ -z "$("$WERKZEUG/menu.sh" status --kurz)" ] || fehlschlag "Statuszeile zeigt etwas, obwohl nichts läuft"
-[ -z "$(find "$T" -name ausgeloest)" ] || fehlschlag "Befehl aus dem Dateinamen wurde später beim Laden ausgeführt"
+printf -- '- [ ] 2. [new] two. Done when two more tests pass.\nNot a valid sentence\n- [ ] 3. without criterion\n' >"$FAKE_DIR/planner.txt"
+"$TOOL_DIR/menu.sh" propose | grep -q "1 tasks proposed" || fail "planner suggestion not filtered"
+"$TOOL_DIR/menu.sh" suggestion accept | grep -q "adopted" || fail "suggestion not adopted"
+grep -q '^- \[ \] 2\. \[new\] two' "$T/p2-autopilot/AUTOPILOT-TASKS.md" || fail "suggestion missing in the task list"
+echo "Short report: all good." >"$FAKE_DIR/report.txt"
+"$TOOL_DIR/menu.sh" report | grep -q "Short report: all good" || fail "report wrong"
+[ -z "$("$TOOL_DIR/menu.sh" status --short)" ] || fail "status line shows something although nothing runs"
+[ -z "$(find "$T" -name triggered)" ] || fail "command from the file name was executed later while loading"
 echo ok

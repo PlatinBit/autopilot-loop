@@ -1,3 +1,4 @@
 .autopilot/
 autopilot.conf
 .claude-plugin/types/
+__pycache__/

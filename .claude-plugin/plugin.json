@@ -1,8 +1,8 @@
 {
   "name": "autopilot",
-  "displayName": "Autopilot (Regelkreis)",
-  "version": "0.1.0",
-  "description": "/autopilot: Plan-Datei angeben, Claude setzt sie Aufgabe für Aufgabe allein um – mit Skript-Prüfer, Gutachter, gesperrtem Ziel, Noten, Kosten und Planer.",
+  "displayName": "Autopilot Loop",
+  "version": "0.2.0",
+  "description": "/autopilot: point it at a plan file and Claude implements it task by task on its own – guarded by script checks, a read-only reviewer, a locked goal, grades, cost tracking and a planner.",
   "author": {
     "name": "PlatinBit",
     "url": "https://github.com/PlatinBit"
@@ -16,6 +16,6 @@
     "loop",
     "tests",
     "review",
-    "regelkreis"
+    "feedback-loop"
   ]
 }

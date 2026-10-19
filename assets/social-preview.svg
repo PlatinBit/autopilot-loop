@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" width="1280" height="640">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0f172a"/>
+      <stop offset="1" stop-color="#1e1b4b"/>
+    </linearGradient>
+  </defs>
+  <rect width="1280" height="640" fill="url(#bg)"/>
+  <g transform="translate(150 190) scale(3.2)">
+    <path d="M 84.4 30.9 A 38 38 0 1 1 47 24.3" fill="none" stroke="#3b82f6" stroke-width="9" stroke-linecap="round"/>
+    <path d="M 58.5 20.2 L 48.6 34.4 L 42.6 16.1 Z" fill="#3b82f6" stroke="#3b82f6" stroke-width="3" stroke-linejoin="round"/>
+    <path d="M 42 61 L 55 74 L 80 47" fill="none" stroke="#22c55e" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+  <text x="500" y="290" font-family="DejaVu Sans, sans-serif" font-size="84" font-weight="700" fill="#ffffff">autopilot-loop</text>
+  <text x="502" y="360" font-family="DejaVu Sans, sans-serif" font-size="34" fill="#c4b5fd">Point it at a plan file.</text>
+  <text x="502" y="408" font-family="DejaVu Sans, sans-serif" font-size="34" fill="#c4b5fd">Claude Code builds it task by task –</text>
+  <text x="502" y="456" font-family="DejaVu Sans, sans-serif" font-size="34" fill="#c4b5fd">every step verified, reviewed, committed.</text>
+  <g font-family="DejaVu Sans, sans-serif" font-size="24" font-weight="700">
+    <rect x="502" y="510" width="170" height="44" rx="22" fill="#3b82f6"/><text x="587" y="540" text-anchor="middle" fill="#ffffff">plan</text>
+    <rect x="684" y="510" width="170" height="44" rx="22" fill="#8b5cf6"/><text x="769" y="540" text-anchor="middle" fill="#ffffff">build</text>
+    <rect x="866" y="510" width="170" height="44" rx="22" fill="#f59e0b"/><text x="951" y="540" text-anchor="middle" fill="#1e1b4b">verify</text>
+    <rect x="1048" y="510" width="170" height="44" rx="22" fill="#22c55e"/><text x="1133" y="540" text-anchor="middle" fill="#0f172a">commit</text>
+  </g>
+</svg>

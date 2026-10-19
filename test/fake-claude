@@ -1,25 +1,26 @@
 #!/bin/bash
-# Testdouble für `claude -p --output-format json …` (nur für test/test_autopilot.sh).
-# Der Auftrag kommt als Argument (Umsetzer, Einrichter, Planer) oder über stdin (Gutachter, Bericht).
-# Steuerung über $FAKE_DIR: schritte/<n>.sh (Umsetzer-Durchläufe), urteile (eine Zeile je Gutachten),
-# einrichten.txt, planer.txt, bericht.txt (feste Antworten). Jede Antwort kostet 0.01 USD.
+# Test double for `claude -p --output-format json …` (only for test/test_autopilot.sh).
+# The prompt comes as an argument or via stdin (claude_run always uses stdin).
+# Controlled via $FAKE_DIR: steps/<n>.sh (worker runs), verdicts (one line per review),
+# setup.txt, planner.txt, report.txt (fixed answers). Every answer costs 0.01 USD.
 d=$FAKE_DIR
-auftrag=''
-for a in "$@"; do case "$a" in -p|--output-format|json) ;; --*) break ;; *) auftrag=$a; break ;; esac; done
-[ -n "$auftrag" ] || auftrag=$(cat)
+prompt=''
+for a in "$@"; do case "$a" in -p|--output-format|json) ;; --*) break ;; *) prompt=$a; break ;; esac; done
+[ -n "$prompt" ] || prompt=$(cat)
 
-zaehle() { local n=$(( $(cat "$d/$1" 2>/dev/null || echo 0) + 1 )); echo $n >"$d/$1"; echo $n; }
-antwort() { jq -n --arg r "$1" '{type: "result", is_error: false, result: $r, total_cost_usd: 0.01}'; }
+count() { local n=$(( $(cat "$d/$1" 2>/dev/null || echo 0) + 1 )); echo $n >"$d/$1"; echo $n; }
+answer() { jq -n --arg r "$1" '{type: "result", is_error: false, result: $r, total_cost_usd: 0.01}'; }
 
-case "$auftrag" in
-    *"Du bist Gutachter"*) antwort "Begründung …
-$(sed -n "$(zaehle urteil-nr)p" "$d/urteile")" ;;
-    *"Du richtest einen Autopiloten"*) antwort "$(cat "$d/einrichten.txt")" ;;
-    *"Du bist der Planer"*) antwort "$(cat "$d/planer.txt")" ;;
-    *"Fasse das für den Projektinhaber"*) antwort "$(cat "$d/bericht.txt")" ;;
-    *)  n=$(zaehle schritt-nr)
-        grep -q "## Rückmeldung zum letzten Versuch" <<<"$auftrag" && echo "$n" >>"$d/mit-rueckmeldung"
-        grep -q "## Plan, der umgesetzt wird" <<<"$auftrag" && echo "$n" >>"$d/mit-plan"
-        [ -f "$d/schritte/$n.sh" ] || { antwort "keine Schritte mehr"; exit 1; }
-        bash "$d/schritte/$n.sh"; antwort "Schritt $n erledigt" ;;
+case "$prompt" in
+    *"You are the reviewer"*) answer "Reasoning …
+$(sed -n "$(count verdict-nr)p" "$d/verdicts")" ;;
+    *"You are setting up an autopilot"*) answer "$(cat "$d/setup.txt")" ;;
+    *"You are the planner"*) answer "$(cat "$d/planner.txt")" ;;
+    *"Summarise this for the project owner"*) answer "$(cat "$d/report.txt")" ;;
+    *)  n=$(count step-nr)
+        grep -q "## Feedback on the previous attempt" <<<"$prompt" && echo "$n" >>"$d/with-feedback"
+        grep -q "## Plan being implemented" <<<"$prompt" && echo "$n" >>"$d/with-plan"
+        grep -q "DECISIONS.md" <<<"$prompt" && echo "$n" >>"$d/with-decisions"
+        [ -f "$d/steps/$n.sh" ] || { answer "no steps left"; exit 1; }
+        bash "$d/steps/$n.sh"; answer "Step $n done" ;;
 esac

@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 120" width="400" height="120" role="img" aria-label="autopilot-loop">
+  <title>autopilot-loop</title>
+  <path d="M 84.4 30.9 A 38 38 0 1 1 47 24.3" fill="none" stroke="#3b82f6" stroke-width="9" stroke-linecap="round"/>
+  <path d="M 58.5 20.2 L 48.6 34.4 L 42.6 16.1 Z" fill="#3b82f6" stroke="#3b82f6" stroke-width="3" stroke-linejoin="round"/>
+  <path d="M 42 61 L 55 74 L 80 47" fill="none" stroke="#22c55e" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="118" y="72" font-family="sans-serif" font-size="34" font-weight="700" fill="#8b5cf6">autopilot-loop</text>
+</svg>
