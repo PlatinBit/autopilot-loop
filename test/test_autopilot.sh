@@ -257,5 +257,29 @@ grep -q "Run 3 accepted" "$T/e2/.autopilot/log/history.log" || fail "symlink ins
 git ls-tree -r --name-only HEAD | grep -q '^out[12]$' && fail "outside symlink was committed"
 [ ! -L out1 ] && [ ! -L out2 ] || fail "outside symlink still lying around after the rejection"
 [ -L in1 ] && [ -z "$(git status --porcelain)" ] || fail "inside symlink missing or work directory not clean"
+# Submodules: an edited or a new file inside is rejected and the submodule restored; other changes still pass
+new_round
+mkdir -p "$T/e3/lib" && git -C "$T/e3/lib" init -q -b main && echo orig >"$T/e3/lib/lib.txt" &&
+    git -C "$T/e3/lib" add -A && git -C "$T/e3/lib" -c user.email=t@e.org -c user.name=T commit -qm lib
+sample_project "$T/e3/work"
+printf -- '- [ ] 1. [x] one\n' >TASKS.md
+git -c protocol.file.allow=always submodule add -q "$T/e3/lib" sub && git add -A && git commit -qm start
+start_head=$(git rev-parse HEAD)
+printf 'WORKDIR=work\nTEST_CMD=%q\nALLOWED=%q\n' 'bash check.sh' '^(checks\.txt|sub|sub/.*|TASKS\.md)$' >"$T/e3/autopilot.conf"
+echo "echo check >>checks.txt; echo changed >sub/lib.txt; $tick" >"$FAKE_DIR/steps/1.sh"
+echo "echo check >>checks.txt; echo new >sub/new.txt; $tick"     >"$FAKE_DIR/steps/2.sh"
+echo "echo check >>checks.txt; $tick"                            >"$FAKE_DIR/steps/3.sh"
+echo "VERDICT: ACCEPT" >"$FAKE_DIR/verdicts"
+export AUTOPILOT_CONF="$T/e3/autopilot.conf"
+"$TOOL_DIR/menu.sh" trust "$AUTOPILOT_CONF" >/dev/null || fail "trust for the submodule test failed"
+MAX=2 "$TOOL_DIR/autopilot.sh" >"$T/e3/out.txt" 2>&1 || fail "submodule run ended with an error: $(tail -3 "$T/e3/out.txt")"
+grep -q "Run 1 rejected: .*submodule.*sub" "$T/e3/.autopilot/log/history.log" || fail "edited file inside a submodule not rejected"
+grep -q "Run 2 rejected: .*submodule.*sub" "$T/e3/.autopilot/log/history.log" || fail "new file inside a submodule not rejected"
+[ "$(git rev-parse HEAD)" = "$start_head" ] || fail "HEAD changed by a rejected submodule run"
+[ -z "$(git status --porcelain)" ] || fail "work directory not clean after the submodule rejection: $(git status --porcelain)"
+[ -z "$(git -C sub status --porcelain)" ] || fail "submodule not restored after the rejection: $(git -C sub status --porcelain)"
+[ "$(cat sub/lib.txt)" = orig ] && [ ! -e sub/new.txt ] || fail "submodule files not back to the recorded state"
+MAX=1 "$TOOL_DIR/autopilot.sh" >"$T/e3/out.txt" 2>&1 || fail "submodule follow-up run ended with an error: $(tail -3 "$T/e3/out.txt")"
+grep -q "Run 1 accepted" "$T/e3/.autopilot/log/history.log" || fail "change outside the submodule rejected in a project with a submodule"
 unset AUTOPILOT_CONF
 echo ok

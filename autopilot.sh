@@ -82,8 +82,14 @@ run_accept() {
     local k; k=$(number_from "$1" "$ACCEPT_REGEX"); is_number "$k" && echo "$k" || echo 0
 }
 
+# Work directory and submodules back to COMMIT (reset does not touch the inside of submodules)
+restore() { # COMMIT
+    g reset -q --hard "$1" && g clean -qfd &&
+        g submodule --quiet update --force --recursive && g submodule --quiet foreach --recursive 'git clean -qffd'
+}
+
 reject() { # BEFORE REASON [LOGFILE]
-    g reset -q --hard "$1" && g clean -qfd
+    restore "$1"
     note "Run $i rejected: $2"
     { echo "The last attempt at this task was rejected. Reason: $2"
       [ -n "${3:-}" ] && { echo; echo "Last lines of $(basename "$3"):"; tail -40 "$3"; }; } >"$FEEDBACK"
@@ -149,6 +155,11 @@ outside_links() {
         case "$t" in "$ROOT"/*) ;; *) echo "$f" ;; esac
     done
 }
+# Submodules with a new commit or edited/new files inside (mode 160000 on either side of the diff)
+changed_submodules() {
+    g -c core.quotePath=false diff HEAD --raw --no-renames --ignore-submodules=none |
+        awk -F'\t' '$1 ~ /^:(160000 [0-7]+|[0-7]+ 160000) / {print $2}'
+}
 
 [ -n "$TEST_CMD" ] || { announce crit "TEST_CMD is not set in $CONF"; exit 1; }
 [ -n "$ALLOWED" ] || { announce crit "ALLOWED is not set in $CONF – which paths may Claude change?"; exit 1; }
@@ -205,7 +216,7 @@ while [ "$i" -lt "$MAX" ]; do
 
     # Subscription usage limit: wait instead of using up a run (at most 20 times).
     if [ "$rc" -ne 0 ] && usage_limit "$LOGS/run-$i.txt"; then
-        g reset -q --hard "$before" && g clean -qfd
+        restore "$before"
         i=$((i - 1)); waits=$((waits + 1))
         [ "$waits" -gt 20 ] && { announce crit "Usage limit persists, stopped"; exit 1; }
         note "Usage limit, waiting $((LIMIT_WAIT / 60)) min"; sleep "$LIMIT_WAIT"; continue
@@ -215,6 +226,8 @@ while [ "$i" -lt "$MAX" ]; do
     g add -A
     task=$(g diff --cached --no-ext-diff -U0 -- "$TASKS_FILE" | grep -m1 '^+- \[[x~]\]' | cut -c4-90)
     if [ -z "$task" ]; then reject "$before" "no task ticked off or blocked (rc $rc)" "$LOGS/run-$i.txt"; continue; fi
+    subs=$(changed_submodules)
+    if [ -n "$subs" ]; then reject "$before" "change inside a submodule: $(echo $subs)"; continue; fi
     foreign=$(changed | grep -Ev "$ALLOWED")
     if [ -n "$foreign" ]; then reject "$before" "change outside allowed paths: $(echo $foreign)"; continue; fi
     locked=$( { changed | grep -E "$ALWAYS_LOCKED"
