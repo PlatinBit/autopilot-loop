@@ -182,4 +182,15 @@ for w in "gone dir" "$T/absent/work"; do
     grep -q "WORKDIR" "$T/d1/out.txt" || fail "message does not name WORKDIR: $(cat "$T/d1/out.txt")"
     grep -qE '^cd:|line [0-9]+:' "$T/d1/out.txt" && fail "raw shell error for a missing WORKDIR: $(cat "$T/d1/out.txt")"
 done
+# status with the task list deleted: name the path, no raw grep error, exit 0
+mkdir -p "$T/d2/work" && printf -- '- [ ] 1. [x] one\n' >"$T/d2/work/My Tasks.md"
+printf 'WORKDIR=work\nTASKS_FILE=%q\nALLOWED=x\n' "My Tasks.md" >"$T/d2/autopilot.conf"
+export AUTOPILOT_CONF="$T/d2/autopilot.conf"
+"$TOOL_DIR/menu.sh" trust "$AUTOPILOT_CONF" >/dev/null || fail "trust for the task list test failed"
+"$TOOL_DIR/menu.sh" status | grep -q "0 done, 1 open" || fail "status with a task list wrong"
+rm "$T/d2/work/My Tasks.md"
+"$TOOL_DIR/menu.sh" status >"$T/d2/out.txt" 2>&1 || fail "status without a task list exits non-zero: $(cat "$T/d2/out.txt")"
+grep -qF "$T/d2/work/My Tasks.md" "$T/d2/out.txt" || fail "status does not name the missing task list: $(cat "$T/d2/out.txt")"
+grep -q '^grep:' "$T/d2/out.txt" && fail "raw grep error in status: $(cat "$T/d2/out.txt")"
+unset AUTOPILOT_CONF
 echo ok

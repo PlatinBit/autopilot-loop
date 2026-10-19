@@ -1,1 +1,2 @@
 - Task 1: the WORKDIR check sits only in autopilot.sh (before `cd`); a WORKDIR that exists but cannot be entered (no x permission) still shows the raw `cd:` error.
+- Task 2: only the full `menu.sh status` checks for the task list; the whiptail menu uses the same function, other commands that read TASKS_FILE (e.g. `suggestion accept`) were not changed.

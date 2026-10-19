@@ -78,8 +78,10 @@ status() {
     echo "Status:      $(is_running && echo 'running' || echo 'off')$( [ -e "$STATE/STOP" ] && echo ' (stops after this run)')$( [ -e "$STATE/WAITING" ] && echo ' – WAITING for your OK (autopilot continue)')"
     [ ${#ACCEPT_FILES[@]} -gt 0 ] && echo "Acceptance:  $(is_approved && echo 'approved' || echo 'NOT approved')   $(accept_progress)"
     [ -n "$PLAN_FILE" ] && echo "Plan:        $PLAN_FILE"
-    echo "Tasks:       $(grep -c '^- \[x\]' "$WORKDIR/$TASKS_FILE") done, $(grep -c '^- \[ \]' "$WORKDIR/$TASKS_FILE") open, $(grep -c '^- \[~\]' "$WORKDIR/$TASKS_FILE") blocked"
-    echo "Next:        $(grep -m1 '^- \[ \]' "$WORKDIR/$TASKS_FILE" | cut -c7-70)"
+    if [ -f "$WORKDIR/$TASKS_FILE" ]; then
+        echo "Tasks:       $(grep -c '^- \[x\]' "$WORKDIR/$TASKS_FILE") done, $(grep -c '^- \[ \]' "$WORKDIR/$TASKS_FILE") open, $(grep -c '^- \[~\]' "$WORKDIR/$TASKS_FILE") blocked"
+        echo "Next:        $(grep -m1 '^- \[ \]' "$WORKDIR/$TASKS_FILE" | cut -c7-70)"
+    else echo "Tasks:       task list not found: $WORKDIR/$TASKS_FILE (check TASKS_FILE in autopilot.conf)"; fi
     [ -s "$STATE/suggestion.md" ] && echo "Suggestion:  $(wc -l <"$STATE/suggestion.md") new tasks from the planner are waiting (autopilot suggestion)"
     echo
     echo "Latest events:"
