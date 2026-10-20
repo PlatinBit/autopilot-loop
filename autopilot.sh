@@ -241,6 +241,13 @@ while [ "$i" -lt "$MAX" ]; do
         note "Usage limit, waiting $((LIMIT_WAIT / 60)) min"; sleep "$LIMIT_WAIT"; continue
     fi
 
+    # Any other error reported by Claude (login, network …): retrying only burns runs, so stop without counting a rejection.
+    if [ "$rc" -ne 0 ] && err=$(jq -er 'select(.is_error == true) | .result // "unknown error"' "$LOGS/run-$i.txt.json" 2>/dev/null); then
+        restore "$before"
+        announce crit "Run $i: Claude reported an error: $(echo "$err" | head -1 | cut_chars 1 200) – fix it (e.g. claude /login, check the network), then start again"
+        exit 1
+    fi
+
     # Tool calls Claude Code refused (not in WORKER_TOOLS, or a hook rewrote the command): name them,
     # otherwise a run without e.g. the build command only ends in a time-out with no visible reason.
     denied=$(jq -r '[.permission_denials[]? | .tool_input.command // .tool_name] | unique | .[:3] | join(" | ")' \

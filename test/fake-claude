@@ -14,6 +14,9 @@ answer() { # a step may write $FAKE_DIR/denied (one command per line): reported 
         permission_denials: [$d | split("\n")[] | select(. != "") | {tool_name: "Bash", tool_input: {command: .}}]}'
     rm -f "$d/denied"; }
 
+# $FAKE_DIR/error.txt: every call fails like a logged-out or offline claude (error answer, exit 1)
+[ -f "$d/error.txt" ] && { jq -n --arg r "$(cat "$d/error.txt")" '{type: "result", is_error: true, result: $r, total_cost_usd: 0}'; exit 1; }
+
 case "$prompt" in
     *"You are the reviewer"*) answer "Reasoning …
 $(sed -n "$(count verdict-nr)p" "$d/verdicts")" ;;

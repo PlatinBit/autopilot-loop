@@ -447,4 +447,26 @@ AUTOPILOT_CONF="$T/nc-conf/autopilot.conf" "$TOOL_DIR/menu.sh" trust "$T/nc-conf
 AUTOPILOT_CONF="$T/nc-conf/autopilot.conf" MAX=1 PATH="$T/nocl" "$TOOL_DIR/autopilot.sh" >"$T/nc2.txt" 2>&1 && fail "autopilot.sh without claude exits 0"
 grep -q claude "$T/nc2.txt" && grep -q "not found" "$T/nc2.txt" && grep -q "claude.com/claude-code" "$T/nc2.txt" || fail "autopilot.sh without claude: message incomplete: $(cat "$T/nc2.txt")"
 ! grep -q "Run 1" "$T/nc-conf/.autopilot/log/history.log" 2>/dev/null || fail "autopilot.sh without claude started a run"
+# Claude reports an error that is no usage limit: stop after one run, count no rejection, touch nothing
+new_round
+sample_project "$T/er"
+printf -- '- [ ] 1. [x] one\n' >TASKS.md
+git add -A && git commit -qm start && git checkout -qb autopilot || fail "claude-error run setup failed"
+mkdir -p "$T/er-conf"
+cat >"$T/er-conf/autopilot.conf" <<EOF
+WORKDIR=$T/er
+TEST_CMD='bash check.sh'
+ALLOWED='^checks\.txt\$'
+EOF
+AUTOPILOT_CONF="$T/er-conf/autopilot.conf" "$TOOL_DIR/menu.sh" trust "$T/er-conf/autopilot.conf" >/dev/null || fail "claude-error run: trust failed"
+echo "Invalid API key · Please run /login" >"$FAKE_DIR/error.txt"
+echo "echo check >>checks.txt; $tick" >"$FAKE_DIR/steps/1.sh"
+er_head=$(git rev-parse HEAD)
+er_grades=$(cat "$T/er-conf/.autopilot/grades.csv" 2>/dev/null)
+AUTOPILOT_CONF="$T/er-conf/autopilot.conf" MAX=5 MAX_REJECTIONS=3 "$TOOL_DIR/autopilot.sh" >"$T/er.txt" 2>&1 && fail "claude error: autopilot.sh exits 0"
+grep -qF "Invalid API key · Please run /login" "$T/er-conf/.autopilot/log/history.log" || fail "claude error: text missing in history.log: $(cat "$T/er.txt")"
+[ "$(grep -o 'Run [0-9]*:' "$T/er-conf/.autopilot/log/history.log" | sort -u | wc -l)" = 1 ] || fail "claude error: more than one run: $(cat "$T/er-conf/.autopilot/log/history.log")"
+[ "$(cat "$T/er-conf/.autopilot/grades.csv" 2>/dev/null)" = "$er_grades" ] || fail "claude error: grades.csv changed"
+[ -z "$(git status --porcelain)" ] || fail "claude error: work directory not clean"
+[ "$(git rev-parse HEAD)" = "$er_head" ] || fail "claude error: HEAD changed"
 echo ok
