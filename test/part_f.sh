@@ -87,12 +87,13 @@ pf_f6() {
     for c in "$T/nocl"/*; do ln -sf "$(readlink -f "$c")" "$T/pf-full/$(basename "$c")"; done
     printf '#!/bin/bash\necho "2.0.1 (stub)"\n' >"$T/pf-full/claude" && chmod +x "$T/pf-full/claude"
     printf '#!/bin/bash\necho "tmux 3.4"\n' >"$T/pf-full/tmux" && chmod +x "$T/pf-full/tmux"
-    env -u AUTOPILOT_CONF XDG_CONFIG_HOME="$T/pf6-cfg" PATH="$T/pf-apt:$T/pf-full" \
+    # Doctor runs outside a repo here: stub the git identity (CI runners have no global one)
+    env -u AUTOPILOT_CONF GIT_COMMITTER_NAME=CI GIT_COMMITTER_EMAIL=ci@test XDG_CONFIG_HOME="$T/pf6-cfg" PATH="$T/pf-apt:$T/pf-full" \
         "$TOOL_DIR/menu.sh" doctor >"$T/pf6.txt" 2>&1 || fail "F6: doctor on a complete system exits non-zero: $(cat "$T/pf6.txt")"
     for c in claude git jq tmux; do grep -q " $c" "$T/pf6.txt" || fail "F6: doctor does not list $c: $(cat "$T/pf6.txt")"; done
     grep -qi "identity" "$T/pf6.txt" || fail "F6: doctor does not show the git identity: $(cat "$T/pf6.txt")"
     rm "$T/pf-full/jq"
-    env -u AUTOPILOT_CONF XDG_CONFIG_HOME="$T/pf6-cfg" PATH="$T/pf-apt:$T/pf-full" \
+    env -u AUTOPILOT_CONF GIT_COMMITTER_NAME=CI GIT_COMMITTER_EMAIL=ci@test XDG_CONFIG_HOME="$T/pf6-cfg" PATH="$T/pf-apt:$T/pf-full" \
         "$TOOL_DIR/menu.sh" doctor >"$T/pf6h.txt" 2>&1 && fail "F6: doctor with a hidden jq exits 0: $(cat "$T/pf6h.txt")"
     grep "jq" "$T/pf6h.txt" | grep -qF "sudo apt install jq" || fail "F6: doctor without jq lacks the install command: $(cat "$T/pf6h.txt")"
     ln -sf "$(readlink -f "$T/nocl/jq")" "$T/pf-full/jq"
