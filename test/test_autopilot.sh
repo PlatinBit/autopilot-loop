@@ -477,4 +477,23 @@ for g in 'this is { not json' ''; do
     grep -q "Claude gave no usable answer" "$T/gb.txt" && grep -qF "$T/gb/.autopilot/draft/answer.txt" "$T/gb.txt" || fail "garbage '$g': message incomplete: $(cat "$T/gb.txt")"
     ! grep -qE '^(jq:|parse error)' "$T/gb.txt" || fail "garbage '$g': raw jq error shown"
 done
+# Reviewer hits the time limit: rejected with "time limit", not "no verdict", and no long wait
+new_round; sample_project "$T/rt"
+printf -- '- [ ] 1. [x] one\n' >TASKS.md
+git add -A && git commit -qm start && git checkout -qb autopilot || fail "reviewer timeout setup failed"
+mkdir -p "$T/rt-conf"
+cat >"$T/rt-conf/autopilot.conf" <<EOF
+WORKDIR=$T/rt
+TEST_CMD='bash check.sh'
+ALLOWED='^(checks\.txt|TASKS\.md)\$'
+EOF
+AUTOPILOT_CONF="$T/rt-conf/autopilot.conf" "$TOOL_DIR/menu.sh" trust "$T/rt-conf/autopilot.conf" >/dev/null || fail "reviewer timeout: trust failed"
+echo "echo check >>checks.txt; $tick" >"$FAKE_DIR/steps/1.sh"
+echo 5 >"$FAKE_DIR/review-sleep"
+echo "VERDICT: ACCEPT" >"$FAKE_DIR/verdicts"
+SECONDS=0; AUTOPILOT_CONF="$T/rt-conf/autopilot.conf" CLAUDE_TIMEOUT=2 MAX=1 "$TOOL_DIR/autopilot.sh" >"$T/rt.txt" 2>&1
+grep -q "time limit" "$T/rt-conf/.autopilot/log/history.log" || fail "reviewer timeout: 'time limit' missing: $(cat "$T/rt.txt")"
+! grep -q "no verdict" "$T/rt-conf/.autopilot/log/history.log" || fail "reviewer timeout: reported as no verdict: $(cat "$T/rt.txt")"
+[ "$SECONDS" -lt 30 ] || fail "reviewer timeout: waited too long: $(cat "$T/rt.txt")"
+! git log --format=%s | grep -q "^Autopilot:" || fail "reviewer timeout: a task was accepted: $(cat "$T/rt.txt")"
 echo ok

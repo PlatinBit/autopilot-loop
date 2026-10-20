@@ -115,11 +115,12 @@ block_task() { # REASON: mark the first open task as [~] so the loop can move on
 
 # Second Claude with a fresh context and read-only access; prints the VERDICT line.
 verdict_of() { # PROMPT-FILE LOG-NAME
-    local attempt k
+    local attempt k rc
     for attempt in $(seq 1 20); do
-        k=$(claude_run "$LOGS/$2" --model "$REVIEWER_MODEL" --allowedTools Read Grep Glob <"$1")
+        k=$(claude_run "$LOGS/$2" --model "$REVIEWER_MODEL" --allowedTools Read Grep Glob <"$1"); rc=$?
         echo "$k" >>"$STATE/cost-extra"  # runs in a subshell: return the cost through a file
         grep '^VERDICT:' "$LOGS/$2" | tail -1 | grep . && return
+        [ "$rc" = 124 ] && { echo "VERDICT: REJECT: reviewer hit the time limit (${CLAUDE_TIMEOUT:-20m}), see log/$2"; return; }
         usage_limit "$LOGS/$2" || return
         note "Reviewer: usage limit, waiting $((LIMIT_WAIT / 60)) min" >&2; sleep "$LIMIT_WAIT"
     done
