@@ -17,6 +17,7 @@
 Let Claude run all night and in the morning it says "Done!" – and nothing works. The reason: whoever builds also checks their own work. autopilot-loop separates the two:
 
 - **Claude (the worker)** writes code, one small task per run, with a fresh context and no Git access.
+- **Optional: a stronger planner** writes a brief for every task (files, approach, test, pitfalls), so a cheaper worker can build it: e.g. Opus plans, Sonnet builds, Opus reviews.
 - **A shell script** checks the result with hard rules: tests green, test count never drops, only allowed paths touched, the goal untouched.
 - **A second Claude (the reviewer)** reads the diff with read-only tools and rejects weak tests and fakes.
 - **Only the script commits.** Anything that fails is reset, and the reason goes into the next attempt.
@@ -166,7 +167,7 @@ Manual setup also works: `autopilot setup` creates a commented [`autopilot.conf`
 |---|---|---|
 | 1 | `autopilot` / `/autopilot` | menu |
 | 2 | `autopilot plan <file>` / `plan show` / `plan accept` | draft a new project from a plan file / show the draft / set it up |
-| 3 | `autopilot start 10 sonnet 3 opus` | 10 runs, reviewer sonnet, stop after 3 rejections in a row, worker opus |
+| 3 | `autopilot start 10 opus 3 sonnet opus` | 10 runs, reviewer opus, stop after 3 rejections in a row, builder sonnet, planner opus (writes a brief for every task, because builder and planner differ) |
 | 4 | `autopilot status [--short]` | running?, acceptance, tasks, latest events |
 | 5 | `autopilot continue` | approve the supervised step (with `SUPERVISED=on`) |
 | 6 | `autopilot stop` / `abort` | stop after the current run / stop now and discard the unfinished run |

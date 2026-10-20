@@ -19,6 +19,7 @@ case "$prompt" in
 $(sed -n "$(count verdict-nr)p" "$d/verdicts")" ;;
     *"You are setting up an autopilot"*) answer "$(cat "$d/setup.txt")" ;;
     *"You are the planner"*) answer "$(cat "$d/planner.txt")" ;;
+    *"You are writing the brief"*) count brief-nr >/dev/null; answer "BRIEF: reuse check.sh, add one check line" ;;
     *"Summarise this for the project owner"*) answer "$(cat "$d/report.txt")" ;;
     *)  n=$(count step-nr); printf '%s\n' "$prompt" >"$d/last-prompt"
         grep -q "## Feedback on the previous attempt" <<<"$prompt" && echo "$n" >>"$d/with-feedback"

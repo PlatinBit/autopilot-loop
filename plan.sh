@@ -88,7 +88,7 @@ $(cat "$file")
 
 ## Files in the project (excerpt)
 $(g -C "$repo" ls-files | head -300)"
-    cost=$(cd "$repo" && claude_run "$e/answer.txt" --model "${WORKER_MODEL:-opus}" --allowedTools Read Grep Glob <<<"$prompt") ||
+    cost=$(cd "$repo" && claude_run "$e/answer.txt" --model "${PLANNER_MODEL:-opus}" --allowedTools Read Grep Glob <<<"$prompt") ||
         fail "Claude exited with an error, see $e/answer.txt"
     sed -n '/^===CONFIG===/,/^===TASKS===/p' "$e/answer.txt" | sed '1d;$d' >"$e/config.raw"
     sed -n '/^===TASKS===/,$p' "$e/answer.txt" | sed '1d' >"$e/tasks.md"

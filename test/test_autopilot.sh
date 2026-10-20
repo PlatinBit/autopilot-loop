@@ -87,6 +87,7 @@ git diff --quiet main -- accept.sh plan.md || fail "locked file was changed"
 [ ! -e code.txt ] && [ ! -e red ] || fail "rejected changes are still lying around"
 grep -qx 3 "$FAKE_DIR/with-feedback" && ! grep -qx 1 "$FAKE_DIR/with-feedback" || fail "feedback not passed on (only) after a rejection"
 grep -qx 1 "$FAKE_DIR/with-plan" || fail "plan was not passed to the worker"
+[ ! -e "$FAKE_DIR/brief-nr" ] || fail "brief written although planner and worker are the same model"
 grep -qx 1 "$FAKE_DIR/with-decisions" || fail "{DECISIONS_FILE} was not filled into the prompt"
 grep -q ";accepted;.*;0.0200;" "$T/.autopilot/log/progress.csv" || fail "cost (worker + reviewer) missing in the CSV"
 "$TOOL_DIR/menu.sh" grades | grep -q "^core" || fail "grade table without kind \"core\""
@@ -151,13 +152,19 @@ echo "SUPERVISED=on" >>"$conf"
 mkdir -p "$T/elsewhere" && cd "$T/elsewhere" || exit 1   # from now on without a path: standard.conf
 echo "echo check >>checks.txt; sed -i '0,/^- \[ \]/s//- [x]/' AUTOPILOT-TASKS.md" >"$FAKE_DIR/steps/1.sh"
 echo "VERDICT: ACCEPT" >"$FAKE_DIR/verdicts"
-"$TOOL_DIR/autopilot.sh" >"$T/output2.txt" 2>&1 &
+WORKER_MODEL=sonnet PLANNER_MODEL=opus "$TOOL_DIR/autopilot.sh" >"$T/output2.txt" 2>&1 &
 for _ in $(seq 1 40); do [ -e "$T/p2/.autopilot/WAITING" ] && break; sleep 0.5; done
 [ -e "$T/p2/.autopilot/WAITING" ] || fail "supervised mode does not wait for the OK"
 "$TOOL_DIR/menu.sh" status | grep -q "WAITING for your OK" || fail "status does not show the waiting"
 "$TOOL_DIR/menu.sh" continue | grep -q "OK given" || fail "continue failed"
 wait $! || fail "run ended with an error after the supervised step: $(tail -3 "$T/output2.txt")"
 grep -q "Goal reached" "$T/p2/.autopilot/log/history.log" || fail "project not completed"
+# Cheaper worker than planner: the planner writes a brief, and it reaches the worker's prompt
+grep -q "## Brief from the planner" "$FAKE_DIR/last-prompt" && grep -q "BRIEF: reuse check.sh" "$FAKE_DIR/last-prompt" ||
+    fail "brief from the planner missing in the worker prompt"
+grep -q "planner opus, worker sonnet" "$T/p2/.autopilot/log/history.log" || fail "planner model not shown at the start"
+grep -q ";sonnet;sonnet;opus$" "$T/p2/.autopilot/log/progress.csv" || fail "planner column missing in the CSV"
+"$TOOL_DIR/menu.sh" start 5 sonnet 3 sonnet gpt >/dev/null && fail "invalid planner model accepted"
 
 printf -- '- [ ] 2. [new] two. Done when two more tests pass.\nNot a valid sentence\n- [ ] 3. without criterion\n' >"$FAKE_DIR/planner.txt"
 "$TOOL_DIR/menu.sh" propose | grep -q "1 tasks proposed" || fail "planner suggestion not filtered"

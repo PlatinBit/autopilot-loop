@@ -46,6 +46,7 @@ WORKER_TOOLS=(Read Edit Write Glob Grep)
 PROMPT_FILE=''
 REVIEWER_FILE=''
 PLANNER_FILE=''
+BRIEF_FILE=''
 PLANNER=on                # empty list, acceptance open: propose new tasks (adopted only with your OK)
 SUPERVISED=off            # on: task kinds without a licence wait for `autopilot continue` after every task
 LICENCE_MIN_RUNS=20       # this many grades per kind …
@@ -68,6 +69,7 @@ WORKDIR=$(abs_path "$WORKDIR")
 PROMPT_FILE=$(abs_path "${PROMPT_FILE:-$TOOL_DIR/templates/PROMPT.md}")
 REVIEWER_FILE=$(abs_path "${REVIEWER_FILE:-$TOOL_DIR/templates/REVIEWER.md}")
 PLANNER_FILE=$(abs_path "${PLANNER_FILE:-$TOOL_DIR/templates/PLANNER.md}")
+BRIEF_FILE=$(abs_path "${BRIEF_FILE:-$TOOL_DIR/templates/BRIEF.md}")
 [ -n "$PLAN_FILE" ] && PLAN_FILE=$(abs_path "$PLAN_FILE")
 STATE=$CONF_DIR/.autopilot  # logs, APPROVAL, STOP, feedback, grades, suggestions
 SESSION="autopilot-$NAME"
@@ -143,7 +145,7 @@ $(cat "$WORKDIR/BLOCKED.md" 2>/dev/null || echo –)
 
 ## Latest acceptance test
 $(tail -40 "$(ls -t "$STATE"/log/accept-*.txt 2>/dev/null | head -1)" 2>/dev/null || echo 'no acceptance test')"
-    cost=$(cd "$WORKDIR" && claude_run "$STATE/log/planner.txt" --model "${WORKER_MODEL:-opus}" --allowedTools Read Grep Glob <<<"$prompt")
+    cost=$(cd "$WORKDIR" && claude_run "$STATE/log/planner.txt" --model "${PLANNER_MODEL:-opus}" --allowedTools Read Grep Glob <<<"$prompt")
     grep -E '^- \[ \] .*Done when' "$STATE/log/planner.txt" >"$STATE/suggestion.md"
     echo "$(date '+%F %T');planner;$cost" >>"$STATE/log/costs-extra.csv"
     if [ -s "$STATE/suggestion.md" ]; then echo "$(wc -l <"$STATE/suggestion.md") tasks proposed (autopilot suggestion)."

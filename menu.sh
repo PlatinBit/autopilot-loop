@@ -5,7 +5,7 @@
 #   autopilot plan <file>              draft a new project from a plan file (then: plan accept)
 #   autopilot plan show | plan accept  show the last draft / set it up
 #   autopilot trust [file]             approve a hand-written or changed autopilot.conf
-#   autopilot start <runs> [reviewer: sonnet|opus|haiku] [max-rejections] [worker: opus|sonnet]
+#   autopilot start <runs> [reviewer: sonnet|opus|haiku] [max-rejections] [worker: opus|sonnet|haiku] [planner: opus|sonnet]
 #   autopilot status [--short] | stop | abort | continue | approve | conditions
 #   autopilot grades | costs | chart | notes | result | propose | suggestion [accept|discard]
 #   autopilot report [--if-new]        summary of the last 24 hours (for cron)
@@ -155,17 +155,19 @@ $(notes | tail -30)"
     cat "$STATE/log/report.txt"
 }
 
-start_now() { # RUNS [REVIEWER] [REJECTIONS] [WORKER]
-    local n=${1:-} reviewer=${2:-sonnet} rejections=${3:-3} worker=${4:-opus}
-    [[ "$n" =~ ^[0-9]+$ && "$rejections" =~ ^[0-9]+$ && "$reviewer" =~ ^(sonnet|opus|haiku)$ && "$worker" =~ ^(sonnet|opus)$ ]] ||
-        { echo "Usage: autopilot start <runs> [reviewer: sonnet|opus|haiku] [max-rejections] [worker: opus|sonnet]"; return 2; }
+start_now() { # RUNS [REVIEWER] [REJECTIONS] [WORKER] [PLANNER]
+    local n=${1:-} reviewer=${2:-sonnet} rejections=${3:-3} worker=${4:-opus} planner=${5:-opus}
+    [[ "$n" =~ ^[0-9]+$ && "$rejections" =~ ^[0-9]+$ && "$reviewer" =~ ^(sonnet|opus|haiku)$ && "$worker" =~ ^(sonnet|opus|haiku)$ &&
+       "$planner" =~ ^(sonnet|opus)$ ]] ||
+        { echo "Usage: autopilot start <runs> [reviewer: sonnet|opus|haiku] [max-rejections] [worker: opus|sonnet|haiku] [planner: opus|sonnet]"; return 2; }
     is_running && { echo "The autopilot is already running."; return 1; }
     is_approved || { echo "The acceptance test is NOT approved yet (autopilot approve)."; return 1; }
     [ -n "$(g -C "$WORKDIR" status --porcelain)" ] && { clean_up; echo "Leftovers of an aborted run discarded."; }
     rm -f "$STATE/STOP"
-    tmux new -d -s "$SESSION" -e "AUTOPILOT_CONF=$CONF" -e "MAX=$n" -e "WORKER_MODEL=$worker" \
+    tmux new -d -s "$SESSION" -e "AUTOPILOT_CONF=$CONF" -e "MAX=$n" -e "WORKER_MODEL=$worker" -e "PLANNER_MODEL=$planner" \
         -e "REVIEWER_MODEL=$reviewer" -e "MAX_REJECTIONS=$rejections" "$HERE/autopilot.sh"
-    echo "Started: at most $n runs, worker $worker, reviewer $reviewer, stop after $rejections rejections in a row."
+    echo "Started: at most $n runs, planner $planner, worker $worker, reviewer $reviewer, stop after $rejections rejections in a row."
+    [ "$planner" != "$worker" ] && echo "The planner writes a brief for every task, the worker implements it."
 }
 
 case "${1:-}" in
@@ -203,12 +205,13 @@ show() { whiptail --title "$TITLE" --scrolltext --msgbox "$1" 26 110; }
 choose() { whiptail --title "$TITLE" --menu "$1" 14 72 4 "${@:2}" 3>&1 1>&2 2>&3; }
 
 start_menu() {
-    local n worker reviewer rejections
+    local n planner worker reviewer rejections
     n=$(choose "How many runs at most? (one task per run)" 5 Recommended 10 "" 20 "" 30 "") || return
-    worker=$(choose "Which model implements the tasks?" opus "Recommended, strongest model" sonnet "cheaper, faster") || return
-    reviewer=$(choose "Which model reviews as the reviewer?" sonnet "Recommended, balanced" opus "more thorough, more expensive" haiku "cheap, less strict") || return
+    planner=$(choose "Which model plans? (task briefs, new tasks)" opus "Recommended, strongest model" sonnet "cheaper") || return
+    worker=$(choose "Which model builds (writes the code)?" opus "strongest, most expensive" sonnet "cheaper; gets a brief from the planner" haiku "cheapest; gets a brief, for simple tasks") || return
+    reviewer=$(choose "Which model reviews every task?" sonnet "balanced" opus "most thorough, recommended with a cheaper builder" haiku "cheap, less strict") || return
     rejections=$(choose "Stop after how many rejections in a row?" 3 Recommended 2 "" 5 "") || return
-    show "$(start_now "$n" "$reviewer" "$rejections" "$worker")\n\nIt keeps running even if you close the terminal."
+    show "$(start_now "$n" "$reviewer" "$rejections" "$worker" "$planner")\n\nIt keeps running even if you close the terminal."
 }
 
 while true; do

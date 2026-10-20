@@ -15,15 +15,17 @@ const ask = ($: Engine, text: string, header: string, options: string[]) => $.ui
 async function start($: Engine): Promise<string> {
   const n = number(await ask($, 'How many runs at most (one task per run)?', 'Runs', ['5 (Recommended)', '10', '20', '30']))
   if (!n) return 'Cancelled: no number chosen.'
-  const worker = firstWord(await ask($, 'Which model should implement the tasks (write the code)?', 'Worker',
-    ['opus (Recommended, strongest model)', 'sonnet (cheaper, faster)']))
+  const planner = firstWord(await ask($, 'Which model should plan (a brief for every task, new tasks)?', 'Planner',
+    ['opus (Recommended, strongest model)', 'sonnet (cheaper)']))
+  const worker = firstWord(await ask($, 'Which model should build (write the code)?', 'Builder',
+    ['opus (strongest, most expensive)', 'sonnet (cheaper, gets a brief from the planner)', 'haiku (cheapest, for simple tasks)']))
   const reviewer = firstWord(await ask($, 'Which model should review every task?', 'Reviewer',
     ['sonnet (Recommended, balanced)', 'opus (more thorough, more expensive)', 'haiku (cheap, less strict)']))
   const rejections = number(await ask($, 'Stop after how many rejections in a row?', 'Brake', ['3 (Recommended)', '2', '5']))
   if (!rejections) return 'Cancelled: no number chosen.'
-  const ok = await ask($, `Start with ${n} runs, worker ${worker}, reviewer ${reviewer}, stop after ${rejections} rejections in a row?`,
+  const ok = await ask($, `Start with ${n} runs, planner ${planner}, builder ${worker}, reviewer ${reviewer}, stop after ${rejections} rejections in a row?`,
     'Confirm', ['Start', 'Cancel'])
-  return ok === 'Start' ? autopilot($, ['start', n, reviewer, rejections, worker]) : 'Not started.'
+  return ok === 'Start' ? autopilot($, ['start', n, reviewer, rejections, worker, planner]) : 'Not started.'
 }
 
 // New project: choose a plan file (suggestions from the session directory or your own path under "Other").
@@ -106,7 +108,7 @@ export const register: Register = on => {
     await $.command.register({
       name: 'autopilot',
       description: 'Autopilot menu: project from a plan file, start, stop, status, planner, costs',
-      argumentHint: '[status|stop|continue|plan <file>|start <runs> [reviewer] [max-rejections] [worker]]',
+      argumentHint: '[status|stop|continue|plan <file>|start <runs> [reviewer] [max-rejections] [worker] [planner]]',
     })
     // Status line: while a project runs, its progress shows below the input (refreshed every minute).
     const showStatus = async () => {

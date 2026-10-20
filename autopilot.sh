@@ -10,13 +10,15 @@
 #
 # Normally started from the menu (`autopilot`, in Claude Code `/autopilot`).
 # Environment: MAX (runs, 30), MAX_REJECTIONS (rejections in a row, 3), MAX_BLOCKED (blocked tasks, 3),
-#              WORKER_MODEL (opus), REVIEWER_MODEL (sonnet), AUTOPILOT_CONF (configuration)
+#              PLANNER_MODEL (opus), WORKER_MODEL (opus), REVIEWER_MODEL (sonnet), AUTOPILOT_CONF (configuration)
+# If the worker is a different model than the planner, the planner writes a brief for every task first.
 set -u -o pipefail
 # shellcheck source=common.sh
 . "$(dirname "$(readlink -f "$0")")/common.sh"
 MAX=${MAX:-30}
 MAX_REJECTIONS=${MAX_REJECTIONS:-3}
 MAX_BLOCKED=${MAX_BLOCKED:-3}
+PLANNER_MODEL=${PLANNER_MODEL:-opus}
 WORKER_MODEL=${WORKER_MODEL:-opus}
 REVIEWER_MODEL=${REVIEWER_MODEL:-sonnet}
 LIMIT_WAIT=${AUTOPILOT_LIMIT_WAIT:-1800}  # seconds to pause at the usage limit
@@ -24,7 +26,7 @@ POLL=${AUTOPILOT_POLL:-20}                # seconds between two checks for `auto
 LOGS=$STATE/log
 FEEDBACK=$STATE/feedback.txt
 CSV=$LOGS/progress.csv
-HEADER="time;run;result;open_tasks;tests;accept;seconds;cost_usd;kind;worker;reviewer"
+HEADER="time;run;result;open_tasks;tests;accept;seconds;cost_usd;kind;worker;reviewer;planner"
 # What must never change, whatever ALLOWED says: Git, Claude, CI and autopilot management
 ALWAYS_LOCKED='^(\.git|\.claude/|\.github/|\.autopilot/|autopilot\.conf$|CLAUDE\.md$)'
 [ -d "$WORKDIR" ] || { echo "WORKDIR $WORKDIR from $CONF does not exist. Fix WORKDIR there (then: autopilot trust $CONF)." >&2; exit 1; }
@@ -37,7 +39,7 @@ announce() { note "$2"; notify "$1" "$2" >/dev/null 2>&1 || true; }
 [ -s "$CSV" ] && [ "$(head -1 "$CSV")" != "$HEADER" ] && mv "$CSV" "$LOGS/progress-$(date +%F-%H%M%S).csv"
 record() { # RESULT
     [ -s "$CSV" ] || echo "$HEADER" >"$CSV"
-    echo "$(date '+%F %T');$i;$1;$(grep -c '^- \[ \]' "$TASKS_FILE");$count;$acc;$(( $(date +%s) - start ));$cost;$kind;$WORKER_MODEL;$REVIEWER_MODEL" >>"$CSV"
+    echo "$(date '+%F %T');$i;$1;$(grep -c '^- \[ \]' "$TASKS_FILE");$count;$acc;$(( $(date +%s) - start ));$cost;$kind;$WORKER_MODEL;$REVIEWER_MODEL;$PLANNER_MODEL" >>"$CSV"
 }
 add() { echo "$1 ${2:-0}" | awk '{printf "%.4f", $1 + $2}'; }
 add_extra_cost() { # add the cost of reviewer and image review to the run
@@ -180,7 +182,7 @@ acc=$(run_accept "$LOGS/accept-start.txt")
 target=$( [ -n "$ACCEPT_CMD" ] && number_from "$LOGS/accept-start.txt" "$ACCEPT_REGEX" 2 )
 is_number "$target" || target=''
 fingerprint=$(git_fingerprint)
-announce info "Start: $count tests green${ACCEPT_CMD:+, Accept $acc of ${target:-?}}, at most $MAX runs, worker $WORKER_MODEL, reviewer $REVIEWER_MODEL"
+announce info "Start: $count tests green${ACCEPT_CMD:+, Accept $acc of ${target:-?}}, at most $MAX runs, planner $PLANNER_MODEL, worker $WORKER_MODEL, reviewer $REVIEWER_MODEL"
 
 failures=0; waits=0; rejections=0; timeouts=0; last=""; accepted=0; no_progress=0
 while [ "$i" -lt "$MAX" ]; do
@@ -210,6 +212,16 @@ while [ "$i" -lt "$MAX" ]; do
     prompt=${prompt//\{ACCEPT_CMD\}/"${ACCEPT_CMD:-(no acceptance test)}"}
     prompt+=$(plan_section)
     [ -s "$FEEDBACK" ] && prompt+=$'\n\n## Feedback on the previous attempt\n'"$(cat "$FEEDBACK")"
+    # Brief: the (stronger) planner plans the task, the (cheaper) worker implements it.
+    if [ "$PLANNER_MODEL" != "$WORKER_MODEL" ]; then
+        brief=$(cat "$BRIEF_FILE"; plan_section; printf '\n\n## Task\n%s\n' "$open_task"
+                [ -s "$FEEDBACK" ] && { printf '\n## Feedback on the previous attempt\n'; cat "$FEEDBACK"; })
+        k=$(claude_run "$LOGS/brief-$i.txt" --model "$PLANNER_MODEL" --allowedTools Read Grep Glob <<<"$brief")
+        if [ $? -eq 0 ] && [ -s "$LOGS/brief-$i.txt" ]; then
+            echo "$k" >>"$STATE/cost-extra"
+            prompt+=$'\n\n## Brief from the planner\n'"$(cat "$LOGS/brief-$i.txt")"
+        else note "Run $i: no brief from the planner ($PLANNER_MODEL), the worker goes without one"; fi
+    fi
     cost=$(CLAUDE_TIMEOUT=45m claude_run "$LOGS/run-$i.txt" --model "$WORKER_MODEL" --permission-mode acceptEdits \
         --allowedTools "${WORKER_TOOLS[@]}" <<<"$prompt")
     rc=$?; cost=${cost:-0}
