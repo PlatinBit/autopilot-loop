@@ -157,7 +157,7 @@ autopilot                               # menu → Start
 Or in Claude Code: `/autopilot-loop` → "New project from file".
 
 - **Plan file inside a Git project** (an existing codebase): work happens in a separate worktree `<project>-autopilot` on branch `autopilot`, so your working copy stays untouched; adopt the result with `git merge autopilot`.
-- **Plan file anywhere else** (e.g. `~/idea.md` for something new): a project folder `<name>-autopilot/` is created next to it with its own Git repository and a copy of the plan, and Claude builds everything there. Nothing else on your system is changed – no `git init` in your folders, no change to your global Git settings.
+- **Plan file anywhere else** (e.g. `~/idea.md` for something new): a project folder `<name>-autopilot/` is created next to it with its own Git repository and a copy of the plan, and Claude builds everything there on branch `autopilot` (`main` keeps the plan; adopt with `git checkout main && git merge autopilot`). Nothing else on your system is changed – no `git init` in your folders, no change to your global Git settings.
 
 **The better the plan, the further the autopilot gets on its own.** Describe what should work in the end, ideally with examples and limits. Whatever cannot be checked automatically (look, usability) is yours to check.
 
@@ -195,7 +195,7 @@ Logs, progress, grades, approval and suggestions live in `.autopilot/` next to `
 
 ## Security
 
-The checks protect the **quality** of the work. They are **not a security boundary**: the test command runs code Claude wrote, with your user rights – including every device your user can open (`/dev`, e.g. `i2c` or `hidraw` with loose udev rules) and every local hardware tool. Best run the autopilot on a separate machine, VM or container. An optional sandbox for the test command (`SANDBOX=on`) is coming. What is built in:
+The checks protect the **quality** of the work. They are **not a security boundary**: the test command runs code Claude wrote, with your user rights – including every device your user can open (`/dev`, e.g. `i2c` or `hidraw` with loose udev rules) and every local hardware tool. Best run the autopilot on a separate machine, VM or container. On Linux, `SANDBOX=on` (needs bubblewrap) runs the test, acceptance and smoke commands without network and devices and read-only outside the work directory; the worker's own tool calls stay outside it, so give the worker no Bash rights beyond the test command. What is built in:
 
 | No. | Protection | Against |
 |---|---|---|

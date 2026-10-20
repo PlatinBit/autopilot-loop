@@ -85,6 +85,11 @@ trust() { # FILE
         mv "$TRUSTED_FILE.new" "$TRUSTED_FILE"
 }
 
+# Like `cut -c FROM-TO`, but counts characters instead of bytes (GNU cut would cut an umlaut in half)
+cut_chars() { # FROM TO <lines
+    local l; while IFS= read -r l || [ -n "$l" ]; do printf '%s\n' "${l:$1-1:$2-$1+1}"; done
+}
+
 # Mark the first open task as blocked (portable, without GNU sed)
 block_first_open() { # FILE
     awk '!d && /^- \[ \]/ { sub(/^- \[ \]/, "- [~]"); d = 1 } 1' "$1" >"$1.new" && mv "$1.new" "$1"

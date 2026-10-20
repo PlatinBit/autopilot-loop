@@ -22,6 +22,7 @@ MAX_BLOCKED=${MAX_BLOCKED:-3}
 PLANNER_MODEL=${PLANNER_MODEL:-opus}
 WORKER_MODEL=${WORKER_MODEL:-opus}
 REVIEWER_MODEL=${REVIEWER_MODEL:-sonnet}
+export PYTHONDONTWRITEBYTECODE=1           # no __pycache__ from tests or the worker in the diff
 LIMIT_WAIT=${AUTOPILOT_LIMIT_WAIT:-1800}  # seconds to pause at the usage limit
 POLL=${AUTOPILOT_POLL:-20}                # seconds between two checks for `autopilot continue`
 LOGS=$STATE/log
@@ -64,10 +65,6 @@ add_extra_cost() { # add the cost of reviewer and image review to the run
     cost=$(add "$cost" "$(awk '{s += $1} END {print s + 0}' "$STATE/cost-extra")"); rm -f "$STATE/cost-extra"
 }
 is_number() { [[ ${1:-} =~ ^[0-9]+$ ]]; }
-# Like `cut -c FROM-TO`, but counts characters instead of bytes (GNU cut would cut an umlaut in half)
-cut_chars() { # FROM TO <lines
-    local l; while IFS= read -r l; do printf '%s\n' "${l:$1-1:$2-$1+1}"; done
-}
 
 # Fingerprint of the Git management (config, info, hooks): if a run changes it, the loop stops,
 # because the next Git call could run code through it.
@@ -202,7 +199,7 @@ supervised_stop() {
 }
 
 # File names of the staged changes, without rename detection (otherwise the old path would drop out)
-changed() { g diff --cached --name-only --no-renames -- "$@"; }
+changed() { g -c core.quotePath=false diff --cached --name-only --no-renames -- "$@"; }
 # New or changed symlinks whose target lies outside the work directory (tests and Claude would follow them)
 outside_links() {
     local f t
@@ -247,7 +244,9 @@ while [ "$i" -lt "$MAX" ]; do
     if ! grep -q '^- \[ \]' "$TASKS_FILE"; then
         if [ -z "$ACCEPT_CMD" ] || [ "$acc" = "${target:-x}" ]; then
             reason=''; i=end; smoke_test || { announce warn "All tasks done, but $reason (see log/smoke-end.txt)"; exit 1; }
-            announce ok "Goal reached: all tasks done${ACCEPT_CMD:+, Accept $acc of $target}."
+            blocked=$(grep -c '^- \[~\]' "$TASKS_FILE")
+            if [ "$blocked" -gt 0 ]; then announce warn "Goal reached: all tasks done except $blocked blocked (see BLOCKED.md)${ACCEPT_CMD:+, Accept $acc of $target}."
+            else announce ok "Goal reached: all tasks done${ACCEPT_CMD:+, Accept $acc of $target}."; fi
         elif [ "$PLANNER" = on ]; then
             note "No open tasks, Accept only $acc of ${target:-?}: planner drafts new tasks …"
             announce warn "Accept only $acc of ${target:-?}. $(run_planner) Review and adopt: autopilot suggestion"
@@ -308,7 +307,7 @@ while [ "$i" -lt "$MAX" ]; do
     # Tool calls Claude Code refused (not in WORKER_TOOLS, or a hook rewrote the command): name them,
     # otherwise a run without e.g. the build command only ends in a time-out with no visible reason.
     denied=$(jq -r '[.permission_denials[]? | .tool_input.command // .tool_name] | unique | .[:3] | join(" | ")' \
-        "$LOGS/run-$i.txt.json" 2>/dev/null | tr '\n' ' ' | sed 's/ *$//' | cut -c1-200)
+        "$LOGS/run-$i.txt.json" 2>/dev/null | tr '\n' ' ' | sed 's/ *$//' | cut_chars 1 200)
     [ -n "$denied" ] && note "Run $i: tool calls denied (allow them in WORKER_TOOLS, or a hook rewrote them): $denied"
 
     # Script checks: only green, not weakened work in allowed paths counts.
@@ -343,10 +342,13 @@ while [ "$i" -lt "$MAX" ]; do
         [ "$r" = 1 ] || { reject "$before" "forbidden content added or check failed (pattern: $FORBIDDEN_CONTENT)"; continue; }
     fi
     # New code that prints the count line itself could fake the check (pattern without ^/$, because in code
-    # the line sits in the middle of a print/echo)
+    # the line sits in the middle of a print/echo). Documentation is not run, so it may quote the line.
     fake_t=${TEST_COUNT_REGEX#^}; fake_t=${fake_t%\$}; fake_a=${ACCEPT_REGEX#^}; fake_a=${fake_a%\$}
-    if { [ -z "$TEST_COUNT_CMD" ] && grep -qE "$fake_t" <<<"$added"; } || { [ -n "$ACCEPT_CMD" ] && grep -qE "$fake_a" <<<"$added"; }; then
-        reject "$before" "new code contains the count line of the test command or acceptance test (could fake the result)"; continue
+    code=$(g diff --cached --no-ext-diff --no-renames -U0 -- . ":(exclude)$TASKS_FILE" ":(exclude)BLOCKED.md" ":(exclude)$DECISIONS_FILE" \
+        ":(exclude)*.md" ":(exclude)*.rst" | grep '^+' | grep -v '^+++' | sed 's/^+//')
+    hit=$( { [ -z "$TEST_COUNT_CMD" ] && grep -m1 -E "$fake_t" <<<"$code"; } || { [ -n "$ACCEPT_CMD" ] && grep -m1 -E "$fake_a" <<<"$code"; } )
+    if [ -n "$hit" ]; then
+        reject "$before" "new code contains the count line of the test command or acceptance test (could fake the result): $hit"; continue
     fi
     new=$(run_tests "$LOGS/tests-$i.txt") || { reject "$before" "tests hit the time limit (TEST_TIMEOUT=$TEST_TIMEOUT)" "$LOGS/tests-$i.txt"; continue; }
     if [ -z "$new" ]; then reject "$before" "tests red or without a readable number" "$LOGS/tests-$i.txt"; continue; fi

@@ -629,4 +629,5 @@ done
 cd "$T" || exit 1
 . "$TOOL_DIR/test/part_a.sh"
 . "$TOOL_DIR/test/part_b.sh"
+. "$TOOL_DIR/test/part_c.sh"
 echo ok

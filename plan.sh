@@ -20,7 +20,7 @@ exclude_state() { # REPO: state directory and configuration never in Git
     local a; a=$(g -C "$1" rev-parse --git-common-dir)/info/exclude
     case "$a" in /*) ;; *) a=$1/$a ;; esac
     mkdir -p "$(dirname "$a")"
-    for m in .autopilot/ autopilot.conf; do grep -qxF "$m" "$a" 2>/dev/null || echo "$m" >>"$a"; done
+    for m in /.autopilot/ /autopilot.conf __pycache__/ '*.pyc'; do grep -qxF "$m" "$a" 2>/dev/null || echo "$m" >>"$a"; done
 }
 
 # Only these settings may be taken from the draft, in exactly this form.
@@ -48,7 +48,7 @@ show() { # DRAFT DIRECTORY
     echo "Settings (TEST_CMD and TEST_COUNT_CMD are run as shell commands – please read carefully):"
     sed 's/^/  /' "$e/autopilot.part"
     echo
-    echo "Tasks ($(grep -c '^- \[ \]' "$e/tasks.md")):"; grep '^- \[ \]' "$e/tasks.md" | cut -c1-140 | sed 's/^/  /'
+    echo "Tasks ($(grep -c '^- \[ \]' "$e/tasks.md")):"; grep '^- \[ \]' "$e/tasks.md" | cut_chars 1 140 | sed 's/^/  /'
     [ -s "$e/discarded.txt" ] && { echo; echo "Not adopted for security reasons:"; sed 's/^/  /' "$e/discarded.txt"; }
     echo
     echo "Read in full: $e/tasks.md   Set up: autopilot plan accept   Draft again: autopilot plan <file>"
@@ -119,8 +119,11 @@ accept() {
     name=$(basename "$repo" | tr -c 'A-Za-z0-9._-' '-'); name=${name%-}  # also the name of the tmux session
     base=$(g -C "$repo" branch --show-current); base=${base:-$(g -C "$repo" rev-parse HEAD)}  # detached HEAD: the commit
     wt=$repo-autopilot
-    # Own project folder (created for a plan outside Git): work directly in it, no second folder needed.
-    [ -f "$repo/.autopilot/own-workspace" ] && { wt=$repo; base=$(g -C "$repo" rev-list --max-parents=0 HEAD | tail -1); }
+    # Own project folder (created for a plan outside Git): work directly in it on branch autopilot, no second folder needed.
+    if [ -f "$repo/.autopilot/own-workspace" ]; then
+        wt=$repo; base=main  # new_workspace created main with the plan
+        g -C "$repo" checkout -q autopilot 2>/dev/null || g -C "$repo" checkout -q -b autopilot || fail "Could not create the work branch autopilot in $repo."
+    fi
     if [ ! -d "$wt" ]; then
         if g -C "$repo" rev-parse -q --verify autopilot >/dev/null; then err=$(g -C "$repo" worktree add -q "$wt" autopilot 2>&1 >/dev/null)
         else err=$(g -C "$repo" worktree add -q "$wt" -b autopilot 2>&1 >/dev/null); fi ||
