@@ -496,4 +496,27 @@ grep -q "time limit" "$T/rt-conf/.autopilot/log/history.log" || fail "reviewer t
 ! grep -q "no verdict" "$T/rt-conf/.autopilot/log/history.log" || fail "reviewer timeout: reported as no verdict: $(cat "$T/rt.txt")"
 [ "$SECONDS" -lt 30 ] || fail "reviewer timeout: waited too long: $(cat "$T/rt.txt")"
 ! git log --format=%s | grep -q "^Autopilot:" || fail "reviewer timeout: a task was accepted: $(cat "$T/rt.txt")"
+# SIGTERM during a worker run: child killed, work directory reset, history line with the hint
+new_round; sample_project "$T/si"
+printf -- '- [ ] 1. [x] one\n' >TASKS.md
+git add -A && git commit -qm start && git checkout -qb autopilot || fail "SIGTERM setup failed"
+mkdir -p "$T/si-conf"
+cat >"$T/si-conf/autopilot.conf" <<EOF
+WORKDIR=$T/si
+TEST_CMD='bash check.sh'
+ALLOWED='^(checks\.txt|new\.txt|TASKS\.md)\$'
+EOF
+AUTOPILOT_CONF="$T/si-conf/autopilot.conf" "$TOOL_DIR/menu.sh" trust "$T/si-conf/autopilot.conf" >/dev/null || fail "SIGTERM: trust failed"
+echo "echo check >>checks.txt; echo new >new.txt; touch \"\$FAKE_DIR/started\"; sleep 30" >"$FAKE_DIR/steps/1.sh"
+si_head=$(git rev-parse HEAD)
+AUTOPILOT_CONF="$T/si-conf/autopilot.conf" MAX=1 "$TOOL_DIR/autopilot.sh" >"$T/si.txt" 2>&1 & pid=$!
+for _ in $(seq 1 50); do [ -e "$FAKE_DIR/started" ] && break; sleep 0.2; done
+[ -e "$FAKE_DIR/started" ] || { kill "$pid" 2>/dev/null; fail "SIGTERM: worker step never started: $(cat "$T/si.txt")"; }
+kill -TERM "$pid"; SECONDS=0
+while kill -0 "$pid" 2>/dev/null && [ "$SECONDS" -lt 5 ]; do sleep 0.2; done
+if kill -0 "$pid" 2>/dev/null; then kill -KILL "$pid"; fail "SIGTERM: still running after 5 s"; fi
+[ "$(git rev-parse HEAD)" = "$si_head" ] || fail "SIGTERM: HEAD changed: $(cat "$T/si.txt")"
+[ -z "$(git status --porcelain)" ] || fail "SIGTERM: work directory not clean: $(git status --porcelain) $(cat "$T/si.txt")"
+grep -qi interrupted "$T/si-conf/.autopilot/log/history.log" || fail "SIGTERM: 'interrupted' missing: $(cat "$T/si.txt")"
+grep -q "autopilot start" "$T/si-conf/.autopilot/log/history.log" || fail "SIGTERM: hint 'autopilot start' missing: $(cat "$T/si.txt")"
 echo ok

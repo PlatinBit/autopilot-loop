@@ -95,6 +95,18 @@ restore() { # COMMIT
         g submodule --quiet update --force --recursive && g submodule --quiet foreach --recursive 'git clean -qffd'
 }
 
+# Ends a process tree, children first (POSIX ps only, for macOS)
+kill_tree() { local c; for c in $(ps -A -o pid= -o ppid= | awk -v p="$1" '$2 == p {print $1}'); do kill_tree "$c"; done; kill "$1" 2>/dev/null; }
+
+interrupted() { # EXITCODE: Ctrl+C / kill during a run
+    trap '' INT TERM
+    [ -n "${worker:-}" ] && kill_tree "$worker"
+    wait 2>/dev/null
+    restore HEAD  # not "$before": a commit made in this run (e.g. block_task) must survive
+    note "Run $i interrupted (signal): work directory reset to the last commit. Resume with: autopilot start"
+    exit "$1"
+}
+
 reject() { # BEFORE REASON [LOGFILE]
     restore "$1"
     note "Run $i rejected: $2"
@@ -186,7 +198,8 @@ is_number "$target" || target=''
 fingerprint=$(git_fingerprint)
 announce info "Start: $count tests green${ACCEPT_CMD:+, Accept $acc of ${target:-?}}, at most $MAX runs, planner $PLANNER_MODEL, worker $WORKER_MODEL, reviewer $REVIEWER_MODEL"
 
-failures=0; waits=0; rejections=0; timeouts=0; last=""; accepted=0; no_progress=0
+failures=0; waits=0; rejections=0; timeouts=0; last=""; accepted=0; no_progress=0; worker=''
+trap 'interrupted 130' INT; trap 'interrupted 143' TERM
 while [ "$i" -lt "$MAX" ]; do
     [ -e "$STATE/STOP" ] && { rm -f "$STATE/STOP"; announce info "Stopped via STOP after $i runs"; exit 0; }
     if ! grep -q '^- \[ \]' "$TASKS_FILE"; then
@@ -224,9 +237,10 @@ while [ "$i" -lt "$MAX" ]; do
             prompt+=$'\n\n## Brief from the planner\n'"$(cat "$LOGS/brief-$i.txt")"
         else note "Run $i: no brief from the planner ($PLANNER_MODEL), the worker goes without one"; fi
     fi
-    cost=$(CLAUDE_TIMEOUT=45m claude_run "$LOGS/run-$i.txt" --model "$WORKER_MODEL" --permission-mode acceptEdits \
-        --allowedTools "${WORKER_TOOLS[@]}" <<<"$prompt")
-    rc=$?; cost=${cost:-0}
+    # In the background so that a signal interrupts `wait` at once (a foreground child delays the trap)
+    CLAUDE_TIMEOUT=45m claude_run "$LOGS/run-$i.txt" --model "$WORKER_MODEL" --permission-mode acceptEdits \
+        --allowedTools "${WORKER_TOOLS[@]}" <<<"$prompt" >"$STATE/worker-cost" & worker=$!
+    wait "$worker"; rc=$?; worker=''; cost=$(cat "$STATE/worker-cost" 2>/dev/null); cost=${cost:-0}
 
     # Did the run change the Git management (hooks, config)? Then stop immediately.
     if [ "$(git_fingerprint)" != "$fingerprint" ]; then
