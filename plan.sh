@@ -101,7 +101,7 @@ $(g -C "$repo" ls-files | head -300)"
 }
 
 accept() {
-    local repo e file rel name base wt allowed
+    local repo e file rel name base wt allowed err
     repo=$(cat "$LAST" 2>/dev/null) && [ -d "$repo/.autopilot/draft" ] || fail "No draft available (autopilot plan <file>)."
     e=$repo/.autopilot/draft
     file=$(cat "$e/plan"); rel=${file#"$repo"/}
@@ -111,8 +111,10 @@ accept() {
     # Own project folder (created for a plan outside Git): work directly in it, no second folder needed.
     [ -f "$repo/.autopilot/own-workspace" ] && { wt=$repo; base=$(g -C "$repo" rev-list --max-parents=0 HEAD | tail -1); }
     if [ ! -d "$wt" ]; then
-        if g -C "$repo" rev-parse -q --verify autopilot >/dev/null; then g -C "$repo" worktree add -q "$wt" autopilot
-        else g -C "$repo" worktree add -q "$wt" -b autopilot; fi || fail "Could not create the work branch."
+        if g -C "$repo" rev-parse -q --verify autopilot >/dev/null; then err=$(g -C "$repo" worktree add -q "$wt" autopilot 2>&1 >/dev/null)
+        else err=$(g -C "$repo" worktree add -q "$wt" -b autopilot 2>&1 >/dev/null); fi ||
+            fail "Could not create the work branch in $wt: $(printf '%s\n' "$err" | tail -1)
+Move or remove what is at $wt (or delete a stale worktree with: git -C \"$repo\" worktree prune), then run again: autopilot plan accept (the draft is kept)."
     fi
     [ -z "$(g -C "$wt" status --porcelain)" ] || fail "The work directory $wt has uncommitted changes."
     cp "$e/tasks.md" "$wt/$TASKS_FILE"

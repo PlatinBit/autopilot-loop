@@ -10,3 +10,4 @@
 - Task 10: with a detached HEAD the full commit hash (`rev-parse HEAD` of the original repo at accept time) becomes BASE_BRANCH; the "main" fallback is gone, since a repo without commits is already refused by `plan <file>`.
 - Task 11: only a test was added (no product code changed); the repo is built by hand with `git init -b trunk` instead of `sample_project`, and `status` is run from outside the repo so `standard.conf` is used.
 - Task 12: `accept()` commits the task list only if `diff --cached` shows a change (a second run with the same list has nothing to commit); the error message for a real commit failure is unchanged.
+- Task 13: Bei Fehler im Work-Branch-Anlegen bleiben Draft und LAST erhalten; die Meldung nennt Zielpfad, Gits letzte stderr-Zeile und den Hinweis, `plan accept` erneut auszuführen.

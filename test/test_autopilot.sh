@@ -395,4 +395,16 @@ done
 git -C "$T/f3/repo" rev-parse -q --verify autopilot >/dev/null || fail "second run: branch autopilot missing"
 cd "$T/f3"
 "$TOOL_DIR/menu.sh" status >"$T/f3/out.txt" 2>&1; [ $? != 4 ] || fail "second run: conf not trusted: $(tail -3 "$T/f3/out.txt")"
+# plan accept cannot create the work branch (a regular file is in the way): path, Git's reason and a hint
+new_round
+sample_project "$T/f4/repo"
+git add -A && git commit -qm start || fail "work branch error setup failed"
+printf "===CONFIG===\nTEST_CMD='bash check.sh'\n===TASKS===\n- [ ] 1. [x] one. Done when a test passes.\n" >"$FAKE_DIR/setup.txt"
+"$TOOL_DIR/menu.sh" plan "$T/f4/repo/plan.md" >"$T/f4/out.txt" 2>&1 || fail "work branch error: plan failed: $(tail -3 "$T/f4/out.txt")"
+echo keep >"$T/f4/repo-autopilot"
+"$TOOL_DIR/menu.sh" plan accept >"$T/f4/out.txt" 2>&1 && fail "accept with a file at the worktree path exits 0"
+grep -qF "$T/f4/repo-autopilot" "$T/f4/out.txt" || fail "work branch error does not name the path: $(cat "$T/f4/out.txt")"
+grep -qiE 'move|remove' "$T/f4/out.txt" || fail "work branch error gives no hint what to do: $(cat "$T/f4/out.txt")"
+grep -q "already exists" "$T/f4/out.txt" || fail "work branch error lacks Git's reason: $(cat "$T/f4/out.txt")"
+[ "$(cat "$T/f4/repo-autopilot")" = keep ] || fail "work branch error: the file in the way was changed"
 echo ok
