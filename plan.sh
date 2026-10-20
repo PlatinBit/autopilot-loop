@@ -26,12 +26,16 @@ exclude_state() { # REPO: state directory and configuration never in Git
 # Only these settings may be taken from the draft, in exactly this form.
 # The draft comes from Claude (and indirectly from plan and project); everything else is discarded.
 # Tools: only Read, Edit, Write, Glob, Grep and Bash for a single command without wildcards or special characters.
+# Each setting at most once (two ALLOWED lines would become one broken pattern). No ACCEPT_CMD: an acceptance
+# test needs locked ACCEPT_FILES, which you set up by hand.
 safe_conf() { # FILE → valid lines on stdout, discarded ones on stderr
-    local z tool='(Read|Edit|Write|Glob|Grep|'"'"'Bash\((\./)?[A-Za-z0-9_][A-Za-z0-9_./ -]*:\*\)'"'"')'
+    local z seen=' ' tool='(Read|Edit|Write|Glob|Grep|'"'"'Bash\((\./)?[A-Za-z0-9_][A-Za-z0-9_./ -]*:\*\)'"'"')'
     while IFS= read -r z; do
-        if [[ $z =~ ^(TEST_CMD|TEST_COUNT_CMD|ALLOWED|FORBIDDEN_CONTENT|ACCEPT_CMD)=\'[^\']*\'$ ]] ||
+        if [[ $z =~ ^(TEST_CMD|TEST_COUNT_CMD|ALLOWED|FORBIDDEN_CONTENT)=\'[^\']*\'$ ]] ||
            [[ $z =~ ^(TEST_COUNT_REGEX|ACCEPT_REGEX)=\'[^\']*\(\[0-9\]\+\)[^\']*\'$ ]] ||
-           [[ $z =~ ^WORKER_TOOLS=\(\ ?$tool(\ $tool)*\ ?\)$ ]]; then echo "$z"
+           [[ $z =~ ^WORKER_TOOLS=\(\ ?$tool(\ $tool)*\ ?\)$ ]]; then
+            [[ $seen == *" ${z%%=*} "* ]] && { echo "discarded (duplicate): $z" >&2; continue; }
+            seen+="${z%%=*} "; echo "$z"
         elif [ -n "$z" ]; then echo "discarded: $z" >&2; fi
     done <"$1"
 }
@@ -40,7 +44,7 @@ show() { # DRAFT DIRECTORY
     local e=$1
     echo "Draft for: $(cat "$e/plan")"
     echo
-    echo "Settings (TEST_CMD, TEST_COUNT_CMD and ACCEPT_CMD are run as shell commands – please read carefully):"
+    echo "Settings (TEST_CMD and TEST_COUNT_CMD are run as shell commands – please read carefully):"
     sed 's/^/  /' "$e/autopilot.part"
     echo
     echo "Tasks ($(grep -c '^- \[ \]' "$e/tasks.md")):"; grep '^- \[ \]' "$e/tasks.md" | cut -c1-140 | sed 's/^/  /'
@@ -107,6 +111,10 @@ accept() {
     repo=$(cat "$LAST" 2>/dev/null) && [ -d "$repo/.autopilot/draft" ] || fail "No draft available (autopilot plan <file>)."
     e=$repo/.autopilot/draft
     file=$(cat "$e/plan"); rel=${file#"$repo"/}
+    allowed=$(sed -n "s/^ALLOWED='\(.*\)'$/\1/p" "$e/autopilot.part")
+    allowed="(${allowed:-^$})|^(${TASKS_FILE//./\\.}|BLOCKED\\.md|DECISIONS\\.md)\$"
+    err=$(ALLOWED=$allowed FORBIDDEN_CONTENT=$(sed -n "s/^FORBIDDEN_CONTENT='\(.*\)'$/\1/p" "$e/autopilot.part") bad_patterns)
+    [ -z "$err" ] || fail "The draft's $(echo $err) is not a valid regular expression (grep -E). Draft again: autopilot plan <file>"
     name=$(basename "$repo" | tr -c 'A-Za-z0-9._-' '-'); name=${name%-}  # also the name of the tmux session
     base=$(g -C "$repo" branch --show-current); base=${base:-$(g -C "$repo" rev-parse HEAD)}  # detached HEAD: the commit
     wt=$repo-autopilot
@@ -124,7 +132,6 @@ Move or remove what is at $wt (or delete a stale worktree with: git -C \"$repo\"
     g -C "$wt" add "$TASKS_FILE" && { g -C "$wt" diff --cached --quiet -- "$TASKS_FILE" ||
         g -C "$wt" commit -q --no-verify -m "Autopilot: tasks from $rel"; } ||
         fail "Commit failed – is a Git identity set? (git config --global user.name / user.email)"
-    allowed=$(sed -n "s/^ALLOWED='\(.*\)'$/\1/p" "$e/autopilot.part")
     # Paths and names come from the file system and Git (branch names may contain ' $ ( ): always quote with %q,
     # because the file is later loaded with `source`.
     {
@@ -132,7 +139,7 @@ Move or remove what is at $wt (or delete a stale worktree with: git -C \"$repo\"
         printf 'NAME=%q\nWORKDIR=%q\nBASE_BRANCH=%q\nTASKS_FILE=%q\nPLAN_FILE=%q\nLOCKED=(%q)\n' \
             "$name" "$wt" "$base" "$TASKS_FILE" "$file" "$rel"
         grep -v '^ALLOWED=' "$e/autopilot.part"
-        echo "ALLOWED='(${allowed:-^$})|^(${TASKS_FILE//./\\.}|BLOCKED\\.md|DECISIONS\\.md)\$'"
+        echo "ALLOWED='$allowed'"
     } >"$repo/autopilot.conf"
     trust "$repo/autopilot.conf"  # you have just accepted the draft
     ln -sf "$repo/autopilot.conf" "$CONF_BASE/standard.conf"

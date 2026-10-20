@@ -2,6 +2,8 @@ You are setting up an autopilot for this project. Below is a plan file describin
 
 To do this, read the plan and look at the project (language, build system, existing tests). Change nothing.
 
+Only these settings are adopted, each at most once: TEST_CMD, TEST_COUNT_REGEX or TEST_COUNT_CMD, ALLOWED, WORKER_TOOLS and optionally FORBIDDEN_CONTENT='<regular expression for content new code must never contain>'. Every other line is discarded, including an acceptance test (ACCEPT_CMD, ACCEPT_FILES): the user sets that up by hand.
+
 Answer in exactly this format and with nothing else after the first marker:
 
 ===CONFIG===

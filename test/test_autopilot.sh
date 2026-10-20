@@ -330,7 +330,7 @@ grep -q "Run 1 accepted" "$T/e3/.autopilot/log/history.log" || fail "change outs
 new_round
 sample_project "$T/e4/work"
 printf -- '- [ ] 1. [x] one\n' >TASKS.md && git add -A && git commit -qm start
-printf 'WORKDIR=work\nTEST_CMD=%q\nACCEPT_CMD=%q\nALLOWED=%q\n' 'bash check.sh && true' 'printf "%s\n" x >/dev/null; bash accept.sh' \
+printf 'WORKDIR=work\nTEST_CMD=%q\nACCEPT_CMD=%q\nACCEPT_FILES=(accept.sh)\nALLOWED=%q\n' 'bash check.sh && true' 'printf "%s\n" x >/dev/null; bash accept.sh' \
     '^(checks\.txt|TASKS\.md)$' >"$T/e4/autopilot.conf"
 echo "echo check >>checks.txt; $tick" >"$FAKE_DIR/steps/1.sh"
 echo "VERDICT: ACCEPT" >"$FAKE_DIR/verdicts"
@@ -627,4 +627,5 @@ for a in "" --short; do
     ! head -c7 "$T/sig/out.txt" | grep -q '^Status:' || fail "status $a with untrusted conf starts with Status: $(cat "$T/sig/out.txt")"
 done
 cd "$T" || exit 1
+. "$TOOL_DIR/test/part_a.sh"
 echo ok
