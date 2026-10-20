@@ -107,30 +107,6 @@ $(g -C "$repo" ls-files | head -300)"
     show "$e"
 }
 
-# The draft chose TEST_CMD, so run it once (you just accepted that command): a missing tool like
-# pytest should show up now, not as a bare "tests red" at the first start. A failure only warns.
-probe_test_cmd() { # REPO (autopilot.conf written and trusted)
-    local repo=$1 out=$1/.autopilot/log/plan-probe.txt
-    mkdir -p "$repo/.autopilot/log"
-    (
-        set +u; . "$repo/autopilot.conf" >/dev/null 2>&1
-        cd "$WORKDIR" || { echo "WARNING: test command not checked: work directory $WORKDIR missing"; exit 0; }
-        w=(); [ "${SANDBOX:-off}" = on ] && w=("$TOOL_DIR/sandbox-run")
-        with_timeout "${TEST_TIMEOUT:-30m}" ${w[@]+"${w[@]}"} bash -c "$TEST_CMD" >"$out" 2>&1; rc=$?
-        if [ "$rc" = 0 ]; then
-            if [ -n "${TEST_COUNT_CMD:-}" ]; then n=$(bash -c "$TEST_COUNT_CMD" <"$out" | tail -1)
-            else re=${TEST_COUNT_REGEX:-'^TESTS: ([0-9]+)'}; n=''
-                 while IFS= read -r l; do [[ $l =~ $re ]] && n=${BASH_REMATCH[1]}; done <"$out"; fi
-            if [[ $n =~ ^[0-9]+$ ]]; then echo "Test command checked: green, $n passed tests."
-            else echo "WARNING: test command is green, but no readable test count (check TEST_COUNT_REGEX/TEST_COUNT_CMD), see $out"; fi
-        elif [ "$rc" = 124 ]; then echo "WARNING: test command hit the time limit (TEST_TIMEOUT=${TEST_TIMEOUT:-30m}), see $out"
-        elif [ -n "${TEST_EMPTY_RC:-}" ] && [ "$rc" = "$TEST_EMPTY_RC" ]; then
-            echo "Test command checked: no tests yet (exit code $rc = TEST_EMPTY_RC), task 1 adds the first ones."
-        else echo "WARNING: test command cannot run (exit code $rc, missing tool?): $(tail -2 "$out" | tr '\n' ' ' | cut_chars 1 160)"
-        fi
-    )
-}
-
 accept() {
     local repo e file rel name base wt allowed err sr sandbox wrap z re
     repo=$(cat "$LAST" 2>/dev/null) && [ -d "$repo/.autopilot/draft" ] || fail "No draft available (autopilot plan <file>)."
@@ -190,7 +166,7 @@ Move or remove what is at $wt (or delete a stale worktree with: git -C \"$repo\"
     ln -sf "$repo/autopilot.conf" "$CONF_BASE/standard.conf"
     rm -rf "$e"; rm -f "$LAST"
     echo "Set up: $repo/autopilot.conf, work branch \"autopilot\" in $wt"
-    probe_test_cmd "$repo"
+    probe_test_cmd "$repo/autopilot.conf"
     echo "Start: autopilot (menu) or autopilot start 5"
 }
 

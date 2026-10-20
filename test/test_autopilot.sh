@@ -610,7 +610,7 @@ ALLOWED='^checks\.txt\$'
 EOF
 AUTOPILOT_CONF="$T/nt-conf/autopilot.conf" "$TOOL_DIR/menu.sh" trust "$T/nt-conf/autopilot.conf" >/dev/null || fail "start without tmux: trust failed"
 AUTOPILOT_CONF="$T/nt-conf/autopilot.conf" PATH="$T/nocl" "$TOOL_DIR/menu.sh" start 1 >"$T/nt.txt" 2>&1 && fail "start without tmux exits 0"
-grep -q tmux "$T/nt.txt" && { grep -q "apt install tmux" "$T/nt.txt" || grep -q "brew install tmux" "$T/nt.txt"; } || fail "start without tmux: message incomplete: $(cat "$T/nt.txt")"
+grep -q "tmux not found" "$T/nt.txt" && grep -q "background" "$T/nt.txt" && grep -qi "install tmux" "$T/nt.txt" || fail "start without tmux: message incomplete: $(cat "$T/nt.txt")"
 ! grep -q Started "$T/nt.txt" || fail "start without tmux printed Started: $(cat "$T/nt.txt")"
 AUTOPILOT_CONF="$T/nt-conf/autopilot.conf" PATH="$T/nocl" "$TOOL_DIR/menu.sh" start 5 gpt >/dev/null 2>&1; [ $? -eq 2 ] || fail "start without tmux: usage check no longer exits 2"
 # status gives the plugin a clear signal: no project -> 3 + "autopilot plan", untrusted conf -> 4 + "autopilot trust", never "Status:" first
@@ -631,4 +631,5 @@ cd "$T" || exit 1
 . "$TOOL_DIR/test/part_b.sh"
 . "$TOOL_DIR/test/part_c.sh"
 . "$TOOL_DIR/test/part_e.sh"
+. "$TOOL_DIR/test/part_f.sh"
 echo ok

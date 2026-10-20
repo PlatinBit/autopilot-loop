@@ -9,6 +9,7 @@
 #   autopilot status [--short] | stop | abort | continue | approve | conditions
 #   autopilot grades | costs | chart | notes | result | propose | suggestion [accept|discard]
 #   autopilot report [--if-new]        summary of the last 24 hours (for cron)
+#   autopilot doctor                   check everything needed: tools, versions, install commands, project
 #   autopilot setup                    create autopilot.conf by hand in the current directory
 #   autopilot help                     this help
 set -u
@@ -17,8 +18,54 @@ CONF_BASE=${XDG_CONFIG_HOME:-$HOME/.config}/autopilot-loop
 # shellcheck source=lib.sh
 . "$HERE/lib.sh"
 
+# --- Doctor: checklist of everything autopilot-loop needs (works without a project) ----------------
+doc_row() { # COMMAND PURPOSE [INSTALL]: ✔ with version, or ✘ with the install command (returns 1)
+    local v
+    if command -v "$1" >/dev/null; then
+        v=$({ "$1" --version 2>/dev/null || "$1" -V 2>/dev/null; } </dev/null | grep -oE '[0-9]+\.[0-9][0-9A-Za-z.]*' | head -1)
+        printf ' ✔ %-9s %-8s %s\n' "$1" "${v:--}" "$2"
+    else
+        printf ' ✘ %-9s %-8s %s – %s\n' "$1" - "$2" "${3:-$(install_hint "$(pkg_of "$1")")}"
+        return 1
+    fi
+}
+doc_project() { # with a trusted configuration: sandbox state and a one-shot probe of TEST_CMD
+    local k='' c
+    for c in "${AUTOPILOT_CONF:-}" "$PWD/autopilot.conf" "$CONF_BASE/standard.conf"; do
+        [ -n "$c" ] && [ -f "$c" ] && { k=$c; break; }
+    done
+    [ -n "$k" ] || { echo "Project: none set up yet (autopilot plan <file>) – only the tools above were checked."; return 0; }
+    is_trusted "$k" || { echo "Project: $k is not confirmed as trusted – test command not probed (autopilot trust)."; return 0; }
+    echo "Project: $k"
+    (set +u; SANDBOX=off; . "$k" </dev/null >/dev/null 2>&1
+     if [ "$SANDBOX" != on ]; then echo "  SANDBOX=off (test commands run unsandboxed)"
+     elif "$HERE/sandbox-run" true >/dev/null 2>&1; then echo "  SANDBOX=on and bwrap works"
+     else echo "  SANDBOX=on but bwrap cannot start a sandbox here – $(install_hint bubblewrap), or set SANDBOX=off"; fi)
+    probe_test_cmd "$k" | sed 's/^/  /'
+}
+doctor() {
+    local miss=0 t id
+    echo "autopilot-loop doctor"
+    printf ' ✔ %-9s %-8s %s\n' bash "${BASH_VERSION%%(*}" "runs all scripts (4.4 or newer)"
+    doc_row claude "writes, plans and reviews the code" "https://claude.com/claude-code – then log in once: claude" || miss=1
+    doc_row git "work branch, checks and commit of every run" || miss=1
+    doc_row jq "reads Claude's JSON answers" || miss=1
+    doc_row tmux "keeps the loop running in the background (start/stop/abort/status)" || miss=1
+    doc_row whiptail "terminal menu (optional: every command also works directly)"
+    doc_row python3 "progress chart (optional: everything else works without it)"
+    t=timeout; command -v timeout >/dev/null || t=gtimeout
+    doc_row "$t" "time limits for runs and commands (optional, coreutils)" "$(install_hint coreutils)"
+    doc_row bwrap "sandbox for test commands (optional, Linux, used with SANDBOX=on)"
+    if id=$(git var GIT_COMMITTER_IDENT 2>/dev/null); then echo " ✔ git identity: $(sed 's/ [0-9].*//' <<<"$id")"
+    else echo " ✘ git identity not set – git config --global user.email you@example.org; git config --global user.name \"Your Name\""; miss=1; fi
+    doc_project
+    if [ "$miss" = 0 ]; then echo "Everything required is present."
+    else echo "Required pieces are missing (✘ above) – install them, then check again: autopilot doctor"; return 1; fi
+}
+
 case "${1:-}" in
     plan) shift; exec "$HERE/plan.sh" "$@" ;;
+    doctor) doctor; exit $? ;;
     setup)
         [ -e autopilot.conf ] && { echo "autopilot.conf already exists here."; exit 1; }
         cp "$HERE/templates/autopilot.conf" autopilot.conf || exit 1
@@ -32,7 +79,7 @@ case "${1:-}" in
         echo "This file is executed as Bash code on every call: $(readlink -f "$k")"
         trust "$k" && echo "Marked as trusted (valid until it changes)."
         exit $? ;;
-    help|-h|--help) sed -n '2,13p' "$0" | cut -c3-; exit 0 ;;
+    help|-h|--help) sed -n '2,14p' "$0" | cut -c3-; exit 0 ;;
 esac
 
 has_project() { [ -f "${AUTOPILOT_CONF:-/nonexistent}" ] || [ -f "$PWD/autopilot.conf" ] || [ -f "$CONF_BASE/standard.conf" ]; }
@@ -48,6 +95,7 @@ new_project() { # in the menu: ask for the path, draft, show, accept
         whiptail --title "Autopilot" --msgbox "$("$HERE/plan.sh" accept 2>&1)" 12 90
     rm -f "$t"
 }
+[ -n "${1:-}" ] || need whiptail "The interactive menu is drawn with it (every command also works directly, see: autopilot help)." || exit 1
 if [ -z "${1:-}" ] && ! has_project; then
     whiptail --title "Autopilot" --yesno "No project set up yet.\n\nCreate a new project from a plan file?" 10 70 && new_project
     exit 0
@@ -121,7 +169,7 @@ costs() {
     echo; echo "(With a subscription these are notional values; billing goes through the usage limit.)"
 }
 chart() {
-    command -v python3 >/dev/null || { echo "python3 not found on PATH. The chart needs it: install python3 (Linux: e.g. sudo apt install python3, macOS: brew install python3). Everything else works without it."; return 1; }
+    need python3 "The chart needs it (everything else works without it)." || return 1
     python3 "$TOOL_DIR/chart.py" "$STATE" "$NAME" "$(number_from "$STATE/log/accept-start.txt" "$ACCEPT_REGEX" 2 2>/dev/null)"; }
 clean_up() { g -C "$WORKDIR" reset -q --hard && g -C "$WORKDIR" clean -qfd; }
 
@@ -170,7 +218,7 @@ start_now() { # RUNS [REVIEWER] [REJECTIONS] [WORKER] [PLANNER]
     [[ "$n" =~ ^[0-9]+$ && "$rejections" =~ ^[0-9]+$ && "$reviewer" =~ ^(sonnet|opus|haiku)$ && "$worker" =~ ^(sonnet|opus|haiku)$ &&
        "$planner" =~ ^(sonnet|opus)$ ]] ||
         { echo "Usage: autopilot start <runs> [reviewer: sonnet|opus|haiku] [max-rejections] [worker: opus|sonnet|haiku] [planner: opus|sonnet]"; return 2; }
-    command -v tmux >/dev/null || { echo "tmux not found on PATH. Install it (Linux: e.g. sudo apt install tmux, macOS: brew install tmux), then run: autopilot start $n"; return 1; }
+    need tmux "autopilot start runs the loop inside it in the background." || return 1
     is_running && { echo "The autopilot is already running."; return 1; }
     is_approved || { echo "The acceptance test is NOT approved yet (autopilot approve)."; return 1; }
     [ -n "$(g -C "$WORKDIR" status --porcelain)" ] && { clean_up; echo "Leftovers of an aborted run discarded (git reset --hard, git clean -fd in $WORKDIR)."; }
@@ -223,7 +271,7 @@ case "${1:-}" in
         echo "Aborted, the unfinished run was discarded (git reset --hard, git clean -fd in $WORKDIR)."; exit 0 ;;
     start) shift; start_now "$@"; exit $? ;;
     "") ;;
-    *) sed -n '2,13p' "$0" | cut -c3-; exit 2 ;;
+    *) sed -n '2,14p' "$0" | cut -c3-; exit 2 ;;
 esac
 
 # --- Menu ---------------------------------------------------------------------------------------
@@ -241,7 +289,7 @@ start_menu() {
 }
 
 while true; do
-    choice=$(whiptail --title "$TITLE" --menu "$(status)" 34 110 13 \
+    choice=$(whiptail --title "$TITLE" --menu "$(status)" 34 110 14 \
         1 "Refresh status" \
         2 "Start" \
         3 "Continue (approve the supervised step)" \
@@ -254,7 +302,8 @@ while true; do
         10 "Grades, costs and chart" \
         11 "Read decisions and blocked tasks" \
         12 "View result" \
-        13 "Create report now" 3>&1 1>&2 2>&3) || exit 0
+        13 "Create report now" \
+        14 "Doctor: check requirements" 3>&1 1>&2 2>&3) || exit 0
     case $choice in
         2) start_menu ;;
         3) show "$("$0" continue)" ;;
@@ -273,5 +322,6 @@ while true; do
         11) show "$(notes)" ;;
         12) show "$(result)" ;;
         13) clear; echo "Creating report …"; show "$(report)" ;;
+        14) show "$("$0" doctor 2>&1)" ;;
     esac
 done

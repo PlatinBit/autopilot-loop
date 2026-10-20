@@ -68,12 +68,13 @@ async function planner($: Engine): Promise<string> {
 }
 
 async function more($: Engine): Promise<string> {
-  const choice = await ask($, 'What would you like to see?', 'More', ['Costs and chart', 'Read decisions', 'View result', 'Report now'])
+  const choice = await ask($, 'What would you like to see?', 'More', ['Costs and chart', 'Read decisions', 'View result', 'Report now', 'Doctor: check requirements'])
   switch (choice) {
     case 'Costs and chart': return `${await autopilot($, ['costs'])}\n\nChart: ${await autopilot($, ['chart'])}`
     case 'Read decisions': return autopilot($, ['notes'])
     case 'View result': return autopilot($, ['result'])
     case 'Report now': return autopilot($, ['report'])
+    case 'Doctor: check requirements': return autopilot($, ['doctor'])
     default: return `Unknown choice: ${choice}`
   }
 }
@@ -129,7 +130,7 @@ export const register: Register = on => {
     await $.command.register({
       name: 'autopilot-loop',
       description: 'Autopilot menu: project from a plan file, start, stop, status, planner, costs',
-      argumentHint: '[status|stop|continue|trust <file>|plan <file>|start <runs> [reviewer] [max-rejections] [worker] [planner]]',
+      argumentHint: '[status|doctor|stop|continue|trust <file>|plan <file>|start <runs> [reviewer] [max-rejections] [worker] [planner]]',
     }).catch(err => $.ui.log(`autopilot-loop: /autopilot-loop not registered: ${err instanceof Error ? err.message : err}`))
     return next(e)
   })

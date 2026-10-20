@@ -236,7 +236,7 @@ bad=$(bad_patterns); [ -z "$bad" ] || { announce crit "$(echo $bad) in $CONF is 
 [ -f "$TASKS_FILE" ] || { announce crit "Task list $WORKDIR/$TASKS_FILE is missing"; exit 1; }
 if [ "$SANDBOX" = on ]; then
     command -v bwrap >/dev/null ||
-        { announce crit "SANDBOX=on in $CONF needs bubblewrap (bwrap, Linux only), not found on PATH: install it (e.g. sudo apt install bubblewrap) or set SANDBOX=off"; exit 1; }
+        { announce crit "SANDBOX=on in $CONF needs bubblewrap (bwrap, Linux only), not found on PATH: $(install_hint bubblewrap) or set SANDBOX=off"; exit 1; }
     # bwrap may be installed but unable to create namespaces (AppArmor restriction, container)
     "$TOOL_DIR/sandbox-run" true >"$LOGS/sandbox-probe.txt" 2>&1 ||
         { announce crit "SANDBOX=on, but bwrap cannot start a sandbox here: $(tail -1 "$LOGS/sandbox-probe.txt" | cut_chars 1 160) – fix bubblewrap (AppArmor? container?) or set SANDBOX=off in $CONF"; exit 1; }
@@ -255,7 +255,8 @@ if [ -z "$count" ]; then
     # exit code 127 = command not found; a missing Python module exits 1 but names itself in the output
     hint=$(grep -m1 -iE 'command not found|No module named|No such file or directory' "$LOGS/start.txt" | cut_chars 1 160)
     if [ "$tests_rc" = 127 ] || [ -n "$hint" ]; then
-        announce crit "Test command cannot run (missing tool?): ${hint:-exit code 127}, see $LOGS/start.txt"
+        try=$(suggest_install "$TEST_CMD" "$tests_rc" "$LOGS/start.txt")
+        announce crit "Test command cannot run (missing tool?): ${hint:-exit code 127}, see $LOGS/start.txt${try:+ – $try}"
     else
         announce crit "Tests already red before the start or without a readable number, see $LOGS/start.txt"
     fi

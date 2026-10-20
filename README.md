@@ -144,6 +144,7 @@ Update: `/plugin` → Marketplaces → autopilot-loop → Update. Plugin code ru
 ```bash
 git clone https://github.com/PlatinBit/autopilot-loop.git ~/autopilot-loop
 ~/autopilot-loop/install.sh        # checks the requirements and links `autopilot` into ~/.local/bin
+autopilot doctor                   # checks everything at any time: tools, versions, install commands, project
 ```
 
 ## Quick start
@@ -179,6 +180,7 @@ Manual setup also works: `autopilot setup` creates a commented [`autopilot.conf`
 | 10 | `autopilot approve` / `conditions` | approve the acceptance test / list its conditions |
 | 11 | `autopilot notes` / `result` | decisions and blocked tasks / new commits |
 | 12 | `autopilot trust [file]` | confirm a hand-written or changed `autopilot.conf` |
+| 13 | `autopilot doctor` | checklist of everything needed: ✔/✘ per tool with version, purpose and install command, git identity, sandbox state and a probe of the project's test command |
 
 Daily report via cron (`crontab -e`): `30 7 * * * $HOME/.local/bin/autopilot report --if-new`. Notifications (mail, desktop, chat) are set up with a function `notify()` in `autopilot.conf`.
 
