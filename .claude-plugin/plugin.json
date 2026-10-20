@@ -1,7 +1,7 @@
 {
   "name": "autopilot",
   "displayName": "Autopilot Loop",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "/autopilot: point it at a plan file and Claude implements it task by task on its own – guarded by script checks, a read-only reviewer, a locked goal, grades, cost tracking and a planner.",
   "author": {
     "name": "PlatinBit",
