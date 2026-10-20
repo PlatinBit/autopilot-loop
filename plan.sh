@@ -116,7 +116,9 @@ accept() {
     fi
     [ -z "$(g -C "$wt" status --porcelain)" ] || fail "The work directory $wt has uncommitted changes."
     cp "$e/tasks.md" "$wt/$TASKS_FILE"
-    g -C "$wt" add "$TASKS_FILE" && g -C "$wt" commit -q --no-verify -m "Autopilot: tasks from $rel" ||
+    # Second run with the same task list: nothing to commit, that is fine.
+    g -C "$wt" add "$TASKS_FILE" && { g -C "$wt" diff --cached --quiet -- "$TASKS_FILE" ||
+        g -C "$wt" commit -q --no-verify -m "Autopilot: tasks from $rel"; } ||
         fail "Commit failed – is a Git identity set? (git config --global user.name / user.email)"
     allowed=$(sed -n "s/^ALLOWED='\(.*\)'$/\1/p" "$e/autopilot.part")
     # Paths and names come from the file system and Git (branch names may contain ' $ ( ): always quote with %q,

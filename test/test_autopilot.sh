@@ -380,4 +380,19 @@ printf "===CONFIG===\nTEST_CMD='bash check.sh'\n===TASKS===\n- [ ] 1. [x] one. D
 cd "$T/f2"
 "$TOOL_DIR/menu.sh" status >"$T/f2/status.txt" 2>&1 || fail "status exits non-zero: $(cat "$T/f2/status.txt")"
 grep -qF "Plan:        $R/docs/spec/plan.md" "$T/f2/status.txt" || fail "status does not show the nested plan path: $(cat "$T/f2/status.txt")"
+# plan + plan accept twice for the same project: worktree and branch reused, one trust line
+new_round
+sample_project "$T/f3/repo"
+git add -A && git commit -qm start || fail "second-run setup failed"
+printf "===CONFIG===\nTEST_CMD='bash check.sh'\n===TASKS===\n- [ ] 1. [x] one. Done when a test passes.\n" >"$FAKE_DIR/setup.txt"
+for i in 1 2; do
+    "$TOOL_DIR/menu.sh" plan "$T/f3/repo/plan.md" >"$T/f3/out.txt" 2>&1 || fail "plan run $i failed: $(tail -3 "$T/f3/out.txt")"
+    "$TOOL_DIR/menu.sh" plan accept >"$T/f3/out.txt" 2>&1 || fail "accept run $i failed: $(tail -3 "$T/f3/out.txt")"
+done
+[ "$(readlink -f "$T/config/autopilot-loop/standard.conf")" = "$(readlink -f "$T/f3/repo/autopilot.conf")" ] || fail "second run: standard.conf does not point to the project"
+[ "$(grep -cF " $(readlink -f "$T/f3/repo/autopilot.conf")" "$T/config/autopilot-loop/trusted")" = 1 ] || fail "second run: trusted does not list the conf exactly once"
+[ "$(git -C "$T/f3/repo" worktree list | grep -c autopilot)" = 1 ] || fail "second run: worktree not reused"
+git -C "$T/f3/repo" rev-parse -q --verify autopilot >/dev/null || fail "second run: branch autopilot missing"
+cd "$T/f3"
+"$TOOL_DIR/menu.sh" status >"$T/f3/out.txt" 2>&1; [ $? != 4 ] || fail "second run: conf not trusted: $(tail -3 "$T/f3/out.txt")"
 echo ok
