@@ -107,8 +107,32 @@ $(g -C "$repo" ls-files | head -300)"
     show "$e"
 }
 
+# The draft chose TEST_CMD, so run it once (you just accepted that command): a missing tool like
+# pytest should show up now, not as a bare "tests red" at the first start. A failure only warns.
+probe_test_cmd() { # REPO (autopilot.conf written and trusted)
+    local repo=$1 out=$1/.autopilot/log/plan-probe.txt
+    mkdir -p "$repo/.autopilot/log"
+    (
+        set +u; . "$repo/autopilot.conf" >/dev/null 2>&1
+        cd "$WORKDIR" || { echo "WARNING: test command not checked: work directory $WORKDIR missing"; exit 0; }
+        w=(); [ "${SANDBOX:-off}" = on ] && w=("$TOOL_DIR/sandbox-run")
+        with_timeout "${TEST_TIMEOUT:-30m}" ${w[@]+"${w[@]}"} bash -c "$TEST_CMD" >"$out" 2>&1; rc=$?
+        if [ "$rc" = 0 ]; then
+            if [ -n "${TEST_COUNT_CMD:-}" ]; then n=$(bash -c "$TEST_COUNT_CMD" <"$out" | tail -1)
+            else re=${TEST_COUNT_REGEX:-'^TESTS: ([0-9]+)'}; n=''
+                 while IFS= read -r l; do [[ $l =~ $re ]] && n=${BASH_REMATCH[1]}; done <"$out"; fi
+            if [[ $n =~ ^[0-9]+$ ]]; then echo "Test command checked: green, $n passed tests."
+            else echo "WARNING: test command is green, but no readable test count (check TEST_COUNT_REGEX/TEST_COUNT_CMD), see $out"; fi
+        elif [ "$rc" = 124 ]; then echo "WARNING: test command hit the time limit (TEST_TIMEOUT=${TEST_TIMEOUT:-30m}), see $out"
+        elif [ -n "${TEST_EMPTY_RC:-}" ] && [ "$rc" = "$TEST_EMPTY_RC" ]; then
+            echo "Test command checked: no tests yet (exit code $rc = TEST_EMPTY_RC), task 1 adds the first ones."
+        else echo "WARNING: test command cannot run (exit code $rc, missing tool?): $(tail -2 "$out" | tr '\n' ' ' | cut_chars 1 160)"
+        fi
+    )
+}
+
 accept() {
-    local repo e file rel name base wt allowed err
+    local repo e file rel name base wt allowed err sr sandbox wrap z re
     repo=$(cat "$LAST" 2>/dev/null) && [ -d "$repo/.autopilot/draft" ] || fail "No draft available (autopilot plan <file>)."
     e=$repo/.autopilot/draft
     file=$(cat "$e/plan"); rel=${file#"$repo"/}
@@ -136,19 +160,37 @@ Move or remove what is at $wt (or delete a stale worktree with: git -C \"$repo\"
     g -C "$wt" add "$TASKS_FILE" && { g -C "$wt" diff --cached --quiet -- "$TASKS_FILE" ||
         g -C "$wt" commit -q --no-verify -m "Autopilot: tasks from $rel"; } ||
         fail "Commit failed – is a Git identity set? (git config --global user.name / user.email)"
+    # Sandbox: only when bwrap is present and can create namespaces here (AppArmor may forbid it).
+    # A metachar-free test command (and the worker's Bash rights) is then routed through sandbox-run,
+    # so the worker's own test calls are sandboxed too, not only the ones the loop runs.
+    sr=$TOOL_DIR/sandbox-run; sandbox=off; wrap=''
+    command -v bwrap >/dev/null && (cd "$wt" && "$sr" true) >/dev/null 2>&1 && sandbox=on
+    re='^[A-Za-z0-9_./:= -]+$'
+    [ "$sandbox" = on ] && [[ $(sed -n "s/^TEST_CMD='\(.*\)'\$/\1/p" "$e/autopilot.part") =~ $re ]] && wrap=1
     # Paths and names come from the file system and Git (branch names may contain ' $ ( ): always quote with %q,
     # because the file is later loaded with `source`.
     {
         printf '# Project from %s, set up %s with autopilot plan\n' "$(printf %q "$rel")" "$(date '+%F %T')"
         printf 'NAME=%q\nWORKDIR=%q\nBASE_BRANCH=%q\nTASKS_FILE=%q\nPLAN_FILE=%q\nLOCKED=(%q)\n' \
             "$name" "$wt" "$base" "$TASKS_FILE" "$file" "$rel"
-        grep -v '^ALLOWED=' "$e/autopilot.part"
+        while IFS= read -r z; do
+            if [ -n "$wrap" ]; then case $z in
+                TEST_CMD=*) z="TEST_CMD='$sr ${z#"TEST_CMD='"}" ;;
+                WORKER_TOOLS=*) z=${z//"'Bash("/"'Bash($sr "} ;;
+            esac; fi
+            echo "$z"
+        done < <(grep -v '^ALLOWED=' "$e/autopilot.part")
         echo "ALLOWED='$allowed'"
+        if [ "$sandbox" = on ]; then
+            echo "# bwrap found: the test command runs without network and devices, read-only outside the work directory"
+            echo "SANDBOX=on"
+        fi
     } >"$repo/autopilot.conf"
     trust "$repo/autopilot.conf"  # you have just accepted the draft
     ln -sf "$repo/autopilot.conf" "$CONF_BASE/standard.conf"
     rm -rf "$e"; rm -f "$LAST"
     echo "Set up: $repo/autopilot.conf, work branch \"autopilot\" in $wt"
+    probe_test_cmd "$repo"
     echo "Start: autopilot (menu) or autopilot start 5"
 }
 

@@ -88,29 +88,41 @@ grade() { # GRADE (1 accepted, 0 rejected)
 }
 
 # Test, acceptance and smoke command: time limit TEST_TIMEOUT (exit code 124), lower priority, and with
-# SANDBOX=on in bubblewrap: no network, a minimal /dev, read-only outside the work directory, own /tmp.
+# SANDBOX=on through sandbox-run (bubblewrap): no network, a minimal /dev, read-only outside the work
+# directory and a read-only .git. Runs in the background so a signal interrupts `wait` at once (a
+# foreground child would delay the trap until the command ends). Afterwards .git must be unchanged:
+# a test command that plants e.g. a Git filter would run it outside the sandbox on the next Git call.
 run_cmd() { # COMMAND
+    local rc
     if [ "$SANDBOX" = on ]; then
-        with_timeout "$TEST_TIMEOUT" nice -n 10 bwrap --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp --bind "$ROOT" "$ROOT" \
-            --unshare-all --new-session --die-with-parent --chdir "$ROOT" bash -c "$1"
-    else with_timeout "$TEST_TIMEOUT" nice -n 10 bash -c "$1"; fi
+        with_timeout "$TEST_TIMEOUT" nice -n 10 "$TOOL_DIR/sandbox-run" bash -c "$1" & cmd=$!
+    else with_timeout "$TEST_TIMEOUT" nice -n 10 bash -c "$1" & cmd=$!; fi
+    wait "$cmd"; rc=$?; cmd=''
+    [ "$(git_fingerprint)" = "$fingerprint" ] ||
+        { announce crit "The test command changed .git (config, info or hooks) – stopped. Please inspect before starting again."; exit 1; }
+    return "$rc"
 }
-# Number of passed tests, empty if the result is red or no number can be read; returns 124 at the time limit.
+# Number of passed tests in $tests_n (empty if the result is red or no number can be read), the exit
+# code of TEST_CMD in $tests_rc; returns 124 at the time limit.
 run_tests() {
-    local n rc
-    run_cmd "$TEST_CMD" >"$1" 2>&1; rc=$?
-    [ "$rc" = 124 ] && { echo "(time limit TEST_TIMEOUT=$TEST_TIMEOUT reached)" >>"$1"; return 124; }
-    if [ "$rc" -ne 0 ]; then [ "$rc" = "${TEST_EMPTY_RC:--}" ] && echo 0; return 0; fi  # e.g. pytest: 5 = no tests
+    local n
+    tests_n=''
+    run_cmd "$TEST_CMD" >"$1" 2>&1; tests_rc=$?
+    [ "$tests_rc" = 124 ] && { echo "(time limit TEST_TIMEOUT=$TEST_TIMEOUT reached)" >>"$1"; return 124; }
+    if [ "$tests_rc" -ne 0 ]; then [ "$tests_rc" = "${TEST_EMPTY_RC:--}" ] && tests_n=0; return 0; fi  # e.g. pytest: 5 = no tests
     if [ -n "$TEST_COUNT_CMD" ]; then n=$(bash -c "$TEST_COUNT_CMD" <"$1" | tail -1)
     else n=$(number_from "$1" "$TEST_COUNT_REGEX"); fi
-    is_number "$n" && echo "$n"; return 0
+    is_number "$n" && tests_n=$n; return 0
 }
-# Met acceptance conditions, 0 if the test does not run (it may be red).
+# Met acceptance conditions in $accept_n, 0 if the test does not run (it may be red).
 run_accept() {
-    [ -n "$ACCEPT_CMD" ] || { echo 0; return; }
+    local k
+    accept_n=0
+    [ -n "$ACCEPT_CMD" ] || return 0
     run_cmd "$ACCEPT_CMD" >"$1" 2>&1
     [ $? = 124 ] && echo "(time limit TEST_TIMEOUT=$TEST_TIMEOUT reached)" >>"$1"
-    local k; k=$(number_from "$1" "$ACCEPT_REGEX"); is_number "$k" && echo "$k" || echo 0
+    k=$(number_from "$1" "$ACCEPT_REGEX"); is_number "$k" && accept_n=$k
+    return 0
 }
 
 # Work directory and submodules back to COMMIT (reset does not touch the inside of submodules)
@@ -125,6 +137,7 @@ kill_tree() { local c; for c in $(ps -A -o pid= -o ppid= | awk -v p="$1" '$2 == 
 interrupted() { # EXITCODE: Ctrl+C / kill during a run
     trap '' INT TERM HUP
     [ -n "${worker:-}" ] && kill_tree "$worker"
+    [ -n "${cmd:-}" ] && kill_tree "$cmd"  # a running test/acceptance/smoke command
     wait 2>/dev/null
     restore HEAD  # not "$before": a commit made in this run (e.g. block_task) must survive
     note "Run $i interrupted (signal): work directory reset to the last commit. Resume with: autopilot start"
@@ -221,24 +234,39 @@ bad=$(bad_patterns); [ -z "$bad" ] || { announce crit "$(echo $bad) in $CONF is 
 [ -n "$ACCEPT_CMD" ] && [ ${#ACCEPT_FILES[@]} -eq 0 ] &&
     { announce crit "ACCEPT_CMD is set but ACCEPT_FILES is empty in $CONF: the acceptance test would not be locked"; exit 1; }
 [ -f "$TASKS_FILE" ] || { announce crit "Task list $WORKDIR/$TASKS_FILE is missing"; exit 1; }
-[ "$SANDBOX" = on ] && ! command -v bwrap >/dev/null &&
-    { announce crit "SANDBOX=on in $CONF needs bubblewrap (bwrap, Linux only), not found on PATH: install it (e.g. sudo apt install bubblewrap) or set SANDBOX=off"; exit 1; }
+if [ "$SANDBOX" = on ]; then
+    command -v bwrap >/dev/null ||
+        { announce crit "SANDBOX=on in $CONF needs bubblewrap (bwrap, Linux only), not found on PATH: install it (e.g. sudo apt install bubblewrap) or set SANDBOX=off"; exit 1; }
+    # bwrap may be installed but unable to create namespaces (AppArmor restriction, container)
+    "$TOOL_DIR/sandbox-run" true >"$LOGS/sandbox-probe.txt" 2>&1 ||
+        { announce crit "SANDBOX=on, but bwrap cannot start a sandbox here: $(tail -1 "$LOGS/sandbox-probe.txt" | cut_chars 1 160) – fix bubblewrap (AppArmor? container?) or set SANDBOX=off in $CONF"; exit 1; }
+fi
 is_approved || { announce warn "Acceptance test NOT approved: choose \"Approve acceptance test\" in the menu (or: autopilot approve)"; exit 1; }
 [ -n "$(g status --porcelain)" ] && { announce crit "Work directory not clean, aborting"; exit 1; }
 g var GIT_COMMITTER_IDENT >/dev/null 2>&1 || { announce crit "Git cannot commit in $WORKDIR: no identity. Set one: git config --global user.email you@example.org; git config --global user.name \"Your Name\""; exit 1; }
 rm -f "$STATE/WAITING" "$STATE/CONTINUE" "$STATE/cost-extra"
 
-i=0; start=$(date +%s); acc=0; cost=0; kind=-
-count=$(run_tests "$LOGS/start.txt") || { announce crit "Tests hit the time limit (TEST_TIMEOUT=$TEST_TIMEOUT) before the start, see $LOGS/start.txt"; exit 1; }
-[ -n "$count" ] || { announce crit "Tests already red before the start or without a readable number, see $LOGS/start.txt"; exit 1; }
-acc=$(run_accept "$LOGS/accept-start.txt")
+i=0; start=$(date +%s); acc=0; cost=0; kind=-; worker=''; cmd=''
+fingerprint=$(git_fingerprint)  # before the first run_cmd: it checks .git after every test command
+trap 'interrupted 130' INT; trap 'interrupted 143' TERM; trap 'interrupted 129' HUP  # HUP: tmux session killed
+run_tests "$LOGS/start.txt" || { announce crit "Tests hit the time limit (TEST_TIMEOUT=$TEST_TIMEOUT) before the start, see $LOGS/start.txt"; exit 1; }
+count=$tests_n
+if [ -z "$count" ]; then
+    # exit code 127 = command not found; a missing Python module exits 1 but names itself in the output
+    hint=$(grep -m1 -iE 'command not found|No module named|No such file or directory' "$LOGS/start.txt" | cut_chars 1 160)
+    if [ "$tests_rc" = 127 ] || [ -n "$hint" ]; then
+        announce crit "Test command cannot run (missing tool?): ${hint:-exit code 127}, see $LOGS/start.txt"
+    else
+        announce crit "Tests already red before the start or without a readable number, see $LOGS/start.txt"
+    fi
+    exit 1
+fi
+run_accept "$LOGS/accept-start.txt"; acc=$accept_n
 target=$( [ -n "$ACCEPT_CMD" ] && number_from "$LOGS/accept-start.txt" "$ACCEPT_REGEX" 2 )
 is_number "$target" || target=''
-fingerprint=$(git_fingerprint)
 announce info "Start: $count tests green${ACCEPT_CMD:+, Accept $acc of ${target:-?}}, at most $MAX runs, planner $PLANNER_MODEL, worker $WORKER_MODEL, reviewer $REVIEWER_MODEL"
 
-failures=0; waits=0; rejections=0; timeouts=0; last=""; accepted=0; no_progress=0; worker=''
-trap 'interrupted 130' INT; trap 'interrupted 143' TERM; trap 'interrupted 129' HUP  # HUP: tmux session killed
+failures=0; waits=0; rejections=0; timeouts=0; last=""; accepted=0; no_progress=0
 while [ "$i" -lt "$MAX" ]; do
     [ -e "$STATE/STOP" ] && { rm -f "$STATE/STOP"; announce info "Stopped via STOP after $i runs"; exit 0; }
     if ! grep -q '^- \[ \]' "$TASKS_FILE"; then
@@ -350,21 +378,26 @@ while [ "$i" -lt "$MAX" ]; do
     if [ -n "$hit" ]; then
         reject "$before" "new code contains the count line of the test command or acceptance test (could fake the result): $hit"; continue
     fi
-    new=$(run_tests "$LOGS/tests-$i.txt") || { reject "$before" "tests hit the time limit (TEST_TIMEOUT=$TEST_TIMEOUT)" "$LOGS/tests-$i.txt"; continue; }
+    run_tests "$LOGS/tests-$i.txt" || { reject "$before" "tests hit the time limit (TEST_TIMEOUT=$TEST_TIMEOUT)" "$LOGS/tests-$i.txt"; continue; }
+    new=$tests_n
     if [ -z "$new" ]; then reject "$before" "tests red or without a readable number" "$LOGS/tests-$i.txt"; continue; fi
     if [ "$new" -lt "$count" ]; then reject "$before" "tests dropped from $count to $new"; continue; fi
     ticked=$(( $(grep -c '^- \[x\]' "$TASKS_FILE") - $(g show "$before:$TASKS_FILE" | grep -c '^- \[x\]') ))
     if [ "$ticked" -gt 0 ] && [ "$new" -le "$count" ]; then reject "$before" "task ticked off without a new test"; continue; fi
-    acc_new=$(run_accept "$LOGS/accept-$i.txt")
+    run_accept "$LOGS/accept-$i.txt"; acc_new=$accept_n
     if [ "$acc_new" -lt "$acc" ]; then reject "$before" "Accept dropped from $acc to $acc_new" "$LOGS/accept-$i.txt"; continue; fi
     if [ "$ticked" -gt 0 ] && [ "$SMOKE_TEST_EVERY" -gt 0 ] && [ $(( (accepted + 1) % SMOKE_TEST_EVERY )) -eq 0 ]; then
         reason=''; smoke_test; ok=$?; add_extra_cost
         [ "$ok" = 0 ] || { reject "$before" "$reason" "$LOGS/smoke-$i.txt"; continue; }
     fi
+    # Files the test, acceptance or smoke command wrote were never checked above, so nothing may be
+    # staged after the checks: the commit takes exactly the index staged before those commands ran.
+    # Ignored files (caches like __pycache__/) do not show up here and stay allowed.
+    drift=$(g -c core.quotePath=false status --porcelain --untracked-files=all | grep -v '^[MADRCT] ')
+    if [ -n "$drift" ]; then reject "$before" "test command changed files: $(echo $drift | cut_chars 1 200)"; continue; fi
 
     # Reviewer: only for completed tasks; two rejections of the same task block it.
     if [ "$ticked" -gt 0 ]; then
-        g add -A
         verdict=$(review); add_extra_cost
         if [ "${verdict:-}" != "VERDICT: ACCEPT" ]; then
             reason=${verdict#VERDICT: REJECT: }; [ -n "$reason" ] || reason="no verdict, see log/review-$i.txt"
@@ -375,7 +408,7 @@ while [ "$i" -lt "$MAX" ]; do
         fi
     fi
 
-    g add -A && g commit -q --no-verify -m "Autopilot: $task" -m "Tests $count -> $new${ACCEPT_CMD:+, Accept $acc -> $acc_new of ${target:-?}}" ||
+    g commit -q --no-verify -m "Autopilot: $task" -m "Tests $count -> $new${ACCEPT_CMD:+, Accept $acc -> $acc_new of ${target:-?}}" ||
         { reject "$before" "commit failed"; continue; }
     note "Run $i accepted: $task | Tests $count -> $new${ACCEPT_CMD:+, Accept $acc -> $acc_new of ${target:-?}} | $cost USD"
     if [ -n "$ACCEPT_CMD" ] && [ "$acc_new" -le "$acc" ] && [ "$acc_new" != "${target:-x}" ]; then no_progress=$((no_progress + 1)); else no_progress=0; fi

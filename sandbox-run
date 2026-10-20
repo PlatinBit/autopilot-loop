@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# sandbox-run COMMAND [ARGS …]: runs a command in the same bubblewrap sandbox autopilot-loop uses
+# for its test, acceptance and smoke commands with SANDBOX=on: no network, a minimal /dev, an own
+# /tmp, read-only outside the current directory – and a read-only .git even inside it (a writable
+# .git would let the command plant filters or hooks that Git runs later, outside the sandbox).
+# Give it to the worker so its own test calls are sandboxed too, e.g.:
+#   WORKER_TOOLS=(Read Edit Write Glob Grep 'Bash(<this directory>/sandbox-run pytest:*)')
+# `autopilot plan accept` sets that up by itself when bubblewrap works on the machine.
+set -u
+[ $# -ge 1 ] || { echo "usage: sandbox-run <command> [arguments …]" >&2; exit 2; }
+# Already inside the sandbox (nested call, e.g. a wrapped TEST_CMD run by run_cmd): just run it.
+[ "${AUTOPILOT_SANDBOXED:-}" = 1 ] && exec "$@"
+command -v bwrap >/dev/null ||
+    { echo "sandbox-run: bwrap (bubblewrap, Linux only) not found on PATH – install it (e.g. sudo apt install bubblewrap)" >&2; exit 127; }
+root=$(pwd -P)
+# Later binds win: the Git management stays read-only although the work directory is writable.
+git_ro=()
+for d in "$(git -C "$root" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" \
+         "$(git -C "$root" rev-parse --path-format=absolute --git-dir 2>/dev/null)"; do
+    [ -n "$d" ] && [ -e "$d" ] && git_ro+=(--ro-bind "$d" "$d")
+done
+exec bwrap --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp --bind "$root" "$root" ${git_ro[@]+"${git_ro[@]}"} \
+    --setenv AUTOPILOT_SANDBOXED 1 --unshare-all --new-session --die-with-parent --chdir "$root" "$@"

@@ -2,13 +2,14 @@ You are setting up an autopilot for this project. Below is a plan file describin
 
 To do this, read the plan and look at the project (language, build system, existing tests). Change nothing.
 
-Only these settings are adopted, each at most once: TEST_CMD, TEST_COUNT_REGEX or TEST_COUNT_CMD, ALLOWED, WORKER_TOOLS and optionally FORBIDDEN_CONTENT='<regular expression for content new code must never contain>'. Every other line is discarded, including an acceptance test (ACCEPT_CMD, ACCEPT_FILES): the user sets that up by hand.
+Only these settings are adopted, each at most once: TEST_CMD, TEST_COUNT_REGEX or TEST_COUNT_CMD, TEST_EMPTY_RC, ALLOWED, WORKER_TOOLS and optionally FORBIDDEN_CONTENT='<regular expression for content new code must never contain>'. Every other line is discarded, including an acceptance test (ACCEPT_CMD, ACCEPT_FILES): the user sets that up by hand.
 
 Answer in exactly this format and with nothing else after the first marker:
 
 ===CONFIG===
 TEST_CMD='<one command that builds in the project directory and runs all tests, e.g. npm test, pytest -q, ./gradlew test, cargo test>'
 TEST_COUNT_REGEX='<regular expression (Bash, extended) whose first group reads the number of passed tests from the output, e.g. ([0-9]+) passed>'
+TEST_EMPTY_RC=<only if the test tool has an exit code that means "no tests yet", e.g. 5 for pytest – omit the line otherwise>
 ALLOWED='<regular expression on file paths relative to the project that the worker may change, e.g. ^(src/|tests/)>'
 WORKER_TOOLS=(Read Edit Write Glob Grep 'Bash(<test command without arguments>:*)')
 

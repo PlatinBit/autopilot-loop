@@ -195,7 +195,7 @@ Logs, progress, grades, approval and suggestions live in `.autopilot/` next to `
 
 ## Security
 
-The checks protect the **quality** of the work. They are **not a security boundary**: the test command runs code Claude wrote, with your user rights – including every device your user can open (`/dev`, e.g. `i2c` or `hidraw` with loose udev rules) and every local hardware tool. Best run the autopilot on a separate machine, VM or container. On Linux, `SANDBOX=on` (needs bubblewrap) runs the test, acceptance and smoke commands without network and devices and read-only outside the work directory; the worker's own tool calls stay outside it, so give the worker no Bash rights beyond the test command. What is built in:
+The checks protect the **quality** of the work. They are **not a security boundary**: the test command runs code Claude wrote, with your user rights – including every device your user can open (`/dev`, e.g. `i2c` or `hidraw` with loose udev rules) and every local hardware tool. Best run the autopilot on a separate machine, VM or container. On Linux, `SANDBOX=on` (needs bubblewrap) runs the test, acceptance and smoke commands without network and devices, read-only outside the work directory and with a read-only `.git`. **The worker's own Bash calls are NOT covered by it**: either give the worker no Bash rights beyond the test command, or route them through the bundled `sandbox-run` wrapper (the same bubblewrap call), e.g. `WORKER_TOOLS=(… 'Bash(<plugin>/sandbox-run pytest:*)')` – `autopilot plan accept` sets this up by itself when bubblewrap works on the machine. What is built in:
 
 | No. | Protection | Against |
 |---|---|---|
