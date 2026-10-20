@@ -243,7 +243,7 @@ while [ "$i" -lt "$MAX" ]; do
     # Tool calls Claude Code refused (not in WORKER_TOOLS, or a hook rewrote the command): name them,
     # otherwise a run without e.g. the build command only ends in a time-out with no visible reason.
     denied=$(jq -r '[.permission_denials[]? | .tool_input.command // .tool_name] | unique | .[:3] | join(" | ")' \
-        "$LOGS/run-$i.txt.json" 2>/dev/null | tr '\n' ' ' | cut -c1-200)
+        "$LOGS/run-$i.txt.json" 2>/dev/null | tr '\n' ' ' | sed 's/ *$//' | cut -c1-200)
     [ -n "$denied" ] && note "Run $i: tool calls denied (allow them in WORKER_TOOLS, or a hook rewrote them): $denied"
 
     # Script checks: only green, not weakened work in allowed paths counts.

@@ -8,6 +8,7 @@ trap 'kill $(jobs -p) 2>/dev/null; rm -rf "$T"' EXIT
 fail() { echo "FAILED: $1"; for v in "$T"/.autopilot/log/history.log "$T"/p2/.autopilot/log/history.log; do [ -f "$v" ] && { echo "--- $v"; cat "$v"; }; done; exit 1; }
 mkdir -p "$T/bin" "$T/config"
 ln -s "$TOOL_DIR/test/fake-claude" "$T/bin/claude"
+unset PLANNER_MODEL WORKER_MODEL REVIEWER_MODEL MAX_BLOCKED STALL_WARN_AFTER  # e.g. inherited from a running autopilot
 export PATH="$T/bin:$PATH" XDG_CONFIG_HOME="$T/config" FAKE_DIR="$T/fake" AUTOPILOT_LIMIT_WAIT=0 AUTOPILOT_POLL=1 MAX=30 MAX_REJECTIONS=10
 new_round() { rm -rf "$FAKE_DIR"; mkdir -p "$FAKE_DIR/steps"; }
 tick='sed -i "0,/^- \[ \]/s//- [x]/" TASKS.md'
@@ -88,6 +89,7 @@ git diff --quiet main -- accept.sh plan.md || fail "locked file was changed"
 grep -qx 3 "$FAKE_DIR/with-feedback" && ! grep -qx 1 "$FAKE_DIR/with-feedback" || fail "feedback not passed on (only) after a rejection"
 grep -qx 1 "$FAKE_DIR/with-plan" || fail "plan was not passed to the worker"
 [ ! -e "$FAKE_DIR/brief-nr" ] || fail "brief written although planner and worker are the same model"
+[ "$(grep -c "tool calls denied" "$v")" = 1 ] || fail "refused tool calls reported although there were none"
 grep -qx 1 "$FAKE_DIR/with-decisions" || fail "{DECISIONS_FILE} was not filled into the prompt"
 grep -q ";accepted;.*;0.0200;" "$T/.autopilot/log/progress.csv" || fail "cost (worker + reviewer) missing in the CSV"
 "$TOOL_DIR/menu.sh" grades | grep -q "^core" || fail "grade table without kind \"core\""
