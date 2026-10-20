@@ -165,12 +165,14 @@ start_now() { # RUNS [REVIEWER] [REJECTIONS] [WORKER] [PLANNER]
     [[ "$n" =~ ^[0-9]+$ && "$rejections" =~ ^[0-9]+$ && "$reviewer" =~ ^(sonnet|opus|haiku)$ && "$worker" =~ ^(sonnet|opus|haiku)$ &&
        "$planner" =~ ^(sonnet|opus)$ ]] ||
         { echo "Usage: autopilot start <runs> [reviewer: sonnet|opus|haiku] [max-rejections] [worker: opus|sonnet|haiku] [planner: opus|sonnet]"; return 2; }
+    command -v tmux >/dev/null || { echo "tmux not found on PATH. Install it (Linux: e.g. sudo apt install tmux, macOS: brew install tmux), then run: autopilot start $n"; return 1; }
     is_running && { echo "The autopilot is already running."; return 1; }
     is_approved || { echo "The acceptance test is NOT approved yet (autopilot approve)."; return 1; }
     [ -n "$(g -C "$WORKDIR" status --porcelain)" ] && { clean_up; echo "Leftovers of an aborted run discarded."; }
     rm -f "$STATE/STOP"
     tmux new -d -s "$SESSION" -e "AUTOPILOT_CONF=$CONF" -e "MAX=$n" -e "WORKER_MODEL=$worker" -e "PLANNER_MODEL=$planner" \
-        -e "REVIEWER_MODEL=$reviewer" -e "MAX_REJECTIONS=$rejections" "$HERE/autopilot.sh"
+        -e "REVIEWER_MODEL=$reviewer" -e "MAX_REJECTIONS=$rejections" "$HERE/autopilot.sh" ||
+        { echo "Could not start the tmux session $SESSION."; return 1; }
     echo "Started: at most $n runs, planner $planner, worker $worker, reviewer $reviewer, stop after $rejections rejections in a row."
     [ "$planner" != "$worker" ] && echo "The planner writes a brief for every task, the worker implements it."
 }

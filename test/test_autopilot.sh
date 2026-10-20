@@ -551,4 +551,20 @@ for n in sn1 sn2; do
 done
 [ -s "$T/sn-tmux.log" ] || fail "session name: status never called tmux"
 n=$(grep -o -- '-t [^ ]*' "$T/sn-tmux.log" | sort -u | wc -l); [ "$n" -ge 2 ] || fail "same NAME in two folders: one tmux session name: $(cat "$T/sn-tmux.log")"
+# start without tmux on PATH: non-zero, message with installation hint, no "Started"; usage check still comes first (exit 2)
+new_round
+sample_project "$T/nt"
+git add -A && git commit -qm start || fail "start without tmux: setup failed"
+mkdir -p "$T/nt-conf"
+cat >"$T/nt-conf/autopilot.conf" <<EOF
+WORKDIR=$T/nt
+TEST_CMD='bash check.sh'
+ALLOWED='^checks\.txt\$'
+EOF
+AUTOPILOT_CONF="$T/nt-conf/autopilot.conf" "$TOOL_DIR/menu.sh" trust "$T/nt-conf/autopilot.conf" >/dev/null || fail "start without tmux: trust failed"
+AUTOPILOT_CONF="$T/nt-conf/autopilot.conf" PATH="$T/nocl" "$TOOL_DIR/menu.sh" start 1 >"$T/nt.txt" 2>&1 && fail "start without tmux exits 0"
+grep -q tmux "$T/nt.txt" && { grep -q "apt install tmux" "$T/nt.txt" || grep -q "brew install tmux" "$T/nt.txt"; } || fail "start without tmux: message incomplete: $(cat "$T/nt.txt")"
+! grep -q Started "$T/nt.txt" || fail "start without tmux printed Started: $(cat "$T/nt.txt")"
+AUTOPILOT_CONF="$T/nt-conf/autopilot.conf" PATH="$T/nocl" "$TOOL_DIR/menu.sh" start 5 gpt >/dev/null 2>&1; [ $? -eq 2 ] || fail "start without tmux: usage check no longer exits 2"
+cd "$T" || exit 1
 echo ok
