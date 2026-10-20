@@ -3,14 +3,25 @@ import type { Engine, Register } from 'claude-code'
 // All the work is done by menu.sh, which ships with the plugin (the repo is the plugin); this plugin asks questions
 // in Claude Code's selection list and shows running projects in the status line. Which project is meant is found
 // by menu.sh itself: ./autopilot.conf in the session directory, otherwise the most recently set up project.
-async function autopilot($: Engine, args: readonly string[], timeoutMs = 60_000): Promise<string> {
-  const r = await $.process.run([`${$.plugin.root}/menu.sh`, ...args], { timeoutMs })
-  return (r.stdout + r.stderr).trim()
+async function autopilot($: Engine, args: readonly string[]): Promise<string> {
+  const argv = [`${$.plugin.root}/menu.sh`, ...args]
+  if (!['plan', 'propose', 'report'].includes(args[0])) {
+    const r = await $.process.run(argv, { timeoutMs: 60_000 })
+    return (r.stdout + r.stderr).trim()
+  }
+  // These may call claude (CLAUDE_TIMEOUT, default 20 min), but process.run allows ten minutes at most:
+  // spawn has no limit of its own, menu.sh ends after CLAUDE_TIMEOUT by itself.
+  let out = ''
+  for await (const { text } of $.process.spawn({ argv })) out += text
+  return out.trim()
 }
 
 const number = (answer: string) => answer.match(/\d+/)?.[0]
 const firstWord = (answer: string) => answer.split(' ')[0].toLowerCase()
-const ask = ($: Engine, text: string, header: string, options: string[]) => $.ui.ask(text, { header, options })
+// $.ui.ask rejects when the person dismisses the question: that is a cancel, not an error.
+const cancelled = new Error('cancelled')
+const ask = ($: Engine, text: string, header: string, options: string[]) =>
+  $.ui.ask(text, { header, options }).catch(() => { throw cancelled })
 
 async function start($: Engine): Promise<string> {
   const n = number(await ask($, 'How many runs at most (one task per run)?', 'Runs', ['5 (Recommended)', '10', '20', '30']))
@@ -34,8 +45,8 @@ async function newProject($: Engine): Promise<string> {
   const files = r.stdout.split('\n').map(z => z.trim()).filter(Boolean)
   const options = files.length >= 2 ? files : [...files, 'Enter a path yourself (under "Other")']
   const file = await ask($, 'Which file describes what should be built? (own path: "Other")', 'Plan file', options)
-  if (file.startsWith('Enter a path')) return 'Please type the path under "Other": run /autopilot again.'
-  const draft = await autopilot($, ['plan', file], 600_000)
+  if (file.startsWith('Enter a path')) return 'Please type the path under "Other": run /autopilot-loop again.'
+  const draft = await autopilot($, ['plan', file])
   if (!draft.includes('Set up: autopilot plan accept')) return draft
   const yes = await ask($, `${draft}\n\nSet it up like this?`, 'Draft', ['Set up', 'Discard'])
   return yes === 'Set up' ? autopilot($, ['plan', 'accept']) : 'Draft not adopted (view it: autopilot plan show).'
@@ -50,7 +61,7 @@ async function planner($: Engine): Promise<string> {
   switch (choice) {
     case 'Adopt suggestion': return autopilot($, ['suggestion', 'accept'])
     case 'Discard suggestion': return autopilot($, ['suggestion', 'discard'])
-    case 'Let the planner propose tasks': return autopilot($, ['propose'], 600_000)
+    case 'Let the planner propose tasks': return autopilot($, ['propose'])
     case 'New project from file': return newProject($)
     default: return 'Back.'
   }
@@ -62,7 +73,7 @@ async function more($: Engine): Promise<string> {
     case 'Costs and chart': return `${await autopilot($, ['costs'])}\n\nChart: ${await autopilot($, ['chart'])}`
     case 'Read decisions': return autopilot($, ['notes'])
     case 'View result': return autopilot($, ['result'])
-    case 'Report now': return autopilot($, ['report'], 300_000)
+    case 'Report now': return autopilot($, ['report'])
     default: return `Unknown choice: ${choice}`
   }
 }
@@ -107,29 +118,30 @@ async function menu($: Engine): Promise<string> {
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
-    await $.command.register({
-      name: 'autopilot',
-      description: 'Autopilot menu: project from a plan file, start, stop, status, planner, costs',
-      argumentHint: '[status|stop|continue|plan <file>|start <runs> [reviewer] [max-rejections] [worker] [planner]]',
-    })
     // Status line: while a project runs, its progress shows below the input (refreshed every minute).
+    // Set up first, so a refused command registration below cannot take it down.
     const showStatus = async () => {
       const line = await autopilot($, ['status', '--short']).catch(() => '')
       $.ui.status(line.startsWith('Autopilot ') ? line : undefined)
     }
     void showStatus()
     $.clock.every(60_000, () => void showStatus())
+    await $.command.register({
+      name: 'autopilot-loop',
+      description: 'Autopilot menu: project from a plan file, start, stop, status, planner, costs',
+      argumentHint: '[status|stop|continue|trust <file>|plan <file>|start <runs> [reviewer] [max-rejections] [worker] [planner]]',
+    }).catch(err => $.ui.log(`autopilot-loop: /autopilot-loop not registered: ${err instanceof Error ? err.message : err}`))
     return next(e)
   })
 
-  // Without an argument: selection menu; with an argument straight to the `autopilot` command (e.g. "/autopilot status").
-  on('command.run', { command: 'autopilot' }, async ($, e) => {
+  // Without an argument: selection menu; with an argument straight to the `autopilot` command (e.g. "/autopilot-loop status").
+  on('command.run', { command: 'autopilot-loop' }, async ($, e) => {
     try {
       const args = e.args.trim()
-      if (args.startsWith('plan ')) return { text: await autopilot($, ['plan', args.slice(5).trim()], 600_000) }
+      if (args.startsWith('plan ')) return { text: await autopilot($, ['plan', args.slice(5).trim()]) }
       return { text: args ? await autopilot($, args.split(/\s+/)) : await menu($) }
-    } catch {
-      return { text: 'Autopilot menu closed.' }
+    } catch (err) {
+      return { text: err === cancelled ? 'Autopilot menu closed.' : `Autopilot error: ${err instanceof Error ? err.message : err}` }
     }
-  })
+  }).catch(() => ({ text: 'Autopilot error: the command did not finish in time.' }))
 }

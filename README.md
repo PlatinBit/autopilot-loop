@@ -135,7 +135,9 @@ Linux or WSL (macOS 12.3+ untested), Bash 4.4 or newer, `git`, `tmux`, `jq`, `py
 /plugin install autopilot@autopilot-loop
 ```
 
-Afterwards `/autopilot` opens the menu as a selection list, and running projects show up in the status line. Update: `/plugin` → Marketplaces → autopilot-loop → Update.
+Afterwards `/autopilot-loop` opens the menu as a selection list, and running projects show up in the status line. Without `install.sh` there is no `autopilot` command in the terminal: every command below works in Claude Code as `/autopilot-loop <command>`, e.g. `/autopilot-loop trust <file>`.
+
+Update: `/plugin` → Marketplaces → autopilot-loop → Update. Plugin code runs unattended and `trust` only covers `autopilot.conf`, not the plugin itself, so turn off auto-update for this marketplace and update by hand after reading the changes.
 
 **Optionally in the terminal** (for the `autopilot` command without Claude, e.g. for cron):
 
@@ -152,7 +154,7 @@ autopilot plan accept                   # after reading: set up the "autopilot" 
 autopilot                               # menu → Start
 ```
 
-Or in Claude Code: `/autopilot` → "New project from file".
+Or in Claude Code: `/autopilot-loop` → "New project from file".
 
 - **Plan file inside a Git project** (an existing codebase): work happens in a separate worktree `<project>-autopilot` on branch `autopilot`, so your working copy stays untouched; adopt the result with `git merge autopilot`.
 - **Plan file anywhere else** (e.g. `~/idea.md` for something new): a project folder `<name>-autopilot/` is created next to it with its own Git repository and a copy of the plan, and Claude builds everything there. Nothing else on your system is changed – no `git init` in your folders, no change to your global Git settings.
@@ -165,12 +167,12 @@ Manual setup also works: `autopilot setup` creates a commented [`autopilot.conf`
 
 | No. | Command | Effect |
 |---|---|---|
-| 1 | `autopilot` / `/autopilot` | menu |
+| 1 | `autopilot` / `/autopilot-loop` | menu |
 | 2 | `autopilot plan <file>` / `plan show` / `plan accept` | draft a new project from a plan file / show the draft / set it up |
-| 3 | `autopilot start 10 opus 3 sonnet opus` | 10 runs, reviewer opus, stop after 3 rejections in a row, builder sonnet, planner opus (writes a brief for every task, because builder and planner differ) |
+| 3 | `autopilot start 10 opus 3 sonnet opus` | discards unfinished changes in the work directory (`git reset --hard`, `git clean`), then 10 runs, reviewer opus, stop after 3 rejections in a row, builder sonnet, planner opus (writes a brief for every task, because builder and planner differ) |
 | 4 | `autopilot status [--short]` | running?, acceptance, tasks, latest events |
 | 5 | `autopilot continue` | approve the supervised step (with `SUPERVISED=on`) |
-| 6 | `autopilot stop` / `abort` | stop after the current run / stop now and discard the unfinished run |
+| 6 | `autopilot stop` / `abort` | stop after the current run / stop now and discard the unfinished run (`git reset --hard` and `git clean` in the work directory) |
 | 7 | `autopilot grades` / `costs` / `chart` | grade table / cost per day and model / progress chart as an HTML page |
 | 8 | `autopilot propose` / `suggestion [accept\|discard]` | run the planner / view and adopt its suggestion |
 | 9 | `autopilot report [--if-new]` | summary of the last 24 hours, also sent as a notification |
@@ -193,7 +195,7 @@ Logs, progress, grades, approval and suggestions live in `.autopilot/` next to `
 
 ## Security
 
-The checks protect the **quality** of the work. They are **not a security boundary**: the test command runs code Claude wrote, with your permissions. What is built in:
+The checks protect the **quality** of the work. They are **not a security boundary**: the test command runs code Claude wrote, with your user rights – including every device your user can open (`/dev`, e.g. `i2c` or `hidraw` with loose udev rules) and every local hardware tool. Best run the autopilot on a separate machine, VM or container. An optional sandbox for the test command (`SANDBOX=on`) is coming. What is built in:
 
 | No. | Protection | Against |
 |---|---|---|

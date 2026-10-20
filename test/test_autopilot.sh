@@ -2,6 +2,7 @@
 # Self-test for autopilot-loop with a fake `claude` (test/fake-claude): costs nothing, starts nothing real,
 # touches no real settings (own XDG_CONFIG_HOME). Output "ok" = everything passed.
 set -u
+export LC_ALL=C.UTF-8  # English git messages (the checks read them); umlauts stay valid
 TOOL_DIR=$(readlink -f "$(dirname "$0")/..")
 T=$(mktemp -d)
 trap 'kill $(jobs -p) 2>/dev/null; rm -rf "$T"' EXIT

@@ -8,7 +8,7 @@
 # Important: the checks protect quality, they are not a security boundary. The test command runs code that
 # Claude wrote. Run plans or projects from others only inside a container or a VM.
 #
-# Normally started from the menu (`autopilot`, in Claude Code `/autopilot`).
+# Normally started from the menu (`autopilot`, in Claude Code `/autopilot-loop`).
 # Environment: MAX (runs, 30), MAX_REJECTIONS (rejections in a row, 3), MAX_BLOCKED (blocked tasks, 3),
 #              PLANNER_MODEL (opus), WORKER_MODEL (opus), REVIEWER_MODEL (sonnet), AUTOPILOT_CONF (configuration)
 # If the worker is a different model than the planner, the planner writes a brief for every task first.
