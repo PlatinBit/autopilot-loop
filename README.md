@@ -205,7 +205,7 @@ The checks protect the **quality** of the work. They are **not a security bounda
 | 6 | `.git*`, `.github/`, `.claude/`, `.autopilot/`, `autopilot.conf`, `CLAUDE.md` are always locked; renames are checked with old and new path | bypassing the path check |
 | 7 | Numbers must be numbers; new code that prints the count line itself is rejected | faked test counts |
 
-**Recommendation:** for your own plans in your own projects this is enough. For plans or repos from others, run the autopilot in a container or VM without access to keys and private data. Never use `--dangerously-skip-permissions` on your own system. Read drafts before accepting them: `TEST_CMD`, `TEST_COUNT_CMD` and `ACCEPT_CMD` are run as shell commands.
+**Recommendation:** for your own plans in your own projects this is enough. For plans or repos from others, run the autopilot in a container or VM without access to keys and private data. Never use `--dangerously-skip-permissions` on your own system. Read drafts before accepting them: `TEST_CMD` and `TEST_COUNT_CMD` are run as shell commands (a draft never sets up an acceptance test: `ACCEPT_CMD` needs locked `ACCEPT_FILES`, set both by hand).
 
 ## Self-test
 

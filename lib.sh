@@ -69,8 +69,15 @@ conf_dir_writable() { # DIR: create it; on failure name it and XDG_CONFIG_HOME
     mkdir -p "$1" 2>/dev/null && [ -w "$1" ] ||
         { echo "Cannot write to the config directory $1 – make it writable or set XDG_CONFIG_HOME to a writable folder." >&2; return 1; }
 }
+# grep exits 2 on an invalid pattern and prints nothing: a path or content check would then let everything through.
+valid_ere() { grep -E -- "$1" </dev/null >/dev/null 2>&1; [ $? -le 1 ]; }
+bad_patterns() { # names of the set but invalid ALLOWED / FORBIDDEN_CONTENT
+    local v; for v in ALLOWED FORBIDDEN_CONTENT; do [ -z "${!v-}" ] || valid_ere "${!v}" || echo "$v"; done
+}
 trust() { # FILE
-    local path; path=$(readlink -f "$1") && [ -f "$path" ] || { echo "File not found: $1" >&2; return 1; }
+    local path bad; path=$(readlink -f "$1") && [ -f "$path" ] || { echo "File not found: $1" >&2; return 1; }
+    bad=$(set +u; . "$path" </dev/null >/dev/null 2>&1; bad_patterns)
+    [ -z "$bad" ] || { echo "Not trusted: $(echo $bad) in $path is not a valid regular expression (grep -E)." >&2; return 1; }
     conf_dir_writable "$(dirname "$TRUSTED_FILE")" || return 1
     { awk -v p="$path" 'substr($0, 66) != p' "$TRUSTED_FILE" 2>/dev/null; echo "$(hash_only <"$path") $path"; } >"$TRUSTED_FILE.new" &&
         mv "$TRUSTED_FILE.new" "$TRUSTED_FILE"

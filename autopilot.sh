@@ -126,6 +126,10 @@ reject() { # BEFORE REASON [LOGFILE]
     failures=$((failures + 1)); record rejected; grade 0
 }
 
+first_open_as() { # MARK <task list: the list with the first open task marked [MARK]
+    awk -v m="$1" '!d && /^- \[ \]/ { sub(/^- \[ \]/, "- [" m "]"); d = 1 } 1'
+}
+
 block_task() { # REASON: mark the first open task as [~] so the loop can move on
     local open_before; open_before=$(grep -c '^- \[ \]' "$TASKS_FILE")
     echo "- $(date +%F), $(grep -m1 '^- \[ \]' "$TASKS_FILE" | cut_chars 7 60): $1" >>BLOCKED.md
@@ -136,13 +140,18 @@ block_task() { # REASON: mark the first open task as [~] so the loop can move on
     rm -f "$FEEDBACK"; failures=0; rejections=0; timeouts=0
 }
 
+# Last VERDICT line without Markdown decoration (**, _, `, >) and trailing dot: "**VERDICT: ACCEPT**" → "VERDICT: ACCEPT"
+verdict_line() { # FILE
+    grep -E '^[[:space:]>*_`]*VERDICT[*_`]*:' "$1" | tail -1 |
+        sed -E 's/^[[:space:]>*_`]+//; s/^VERDICT[*_`]*:[[:space:]*_`]*/VERDICT: /; s/[[:space:]*_`.]+$//'
+}
 # Second Claude with a fresh context and read-only access; prints the VERDICT line.
 verdict_of() { # PROMPT-FILE LOG-NAME
     local attempt k rc
     for attempt in $(seq 1 20); do
         k=$(claude_run "$LOGS/$2" --model "$REVIEWER_MODEL" --allowedTools Read Grep Glob <"$1"); rc=$?
         echo "$k" >>"$STATE/cost-extra"  # runs in a subshell: return the cost through a file
-        grep '^VERDICT:' "$LOGS/$2" | tail -1 | grep . && return
+        verdict_line "$LOGS/$2" | grep . && return
         [ "$rc" = 124 ] && { echo "VERDICT: REJECT: reviewer hit the time limit (${CLAUDE_TIMEOUT:-20m}), see log/$2"; return; }
         usage_limit "$LOGS/$2" || return
         note "Reviewer: usage limit, waiting $((LIMIT_WAIT / 60)) min" >&2; sleep "$LIMIT_WAIT"
@@ -194,6 +203,9 @@ changed_submodules() {
 
 [ -n "$TEST_CMD" ] || { announce crit "TEST_CMD is not set in $CONF"; exit 1; }
 [ -n "$ALLOWED" ] || { announce crit "ALLOWED is not set in $CONF – which paths may Claude change?"; exit 1; }
+bad=$(bad_patterns); [ -z "$bad" ] || { announce crit "$(echo $bad) in $CONF is not a valid regular expression (grep -E)"; exit 1; }
+[ -n "$ACCEPT_CMD" ] && [ ${#ACCEPT_FILES[@]} -eq 0 ] &&
+    { announce crit "ACCEPT_CMD is set but ACCEPT_FILES is empty in $CONF: the acceptance test would not be locked"; exit 1; }
 [ -f "$TASKS_FILE" ] || { announce crit "Task list $WORKDIR/$TASKS_FILE is missing"; exit 1; }
 is_approved || { announce warn "Acceptance test NOT approved: choose \"Approve acceptance test\" in the menu (or: autopilot approve)"; exit 1; }
 [ -n "$(g status --porcelain)" ] && { announce crit "Work directory not clean, aborting"; exit 1; }
@@ -290,9 +302,15 @@ while [ "$i" -lt "$MAX" ]; do
             block_task "time limit reached twice – task too big for one run, please split it"
         continue
     fi
+    # The only allowed change to the task list: the first open task ticked off [x] or blocked [~]
+    old_tasks=$(g show "$before:$TASKS_FILE"); now_tasks=$(cat "$TASKS_FILE")
+    if [ "$now_tasks" != "$(first_open_as x <<<"$old_tasks")" ] && [ "$now_tasks" != "$(first_open_as '~' <<<"$old_tasks")" ]; then
+        reject "$before" "task list changed beyond ticking off or blocking the first open task (only [ ] -> [x] or [~] of that line is allowed)"; continue
+    fi
     subs=$(changed_submodules)
     if [ -n "$subs" ]; then reject "$before" "change inside a submodule: $(echo $subs)"; continue; fi
-    foreign=$(changed | grep -Ev "$ALLOWED")
+    foreign=$(changed | grep -Ev -- "$ALLOWED")
+    [ $? -le 1 ] || { reject "$before" "ALLOWED check failed (invalid pattern?)"; continue; }
     if [ -n "$foreign" ]; then reject "$before" "change outside allowed paths: $(echo $foreign)"; continue; fi
     locked=$( { changed | grep -E "$ALWAYS_LOCKED"
                 for p in ${LOCKED[@]+"${LOCKED[@]}"} ${ACCEPT_FILES[@]+"${ACCEPT_FILES[@]}"}; do changed "$p"; done; } | sort -u)
@@ -301,8 +319,9 @@ while [ "$i" -lt "$MAX" ]; do
     if [ -n "$links" ]; then reject "$before" "symlink pointing outside the work directory: $(echo $links)"; continue; fi
     added=$(g diff --cached --no-ext-diff --no-renames -U0 -- . ":(exclude)$TASKS_FILE" ":(exclude)BLOCKED.md" ":(exclude)$DECISIONS_FILE" |
         grep '^+' | grep -v '^+++' | sed 's/^+//')
-    if [ -n "$FORBIDDEN_CONTENT" ] && grep -qE "$FORBIDDEN_CONTENT" <<<"$added"; then
-        reject "$before" "forbidden content added (pattern: $FORBIDDEN_CONTENT)"; continue
+    if [ -n "$FORBIDDEN_CONTENT" ]; then
+        grep -qE -- "$FORBIDDEN_CONTENT" <<<"$added"; r=$?  # 1 = no hit; 0 = hit, 2 = check failed: both reject
+        [ "$r" = 1 ] || { reject "$before" "forbidden content added or check failed (pattern: $FORBIDDEN_CONTENT)"; continue; }
     fi
     # New code that prints the count line itself could fake the check (pattern without ^/$, because in code
     # the line sits in the middle of a print/echo)
