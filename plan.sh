@@ -144,5 +144,5 @@ case "${1:-}" in
     show) repo=$(cat "$LAST" 2>/dev/null) && [ -d "$repo/.autopilot/draft" ] || fail "No draft available."
           show "$repo/.autopilot/draft" ;;
     accept) accept ;;
-    *) draft "$1" ;;
+    *) need_claude || exit 1; draft "$1" ;;
 esac

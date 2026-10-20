@@ -12,3 +12,4 @@
 - Task 12: `accept()` commits the task list only if `diff --cached` shows a change (a second run with the same list has nothing to commit); the error message for a real commit failure is unchanged.
 - Task 13: Bei Fehler im Work-Branch-Anlegen bleiben Draft und LAST erhalten; die Meldung nennt Zielpfad, Gits letzte stderr-Zeile und den Hinweis, `plan accept` erneut auszuführen.
 - Task 14: `conf_dir_writable` in lib.sh (mkdir plus `-w` check, message names the folder and XDG_CONFIG_HOME) is used by `trust()` and `plan.sh`; the check that the new test fails without the fix was only done by reasoning (old code prints a raw `mkdir:` line), not by a run.
+- Task 15: `need_claude` in lib.sh is called only for drafting in `plan.sh` and right after `common.sh` in `autopilot.sh` (so `status`, `trust`, `plan show|accept` work without claude); `menu.sh start` and the plugin are unchanged; verified that the test fails with `need_claude` made a no-op.

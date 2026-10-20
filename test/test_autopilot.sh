@@ -423,4 +423,28 @@ if [ "$(id -u)" != 0 ]; then
         ! grep -q '^mkdir:' "$o" || fail "read-only config dir: raw mkdir error: $(cat "$o")"
     done
 fi
+# claude not on PATH: `plan <file>` and autopilot.sh exit early with a clear message and create nothing
+mkdir -p "$T/nocl"
+for c in bash env dirname readlink basename mkdir rm mv cp cat ls touch grep sed awk cut tr sort head tail wc tee date find git jq sha256sum shasum nice timeout gtimeout mktemp id; do
+    p=$(command -v "$c") && case $p in /*) ln -sf "$p" "$T/nocl/$c" ;; esac; done
+new_round
+sample_project "$T/nc-p"
+git add -A && git commit -qm start || fail "no-claude plan setup failed"
+PATH="$T/nocl" "$TOOL_DIR/menu.sh" plan "$T/nc-p/plan.md" >"$T/nc1.txt" 2>&1 && fail "plan without claude exits 0"
+grep -q claude "$T/nc1.txt" && grep -q "not found" "$T/nc1.txt" && grep -q "claude.com/claude-code" "$T/nc1.txt" || fail "plan without claude: message incomplete: $(cat "$T/nc1.txt")"
+[ ! -e "$T/nc-p/.autopilot/draft" ] || fail "plan without claude created .autopilot/draft"
+new_round
+sample_project "$T/nc"
+printf -- '- [ ] 1. [x] one\n' >TASKS.md
+git add -A && git commit -qm start && git checkout -qb autopilot || fail "no-claude run setup failed"
+mkdir -p "$T/nc-conf"
+cat >"$T/nc-conf/autopilot.conf" <<EOF
+WORKDIR=$T/nc
+TEST_CMD='bash check.sh'
+ALLOWED='^checks\.txt\$'
+EOF
+AUTOPILOT_CONF="$T/nc-conf/autopilot.conf" "$TOOL_DIR/menu.sh" trust "$T/nc-conf/autopilot.conf" >/dev/null || fail "no-claude run: trust failed"
+AUTOPILOT_CONF="$T/nc-conf/autopilot.conf" MAX=1 PATH="$T/nocl" "$TOOL_DIR/autopilot.sh" >"$T/nc2.txt" 2>&1 && fail "autopilot.sh without claude exits 0"
+grep -q claude "$T/nc2.txt" && grep -q "not found" "$T/nc2.txt" && grep -q "claude.com/claude-code" "$T/nc2.txt" || fail "autopilot.sh without claude: message incomplete: $(cat "$T/nc2.txt")"
+! grep -q "Run 1" "$T/nc-conf/.autopilot/log/history.log" 2>/dev/null || fail "autopilot.sh without claude started a run"
 echo ok

@@ -17,6 +17,10 @@ with_timeout() { # DURATION COMMAND …
     else shift; "$@"; fi
 }
 
+# Without the claude CLI nothing can work: say so before anything is created.
+need_claude() { command -v claude >/dev/null ||
+    { echo "claude (Claude Code CLI) not found on PATH. Install it: https://claude.com/claude-code – then log in once by running: claude" >&2; return 1; }; }
+
 # Git without hooks, fsmonitor, external diff programs and pager: a prepared work directory must not be able
 # to run code through them while the script checks or commits.
 g() { git -c core.hooksPath=/dev/null -c core.fsmonitor= -c diff.external= -c core.pager=cat "$@"; }
