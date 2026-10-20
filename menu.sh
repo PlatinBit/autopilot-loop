@@ -68,14 +68,19 @@ accept_progress() {
         sed 's/Accept \([0-9]*\) -> \([0-9]*\)/Accept \2/'
 }
 
+waiting() { # WAITING only counts while the run that wrote it is alive (a leftover after a crash/reboot does not)
+    local pid; [ -r "$STATE/WAITING" ] && read -r pid <"$STATE/WAITING" || return 1
+    [[ $pid =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null
+}
+
 status() {
     if [ "${1:-}" = --short ]; then  # one line for the Claude Code status line; empty when nothing runs
         is_running || return 0
-        if [ -e "$STATE/WAITING" ]; then echo "Autopilot $NAME: waiting for your OK (supervised)"
+        if waiting; then echo "Autopilot $NAME: waiting for your OK (supervised)"
         else echo "Autopilot $NAME: $(run_progress)$( [ -n "$ACCEPT_CMD" ] && echo " · $(accept_progress)")"; fi
         return 0
     fi
-    echo "Status:      $(is_running && echo 'running' || echo 'off')$( [ -e "$STATE/STOP" ] && echo ' (stops after this run)')$( [ -e "$STATE/WAITING" ] && echo ' – WAITING for your OK (autopilot continue)')"
+    echo "Status:      $(is_running && echo 'running' || echo 'off')$( [ -e "$STATE/STOP" ] && echo ' (stops after this run)')$( waiting && echo ' – WAITING for your OK (autopilot continue)')"
     [ ${#ACCEPT_FILES[@]} -gt 0 ] && echo "Acceptance:  $(is_approved && echo 'approved' || echo 'NOT approved')   $(accept_progress)"
     [ -n "$PLAN_FILE" ] && echo "Plan:        $PLAN_FILE"
     if [ -f "$WORKDIR/$TASKS_FILE" ]; then
@@ -186,7 +191,7 @@ case "${1:-}" in
         s=$(accept_checksum) || { echo "Approval refused: fix ACCEPT_FILES in $CONF."; exit 1; }
         echo "$s" >"$STATE/APPROVAL"; echo "Acceptance test approved."; exit 0 ;;
     continue)
-        [ -e "$STATE/WAITING" ] || { echo "Nothing is waiting for your OK right now."; exit 0; }
+        waiting || { echo "Nothing is waiting for your OK right now."; exit 0; }
         touch "$STATE/CONTINUE"; echo "OK given, continuing."; exit 0 ;;
     stop)
         is_running || { echo "The autopilot is not running."; exit 0; }

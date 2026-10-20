@@ -175,6 +175,15 @@ grep -q '^- \[ \] 2\. \[new\] two' "$T/p2-autopilot/AUTOPILOT-TASKS.md" || fail 
 echo "Short report: all good." >"$FAKE_DIR/report.txt"
 "$TOOL_DIR/menu.sh" report | grep -q "Short report: all good" || fail "report wrong"
 [ -z "$("$TOOL_DIR/menu.sh" status --short)" ] || fail "status line shows something although nothing runs"
+sleep 0 & dead=$!; wait $dead
+printf '%s\nstale task\n' "$dead" >"$T/p2/.autopilot/WAITING"   # leftover after a crash: writer is gone
+"$TOOL_DIR/menu.sh" status | grep -q "WAITING for your OK" && fail "orphaned WAITING shown in status"
+[ -z "$("$TOOL_DIR/menu.sh" status --short)" ] || fail "orphaned WAITING shown in the status line"
+"$TOOL_DIR/menu.sh" continue | grep -q "Nothing is waiting" || fail "continue accepts an orphaned WAITING"
+[ ! -e "$T/p2/.autopilot/CONTINUE" ] || fail "continue created CONTINUE for an orphaned WAITING"
+printf -- '-1\n' >"$T/p2/.autopilot/WAITING"   # a task starting with "-" must never reach kill
+"$TOOL_DIR/menu.sh" continue | grep -q "Nothing is waiting" || fail "non-numeric first line of WAITING accepted"
+rm -f "$T/p2/.autopilot/WAITING"
 [ -z "$(find "$T" -name triggered)" ] || fail "command from the file name was executed later while loading"
 
 # ======== Part C: plan file outside any Git project (e.g. ~/readme.md): own project folder, nothing else touched ========

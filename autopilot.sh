@@ -158,7 +158,7 @@ smoke_test() { # → 0 passed, otherwise the reason in $reason
 # Supervised mode: kinds without a licence wait for `autopilot continue` after every task.
 supervised_stop() {
     [ "$SUPERVISED" = on ] && ! has_licence "$kind" || return 0
-    echo "$task" >"$STATE/WAITING"; rm -f "$STATE/CONTINUE"
+    printf '%s\n%s\n' "$$" "$task" >"$STATE/WAITING"; rm -f "$STATE/CONTINUE"
     announce info "Supervised \"$kind\": $task – accepted and committed. Please review, then: autopilot continue"
     until [ -e "$STATE/CONTINUE" ] || [ -e "$STATE/STOP" ]; do sleep "$POLL"; done
     rm -f "$STATE/WAITING" "$STATE/CONTINUE"
