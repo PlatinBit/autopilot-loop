@@ -21,7 +21,7 @@ case "${1:-}" in
     plan) shift; exec "$HERE/plan.sh" "$@" ;;
     setup)
         [ -e autopilot.conf ] && { echo "autopilot.conf already exists here."; exit 1; }
-        cp "$HERE/templates/autopilot.conf" autopilot.conf
+        cp "$HERE/templates/autopilot.conf" autopilot.conf || exit 1
         echo "autopilot.conf created: fill in TEST_CMD, ALLOWED and WORKDIR, then: autopilot trust"
         echo "Easier: autopilot plan <plan-file>"
         exit 0 ;;
@@ -85,12 +85,12 @@ status() {
     [ -n "$PLAN_FILE" ] && echo "Plan:        $PLAN_FILE"
     if [ -f "$WORKDIR/$TASKS_FILE" ]; then
         echo "Tasks:       $(grep -c '^- \[x\]' "$WORKDIR/$TASKS_FILE") done, $(grep -c '^- \[ \]' "$WORKDIR/$TASKS_FILE") open, $(grep -c '^- \[~\]' "$WORKDIR/$TASKS_FILE") blocked"
-        echo "Next:        $(grep -m1 '^- \[ \]' "$WORKDIR/$TASKS_FILE" | cut -c7-70)"
+        echo "Next:        $(grep -m1 '^- \[ \]' "$WORKDIR/$TASKS_FILE" | cut_chars 7 70)"
     else echo "Tasks:       task list not found: $WORKDIR/$TASKS_FILE (check TASKS_FILE in autopilot.conf)"; fi
     [ -s "$STATE/suggestion.md" ] && echo "Suggestion:  $(wc -l <"$STATE/suggestion.md") new tasks from the planner are waiting (autopilot suggestion)"
     echo
     echo "Latest events:"
-    tail -8 "$STATE/log/history.log" 2>/dev/null | cut -c12-110
+    tail -8 "$STATE/log/history.log" 2>/dev/null | cut_chars 12 110
 }
 
 conditions() {
@@ -103,9 +103,12 @@ notes() {
     echo; echo "BLOCKED:"; cat "$WORKDIR/BLOCKED.md" 2>/dev/null || echo "nothing"
 }
 result() {
-    echo "New since $BASE_BRANCH (branch $(g -C "$WORKDIR" branch --show-current)):"
-    g -C "$WORKDIR" log --oneline "$BASE_BRANCH..HEAD" | cut -c1-105
-    echo; echo "To adopt, in the project:  git merge $(g -C "$WORKDIR" branch --show-current)"
+    local b; b=$(g -C "$WORKDIR" branch --show-current)
+    echo "New since $BASE_BRANCH (branch $b):"
+    g -C "$WORKDIR" log --oneline "$BASE_BRANCH..HEAD" | cut_chars 1 105
+    echo
+    if [ "$b" = "$BASE_BRANCH" ]; then echo "The work is directly on $b: nothing to merge."
+    else echo "To adopt, on $BASE_BRANCH in the project:  git merge $b"; fi
 }
 costs() {
     local csv=$STATE/log/progress.csv

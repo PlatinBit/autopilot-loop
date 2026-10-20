@@ -626,4 +626,5 @@ for a in "" --short; do
     ! head -c7 "$T/sig/out.txt" | grep -q '^Status:' || fail "status $a with untrusted conf starts with Status: $(cat "$T/sig/out.txt")"
 done
 cd "$T" || exit 1
+. "$TOOL_DIR/test/part_c.sh"
 echo ok

@@ -155,7 +155,7 @@ autopilot                               # menu → Start
 Or in Claude Code: `/autopilot` → "New project from file".
 
 - **Plan file inside a Git project** (an existing codebase): work happens in a separate worktree `<project>-autopilot` on branch `autopilot`, so your working copy stays untouched; adopt the result with `git merge autopilot`.
-- **Plan file anywhere else** (e.g. `~/idea.md` for something new): a project folder `<name>-autopilot/` is created next to it with its own Git repository and a copy of the plan, and Claude builds everything there. Nothing else on your system is changed – no `git init` in your folders, no change to your global Git settings.
+- **Plan file anywhere else** (e.g. `~/idea.md` for something new): a project folder `<name>-autopilot/` is created next to it with its own Git repository and a copy of the plan, and Claude builds everything there on branch `autopilot` (`main` keeps the plan; adopt with `git checkout main && git merge autopilot`). Nothing else on your system is changed – no `git init` in your folders, no change to your global Git settings.
 
 **The better the plan, the further the autopilot gets on its own.** Describe what should work in the end, ideally with examples and limits. Whatever cannot be checked automatically (look, usability) is yours to check.
 

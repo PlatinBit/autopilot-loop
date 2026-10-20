@@ -79,7 +79,7 @@ mkdir -p "$STATE/log" "$STATE/licence"
 if exclude=$(git -C "$WORKDIR" rev-parse --git-path info/exclude 2>/dev/null); then
     case "$exclude" in /*) ;; *) exclude=$WORKDIR/$exclude ;; esac
     mkdir -p "$(dirname "$exclude")"
-    for pattern in .autopilot/ autopilot.conf; do
+    for pattern in .autopilot/ autopilot.conf __pycache__/ '*.pyc'; do
         grep -qxF "$pattern" "$exclude" 2>/dev/null || echo "$pattern" >>"$exclude"
     done
 fi
