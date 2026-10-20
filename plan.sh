@@ -3,6 +3,8 @@
 # task list, test command and allowed paths. Nothing is set up before your OK.
 #
 #   autopilot plan <file>      create and show a draft (read only, changes nothing in the project)
+#   autopilot plan idea "<one to three sentences>"   write ./<slug>-plan.md from a bare idea; review it,
+#                              then: autopilot plan <that file>
 #   autopilot plan show        show the last draft
 #   autopilot plan accept      set up the last draft: work branch "autopilot" as a worktree next to the
 #                              project, autopilot.conf, task list; afterwards `autopilot` means this project
@@ -70,6 +72,30 @@ new_workspace() { # PLANFILE → path of the project folder on stdout
     mkdir -p "$dir/.autopilot" && touch "$dir/.autopilot/own-workspace"
     echo "Note: $file is not inside a Git project, so a separate project folder was created: $dir" >&2
     echo "$dir"
+}
+
+idea() { # IDEA TEXT: write ./<slug>-plan.md; the user reviews it, then: autopilot plan <file>
+    local text=$1 slug out a prompt cost
+    [ -n "$text" ] || fail 'Usage: autopilot plan idea "<one to three sentences>"'
+    slug=$(printf %s "$text" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-')
+    slug=${slug:0:40}; slug=${slug#-}; slug=${slug%-}
+    out=$PWD/${slug:-idea}-plan.md
+    [ -e "$out" ] && fail "$out already exists - move it aside or word the idea differently."
+    a=$CONF_BASE/idea-answer.txt
+    echo "Claude turns the idea into a plan file (takes a few minutes) ..."
+    prompt="$(cat "$TOOL_DIR/templates/IDEA.md")
+
+## Idea
+$text"
+    cost=$(claude_run "$a" --model "${PLANNER_MODEL:-opus}" --allowedTools Read Grep Glob <<<"$prompt") ||
+        fail "Claude exited with an error, see $a"
+    jq -e . "$a.json" >/dev/null 2>&1 && [ -s "$a" ] ||
+        fail "Claude gave no usable answer (invalid JSON or empty output), see $a - run autopilot plan idea again."
+    cp "$a" "$out" || fail "Could not write $out"
+    echo "Plan file written (cost approx. $cost USD): $out"
+    echo; head -25 "$out" | sed 's/^/  /'; [ "$(wc -l <"$out")" -gt 25 ] && echo "  ..."
+    echo
+    echo "Next: read and edit $out, then set up the project: autopilot plan $out"
 }
 
 draft() { # PLANFILE
@@ -171,9 +197,10 @@ Move or remove what is at $wt (or delete a stale worktree with: git -C \"$repo\"
 }
 
 case "${1:-}" in
-    "") sed -n '2,8p' "$0" | cut -c3-; exit 2 ;;
+    "") sed -n '2,10p' "$0" | cut -c3-; exit 2 ;;
     show) repo=$(cat "$LAST" 2>/dev/null) && [ -d "$repo/.autopilot/draft" ] || fail "No draft available."
           show "$repo/.autopilot/draft" ;;
     accept) accept ;;
+    idea) shift; need_claude && need_jq || exit 1; idea "$*" ;;
     *) need_claude || exit 1; draft "$1" ;;
 esac

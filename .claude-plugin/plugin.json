@@ -17,5 +17,6 @@
     "tests",
     "review",
     "feedback-loop"
-  ]
+  ],
+  "types": "./types/index.d.ts"
 }

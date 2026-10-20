@@ -3,10 +3,11 @@
 #
 #   autopilot                          menu (whiptail)
 #   autopilot plan <file>              draft a new project from a plan file (then: plan accept)
+#   autopilot plan idea "<sentences>"  write a plan file from a bare idea (review it, then: autopilot plan <file>)
 #   autopilot plan show | plan accept  show the last draft / set it up
 #   autopilot trust [file]             approve a hand-written or changed autopilot.conf
 #   autopilot start <runs> [reviewer: sonnet|opus|haiku] [max-rejections] [worker: opus|sonnet|haiku] [planner: opus|sonnet]
-#   autopilot status [--short] | stop | abort | continue | approve | conditions
+#   autopilot status [--short] | summary [--short] | stop | abort | continue | approve | conditions
 #   autopilot grades | costs | chart | notes | result | propose | suggestion [accept|discard]
 #   autopilot report [--if-new]        summary of the last 24 hours (for cron)
 #   autopilot doctor                   check everything needed: tools, versions, install commands, project
@@ -79,7 +80,7 @@ case "${1:-}" in
         echo "This file is executed as Bash code on every call: $(readlink -f "$k")"
         trust "$k" && echo "Marked as trusted (valid until it changes)."
         exit $? ;;
-    help|-h|--help) sed -n '2,14p' "$0" | cut -c3-; exit 0 ;;
+    help|-h|--help) sed -n '2,15p' "$0" | cut -c3-; exit 0 ;;
 esac
 
 has_project() { [ -f "${AUTOPILOT_CONF:-/nonexistent}" ] || [ -f "$PWD/autopilot.conf" ] || [ -f "$CONF_BASE/standard.conf" ]; }
@@ -189,6 +190,46 @@ suggestion() {
     esac
 }
 
+summary() { # [--short]: end summary of the last start, from the logs alone (no Claude call)
+    local h=$STATE/log/history.log csv=$STATE/log/progress.csv
+    local ln events st t0 runs cost secs t1 n_done n_open n_blocked acc ended next
+    ln=$(grep -n ' Start: ' "$h" 2>/dev/null | tail -1 | cut -d: -f1)
+    [ -n "$ln" ] || { echo "Nothing has run yet. Start it: autopilot start 5 (or the menu)."; return 0; }
+    events=$(tail -n +"$ln" "$h")
+    st=$(head -1 <<<"$events" | cut_chars 1 19)
+    t0=$(sed -n 's/.* Start: \([0-9][0-9]*\) tests green.*/\1/p' <<<"$events" | head -1)
+    read -r runs cost secs t1 < <(awk -F';' -v s="$st" '
+        NR > 1 && substr($1, 1, 19) >= s { n++; c += $8; sec += $7; t = $5 }
+        END { printf "%d %.2f %d %s\n", n, c, sec, (t == "" ? "?" : t) }' "$csv" 2>/dev/null)
+    [ "${t1:-?}" = "?" ] && t1=${t0:-?}
+    n_done=$(grep -c '^- \[x\]' "$WORKDIR/$TASKS_FILE" 2>/dev/null)
+    n_open=$(grep -c '^- \[ \]' "$WORKDIR/$TASKS_FILE" 2>/dev/null)
+    n_blocked=$(grep -c '^- \[~\]' "$WORKDIR/$TASKS_FILE" 2>/dev/null)
+    if [ "${1:-}" = --short ]; then
+        echo "${n_done:-?} done, ${n_blocked:-?} blocked, tests ${t0:-?} -> $t1, ${cost:-0} USD"
+        return 0
+    fi
+    if is_running; then ended='still running'
+    elif grep -q 'Goal reached' <<<"$events"; then ended='goal reached'
+    elif grep -q 'Limit of .* runs reached' <<<"$events"; then ended='run limit reached (more runs: autopilot start)'
+    elif grep -q 'Stopped via STOP' <<<"$events"; then ended='stopped by you'
+    elif grep -q 'rejections in a row, stopped' <<<"$events"; then ended='stopped after repeated rejections'
+    elif grep -qi 'interrupted' <<<"$events"; then ended='aborted'
+    else ended="ended early: $(tail -1 <<<"$events" | cut_chars 21 90)"; fi
+    if [ "${n_open:-0}" -gt 0 ] 2>/dev/null; then next="$n_open open tasks left - continue: autopilot start $n_open"
+    elif [ "${n_blocked:-0}" -gt 0 ] 2>/dev/null; then next="read BLOCKED.md ($n_blocked blocked), then view and merge: autopilot result"
+    else next='view and merge the result: autopilot result'; fi
+    acc=$(grep -o 'Accept [0-9]* -> [0-9]* of [0-9?]*\|Accept [0-9]* of [0-9?]*' <<<"$events" | tail -1 |
+        sed 's/Accept \([0-9]*\) -> \([0-9]*\)/Accept \2/')
+    echo "Last start:  $st - ${runs:-0} runs, $(( ${secs:-0} / 60 ))m $(( ${secs:-0} % 60 ))s run time, ${cost:-0} USD"
+    echo "Tasks:       ${n_done:-?} done, ${n_open:-?} open, ${n_blocked:-?} blocked"
+    echo "Tests:       ${t0:-?} -> $t1"
+    [ -n "$acc" ] && echo "Acceptance:  ${acc#Accept }"
+    echo "Ended:       $ended"
+    echo "Next:        $next"
+    return 0
+}
+
 report() { # [--if-new]
     local since recent text k
     since=$(date -d '1 day ago' '+%F %T' 2>/dev/null || date -v-1d '+%F %T')
@@ -240,6 +281,7 @@ start_now() { # RUNS [REVIEWER] [REJECTIONS] [WORKER] [PLANNER]
 
 case "${1:-}" in
     status) status "${2:-}"; exit 0 ;;
+    summary) summary "${2:-}"; exit 0 ;;
     conditions) conditions; exit 0 ;;
     notes) notes; exit 0 ;;
     result) result; exit 0 ;;
@@ -271,7 +313,7 @@ case "${1:-}" in
         echo "Aborted, the unfinished run was discarded (git reset --hard, git clean -fd in $WORKDIR)."; exit 0 ;;
     start) shift; start_now "$@"; exit $? ;;
     "") ;;
-    *) sed -n '2,14p' "$0" | cut -c3-; exit 2 ;;
+    *) sed -n '2,15p' "$0" | cut -c3-; exit 2 ;;
 esac
 
 # --- Menu ---------------------------------------------------------------------------------------

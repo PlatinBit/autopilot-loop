@@ -157,6 +157,14 @@ autopilot                               # menu → Start
 
 Or in Claude Code: `/autopilot-loop` → "New project from file".
 
+**Only an idea, no plan file yet?**
+
+```bash
+autopilot plan idea "A CLI tool that counts words in Markdown files, with tests"
+```
+
+Claude writes `./<slug>-plan.md` from it: goal, constraints, verifiable milestones. Read and edit that file, then continue with `autopilot plan <that file>` as above. In Claude Code: `/autopilot-loop` → "New project from an idea".
+
 - **Plan file inside a Git project** (an existing codebase): work happens in a separate worktree `<project>-autopilot` on branch `autopilot`, so your working copy stays untouched; adopt the result with `git merge autopilot`.
 - **Plan file anywhere else** (e.g. `~/idea.md` for something new): a project folder `<name>-autopilot/` is created next to it with its own Git repository and a copy of the plan, and Claude builds everything there on branch `autopilot` (`main` keeps the plan; adopt with `git checkout main && git merge autopilot`). Nothing else on your system is changed – no `git init` in your folders, no change to your global Git settings.
 
@@ -169,9 +177,9 @@ Manual setup also works: `autopilot setup` creates a commented [`autopilot.conf`
 | No. | Command | Effect |
 |---|---|---|
 | 1 | `autopilot` / `/autopilot-loop` | menu |
-| 2 | `autopilot plan <file>` / `plan show` / `plan accept` | draft a new project from a plan file / show the draft / set it up |
+| 2 | `autopilot plan <file>` / `plan idea "<idea>"` / `plan show` / `plan accept` | draft a new project from a plan file / write a plan file from a bare idea / show the draft / set it up |
 | 3 | `autopilot start 10 opus 3 sonnet opus` | discards unfinished changes in the work directory (`git reset --hard`, `git clean`), then 10 runs, reviewer opus, stop after 3 rejections in a row, builder sonnet, planner opus (writes a brief for every task, because builder and planner differ) |
-| 4 | `autopilot status [--short]` | running?, acceptance, tasks, latest events |
+| 4 | `autopilot status [--short]` / `summary [--short]` | running?, acceptance, tasks, latest events / end summary of the last start (from the logs, free) |
 | 5 | `autopilot continue` | approve the supervised step (with `SUPERVISED=on`) |
 | 6 | `autopilot stop` / `abort` | stop after the current run / stop now and discard the unfinished run (`git reset --hard` and `git clean` in the work directory) |
 | 7 | `autopilot grades` / `costs` / `chart` | grade table / cost per day and model / progress chart as an HTML page |
@@ -182,9 +190,19 @@ Manual setup also works: `autopilot setup` creates a commented [`autopilot.conf`
 | 12 | `autopilot trust [file]` | confirm a hand-written or changed `autopilot.conf` |
 | 13 | `autopilot doctor` | checklist of everything needed: ✔/✘ per tool with version, purpose and install command, git identity, sandbox state and a probe of the project's test command |
 
-Daily report via cron (`crontab -e`): `30 7 * * * $HOME/.local/bin/autopilot report --if-new`. Notifications (mail, desktop, chat) are set up with a function `notify()` in `autopilot.conf`.
+Daily report via cron (`crontab -e`): `30 7 * * * $HOME/.local/bin/autopilot report --if-new`. Desktop notifications work out of the box where `notify-send` exists; a function `notify()` in `autopilot.conf` replaces them (mail, chat …).
 
 Logs, progress, grades, approval and suggestions live in `.autopilot/` next to `autopilot.conf`; the work directory is kept clean through `.git/info/exclude`.
+
+## How do I know it is done?
+
+| No. | Signal | Where |
+|---|---|---|
+| 1 | Status line with the progress while it runs, then "Autopilot … finished" until the next session or start | Claude Code, below the input |
+| 2 | Finish toast "Autopilot <name> finished: 5 done, 1 blocked, tests 114 -> 131, 4.20 USD" | Claude Code |
+| 3 | `autopilot summary [--short]`: tasks, tests, cost and duration of the last start, how it ended, next step – from the logs, no Claude call | terminal or `/autopilot-loop summary` |
+| 4 | Desktop notification on start, end and warnings: the default `notify()` uses `notify-send` where it exists (otherwise silent); your own `notify()` in `autopilot.conf` replaces it (mail, chat …) | desktop |
+| 5 | `autopilot report [--if-new]`: summary of the last 24 hours, e.g. via cron | terminal, plus `notify()` |
 
 ## Limits
 

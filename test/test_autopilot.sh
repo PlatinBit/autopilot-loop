@@ -9,6 +9,9 @@ trap 'kill $(jobs -p) 2>/dev/null; rm -rf "$T"' EXIT
 fail() { echo "FAILED: $1"; for v in "$T"/.autopilot/log/history.log "$T"/p2/.autopilot/log/history.log; do [ -f "$v" ] && { echo "--- $v"; cat "$v"; }; done; exit 1; }
 mkdir -p "$T/bin" "$T/config"
 ln -s "$TOOL_DIR/test/fake-claude" "$T/bin/claude"
+# notify-send stub: the default notify() must never pop real desktop notifications during the test;
+# it appends its arguments to $NOTIFY_LOG (part_g reads that).
+printf '#!/bin/bash\necho "$*" >>"${NOTIFY_LOG:-/dev/null}"\n' >"$T/bin/notify-send" && chmod +x "$T/bin/notify-send"
 unset PLANNER_MODEL WORKER_MODEL REVIEWER_MODEL MAX_BLOCKED STALL_WARN_AFTER  # e.g. inherited from a running autopilot
 export PATH="$T/bin:$PATH" XDG_CONFIG_HOME="$T/config" FAKE_DIR="$T/fake" AUTOPILOT_LIMIT_WAIT=0 AUTOPILOT_POLL=1 MAX=30 MAX_REJECTIONS=10
 new_round() { rm -rf "$FAKE_DIR"; mkdir -p "$FAKE_DIR/steps"; }
@@ -632,4 +635,5 @@ cd "$T" || exit 1
 . "$TOOL_DIR/test/part_c.sh"
 . "$TOOL_DIR/test/part_e.sh"
 . "$TOOL_DIR/test/part_f.sh"
+. "$TOOL_DIR/test/part_g.sh"
 echo ok

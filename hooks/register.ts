@@ -1,5 +1,10 @@
 import type { Engine, Register } from 'claude-code'
 
+// The last state the status poll saw (declared in types/index.d.ts), held by the host for this
+// session: it survives hot reloads of this module, and a fresh session starts empty - so a reload
+// can never fake a "finished" toast, at worst miss one.
+const finishRef = { plugin: 'autopilot', key: 'finish' } as const
+
 // All the work is done by menu.sh, which ships with the plugin (the repo is the plugin); this plugin asks questions
 // in Claude Code's selection list and shows running projects in the status line. Which project is meant is found
 // by menu.sh itself: ./autopilot.conf in the session directory, otherwise the most recently set up project.
@@ -39,6 +44,15 @@ async function start($: Engine): Promise<string> {
   return ok === 'Start' ? autopilot($, ['start', n, reviewer, rejections, worker, planner]) : 'Not started.'
 }
 
+// New project from a bare idea: free text under "Other"; `plan idea` writes ./<slug>-plan.md for review.
+async function newIdea($: Engine): Promise<string> {
+  const idea = await ask($, 'What should be built? One to three sentences (type them under "Other").', 'Idea',
+    ['Enter the idea under "Other"', 'Cancel'])
+  if (idea === 'Cancel') return 'Cancelled.'
+  if (idea.startsWith('Enter the idea')) return 'Please type the idea under "Other": run /autopilot-loop again.'
+  return autopilot($, ['plan', 'idea', idea])
+}
+
 // New project: choose a plan file (suggestions from the session directory or your own path under "Other").
 async function newProject($: Engine): Promise<string> {
   const r = await $.process.run(['bash', '-c', 'ls -1 *.md 2>/dev/null | head -3'])
@@ -56,13 +70,14 @@ async function planner($: Engine): Promise<string> {
   const suggestion = await autopilot($, ['suggestion'])
   const has = suggestion.startsWith('Planner suggestion')
   const choice = await ask($, has ? `${suggestion}\n\nWhat now?` : 'No suggestion available. What now?', 'Planner',
-    has ? ['Adopt suggestion', 'Discard suggestion', 'New project from file']
-      : ['Let the planner propose tasks', 'New project from file', 'Back'])
+    has ? ['Adopt suggestion', 'Discard suggestion', 'New project from file', 'New project from an idea']
+      : ['Let the planner propose tasks', 'New project from file', 'New project from an idea'])
   switch (choice) {
     case 'Adopt suggestion': return autopilot($, ['suggestion', 'accept'])
     case 'Discard suggestion': return autopilot($, ['suggestion', 'discard'])
     case 'Let the planner propose tasks': return autopilot($, ['propose'])
     case 'New project from file': return newProject($)
+    case 'New project from an idea': return newIdea($)
     default: return 'Back.'
   }
 }
@@ -84,8 +99,11 @@ async function menu($: Engine): Promise<string> {
   const status = (r.stdout + r.stderr).trim()
   if (r.exitCode === 4 || status.includes('autopilot trust')) return status  // conf not confirmed yet: show the trust message
   if (r.exitCode === 3 || !status.startsWith('Status:')) {  // no project yet
-    const yes = await ask($, `${status}\n\nCreate a new project from a plan file?`, 'Autopilot', ['New project from file', 'Cancel'])
-    return yes === 'New project from file' ? newProject($) : 'Cancelled.'
+    const yes = await ask($, `${status}\n\nCreate a new project?`, 'Autopilot',
+      ['New project from file', 'New project from an idea', 'Cancel'])
+    if (yes === 'New project from file') return newProject($)
+    if (yes === 'New project from an idea') return newIdea($)
+    return 'Cancelled.'
   }
   const running = /^Status:\s+running/m.test(status)
   const waiting = status.includes('WAITING for your OK')
@@ -117,20 +135,40 @@ async function menu($: Engine): Promise<string> {
   }
 }
 
+// Status line and finish toast: poll `menu.sh status --short` (every minute, and right after each
+// /autopilot-loop command). A running project shows as the status line; when the last poll saw it
+// running and this one does not, the run just finished: one toast with `menu.sh summary --short`,
+// and a "finished" line that stays until the next session or the next start.
+async function pollStatus($: Engine): Promise<void> {
+  const line = await autopilot($, ['status', '--short']).catch(() => null)
+  if (line === null) return  // could not ask: keep the last state, decide nothing
+  const held = (await $.state.get(finishRef)).value ?? { running: '', done: '' }
+  if (line.startsWith('Autopilot ')) {
+    if (held.running !== line || held.done) await $.state.set(finishRef, { running: line, done: '' })
+    $.ui.status(line)
+  } else if (held.running) {  // ran at the last poll, not any more: it finished
+    const name = held.running.match(/^Autopilot (.*?):/)?.[1] ?? ''
+    const result = await autopilot($, ['summary', '--short']).catch(() => '')
+    const done = `Autopilot ${name} finished: ${result || 'see the summary'} - /autopilot-loop summary`
+    await $.state.set(finishRef, { running: '', done })
+    $.ui.toast(done)
+    $.ui.status(done)
+  } else {
+    $.ui.status(held.done || undefined)  // keep "finished ..." until the next session or start
+  }
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     // Status line: while a project runs, its progress shows below the input (refreshed every minute).
     // Set up first, so a refused command registration below cannot take it down.
-    const showStatus = async () => {
-      const line = await autopilot($, ['status', '--short']).catch(() => '')
-      $.ui.status(line.startsWith('Autopilot ') ? line : undefined)
-    }
-    void showStatus()
-    $.clock.every(60_000, () => void showStatus())
+    const showStatus = () => void pollStatus($).catch(() => {})
+    showStatus()
+    $.clock.every(60_000, showStatus)
     await $.command.register({
       name: 'autopilot-loop',
       description: 'Autopilot menu: project from a plan file, start, stop, status, planner, costs',
-      argumentHint: '[status|doctor|stop|continue|trust <file>|plan <file>|start <runs> [reviewer] [max-rejections] [worker] [planner]]',
+      argumentHint: '[status|summary|doctor|stop|continue|trust <file>|plan <file>|plan idea "<idea>"|start <runs> [reviewer] [max-rejections] [worker] [planner]]',
     }).catch(err => $.ui.log(`autopilot-loop: /autopilot-loop not registered: ${err instanceof Error ? err.message : err}`))
     return next(e)
   })
@@ -139,8 +177,18 @@ export const register: Register = on => {
   on('command.run', { command: 'autopilot-loop' }, async ($, e) => {
     try {
       const args = e.args.trim()
-      if (args.startsWith('plan ')) return { text: await autopilot($, ['plan', args.slice(5).trim()]) }
-      return { text: args ? await autopilot($, args.split(/\s+/)) : await menu($) }
+      let text: string
+      if (args.startsWith('plan idea ')) {
+        let idea = args.slice(10).trim()
+        if (/^(".*"|'.*')$/.test(idea)) idea = idea.slice(1, -1)
+        text = await autopilot($, ['plan', 'idea', idea])
+      } else if (args.startsWith('plan ')) {
+        text = await autopilot($, ['plan', args.slice(5).trim()])
+      } else {
+        text = args ? await autopilot($, args.split(/\s+/)) : await menu($)
+      }
+      await pollStatus($).catch(() => {})  // refresh the status line right away (start, stop, abort …)
+      return { text }
     } catch (err) {
       return { text: err === cancelled ? 'Autopilot menu closed.' : `Autopilot error: ${err instanceof Error ? err.message : err}` }
     }

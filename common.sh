@@ -62,7 +62,12 @@ IMAGE_REVIEW_FILE=''      # optional: image produced by SMOKE_TEST_CMD; the revi
 IMAGE_REVIEW_QUESTION='Does the result in the image look coherent and free of errors?'
 REPORT_MODEL=haiku
 PLAN_FILE=''              # optional: plan/description being implemented (locked, passed to every run)
-notify() { :; }           # LEVEL TEXT; LEVEL is ok|info|warn|crit
+notify() { # LEVEL TEXT; LEVEL is ok|info|warn|crit. Default: desktop notification when notify-send
+    # exists, silent otherwise; a notify() in autopilot.conf (sourced below) replaces this one.
+    command -v notify-send >/dev/null || return 0
+    local u=low; case "$1" in crit) u=critical ;; warn) u=normal ;; esac
+    notify-send -u "$u" "Autopilot $NAME" "$2" 2>/dev/null || true  # no DBUS: stay silent, never fail the loop
+}
 
 # shellcheck disable=SC1090
 . "$CONF"
