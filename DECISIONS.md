@@ -23,3 +23,4 @@
 - Task 23: tmux check sits after the usage check and before is_running, so without tmux nothing is changed; message goes to stdout like the other start_now messages.
 - Task 24: `need_jq` (lib.sh) runs right after `need_claude` in autopilot.sh, before lock/history.log; the test uses its own `$T/nojq` PATH with fake-claude linked as `claude`; checked by a run: without the fix the test fails. Open point: `plan.sh` also uses jq (line ~93) and has no check yet.
 - Task 25: `report` uses `date -d` with fallback `date -v-1d` (GNU/BSD), format stays 19 characters; `chart` checks python3 and prints the message to stdout (menu option 10 uses `$(chart)`); the new test fails without the fix (checked by a run).
+- 26: Aufgabentext war bereits sicher in Anführungszeichen; der Test sichert das ab, `echo` → `printf` in `cut_chars` und Zeile 232 gegen Aufgabentext, der nur aus `-e`/`-n` besteht.

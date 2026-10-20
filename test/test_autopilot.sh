@@ -373,6 +373,23 @@ grep -q "git config" "$T/e6/out.txt" || fail "no git config hint without a Git i
 git config user.email t@e.org && git config user.name T
 GIT_CONFIG_GLOBAL=/dev/null MAX=1 "$TOOL_DIR/autopilot.sh" >"$T/e6/out.txt" 2>&1 || fail "run with a local Git identity refused: $(tail -3 "$T/e6/out.txt")"
 [ -f "$FAKE_DIR/step-nr" ] || fail "Claude not started with a local Git identity"
+# Task text with $(...), backticks, ; and a leading -e is never executed and appears literally
+new_round
+sample_project "$T/e7/work"
+m=$T/e7-marker
+printf -- '- [ ] -e $(touch %s); `touch %s`; echo hi\n' "$m" "$m" >TASKS.md && git add -A && git commit -qm start
+printf 'WORKDIR=work\nTEST_CMD=%q\nALLOWED=%q\n' 'bash check.sh' '^(checks\.txt|TASKS\.md)$' >"$T/e7/autopilot.conf"
+echo "echo check >>checks.txt; $tick" >"$FAKE_DIR/steps/1.sh"
+echo "VERDICT: ACCEPT" >"$FAKE_DIR/verdicts"
+export AUTOPILOT_CONF="$T/e7/autopilot.conf"
+"$TOOL_DIR/menu.sh" trust "$AUTOPILOT_CONF" >/dev/null || fail "trust for the task text test failed"
+MAX=1 "$TOOL_DIR/autopilot.sh" >"$T/e7/out.txt" 2>&1 || fail "task text run ended with an error: $(tail -3 "$T/e7/out.txt")"
+[ ! -e "$m" ] || fail "task text was executed"
+grep -F 'Run 1:' "$T/e7/.autopilot/log/history.log" | grep -qF -- '-e $(touch' || fail "history.log line 'Run 1:' without the literal task text"
+grep -F 'Run 1 accepted' "$T/e7/.autopilot/log/history.log" | grep -qF '$(touch' || fail "history.log line 'Run 1 accepted' without the literal task text"
+git log -1 --format=%s | grep -qF '$(touch' || fail "commit subject without the literal \$(touch"
+git log -1 --format=%s | grep -qF -- '-e $(touch' || fail "commit subject lost the leading -e"
+git log -1 --format=%s | grep -qF '`touch' || fail "commit subject without the literal backtick"
 unset AUTOPILOT_CONF
 
 # ======== Part F: fresh machine ========
