@@ -72,7 +72,7 @@ PLANNER_FILE=$(abs_path "${PLANNER_FILE:-$TOOL_DIR/templates/PLANNER.md}")
 BRIEF_FILE=$(abs_path "${BRIEF_FILE:-$TOOL_DIR/templates/BRIEF.md}")
 [ -n "$PLAN_FILE" ] && PLAN_FILE=$(abs_path "$PLAN_FILE")
 STATE=$CONF_DIR/.autopilot  # logs, APPROVAL, STOP, feedback, grades, suggestions
-SESSION="autopilot-$NAME"
+SESSION="autopilot-$NAME-$(printf '%s' "$CONF_DIR" | hash_only | cut -c1-8)"  # same NAME in two folders: two sessions
 mkdir -p "$STATE/log" "$STATE/licence"
 [ -f "$STATE/.gitignore" ] || echo '*' >"$STATE/.gitignore"  # logs contain complete prompts: never in Git
 # If the configuration lives in the work directory, state and configuration must never end up in Git.

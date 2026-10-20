@@ -542,4 +542,13 @@ mkdir -p "$T/si-conf/.autopilot/lock"; echo "$dead" >"$T/si-conf/.autopilot/lock
 AUTOPILOT_CONF="$T/si-conf/autopilot.conf" MAX=1 "$TOOL_DIR/autopilot.sh" >"$T/sl.txt" 2>&1 || fail "stale lock: autopilot.sh did not start: $(cat "$T/sl.txt")"
 git log --format=%s | grep -q '^Autopilot:' || fail "stale lock: the run did not accept the task: $(cat "$T/sl.txt")"
 [ ! -e "$T/si-conf/.autopilot/lock" ] || fail "stale lock: lock not released at the end"
+# Same NAME in two folders: different tmux session names
+mkdir -p "$T/sn-bin" "$T/sn1" "$T/sn2"; printf '#!/bin/bash\necho "$*" >>"%s"\nexit 1\n' "$T/sn-tmux.log" >"$T/sn-bin/tmux"; chmod +x "$T/sn-bin/tmux"
+for n in sn1 sn2; do
+    printf 'WORKDIR=%q\nNAME=same\nALLOWED=x\n' "$T/si" >"$T/$n/autopilot.conf"
+    AUTOPILOT_CONF="$T/$n/autopilot.conf" "$TOOL_DIR/menu.sh" trust "$T/$n/autopilot.conf" >/dev/null || fail "session name: trust $n failed"
+    AUTOPILOT_CONF="$T/$n/autopilot.conf" PATH="$T/sn-bin:$PATH" "$TOOL_DIR/menu.sh" status >/dev/null 2>&1
+done
+[ -s "$T/sn-tmux.log" ] || fail "session name: status never called tmux"
+n=$(grep -o -- '-t [^ ]*' "$T/sn-tmux.log" | sort -u | wc -l); [ "$n" -ge 2 ] || fail "same NAME in two folders: one tmux session name: $(cat "$T/sn-tmux.log")"
 echo ok
