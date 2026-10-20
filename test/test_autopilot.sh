@@ -462,6 +462,25 @@ AUTOPILOT_CONF="$T/nc-conf/autopilot.conf" "$TOOL_DIR/menu.sh" trust "$T/nc-conf
 AUTOPILOT_CONF="$T/nc-conf/autopilot.conf" MAX=1 PATH="$T/nocl" "$TOOL_DIR/autopilot.sh" >"$T/nc2.txt" 2>&1 && fail "autopilot.sh without claude exits 0"
 grep -q claude "$T/nc2.txt" && grep -q "not found" "$T/nc2.txt" && grep -q "claude.com/claude-code" "$T/nc2.txt" || fail "autopilot.sh without claude: message incomplete: $(cat "$T/nc2.txt")"
 ! grep -q "Run 1" "$T/nc-conf/.autopilot/log/history.log" 2>/dev/null || fail "autopilot.sh without claude started a run"
+# jq not on PATH (claude is): autopilot.sh exits early with an install hint and starts no run
+mkdir -p "$T/nojq"
+for c in bash env dirname readlink basename mkdir rm mv cp cat ls touch grep sed awk cut tr sort head tail wc tee date find git sha256sum shasum nice timeout gtimeout mktemp id; do
+    p=$(command -v "$c") && case $p in /*) ln -sf "$p" "$T/nojq/$c" ;; esac; done
+ln -sf "$TOOL_DIR/test/fake-claude" "$T/nojq/claude"
+new_round
+sample_project "$T/nj"
+printf -- '- [ ] 1. [x] one\n' >TASKS.md
+git add -A && git commit -qm start && git checkout -qb autopilot || fail "no-jq run setup failed"
+mkdir -p "$T/nj-conf"
+cat >"$T/nj-conf/autopilot.conf" <<EOF
+WORKDIR=$T/nj
+TEST_CMD='bash check.sh'
+ALLOWED='^checks\.txt\$'
+EOF
+AUTOPILOT_CONF="$T/nj-conf/autopilot.conf" "$TOOL_DIR/menu.sh" trust "$T/nj-conf/autopilot.conf" >/dev/null || fail "no-jq run: trust failed"
+AUTOPILOT_CONF="$T/nj-conf/autopilot.conf" MAX=1 PATH="$T/nojq" "$TOOL_DIR/autopilot.sh" >"$T/nj.txt" 2>&1 && fail "autopilot.sh without jq exits 0"
+grep -q "jq not found" "$T/nj.txt" && grep -qi "install jq" "$T/nj.txt" || fail "autopilot.sh without jq: message incomplete: $(cat "$T/nj.txt")"
+! grep -q "Run 1" "$T/nj-conf/.autopilot/log/history.log" 2>/dev/null || fail "autopilot.sh without jq started a run"
 # Claude reports an error that is no usage limit: stop after one run, count no rejection, touch nothing
 new_round
 sample_project "$T/er"

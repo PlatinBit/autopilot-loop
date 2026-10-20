@@ -21,6 +21,10 @@ with_timeout() { # DURATION COMMAND …
 need_claude() { command -v claude >/dev/null ||
     { echo "claude (Claude Code CLI) not found on PATH. Install it: https://claude.com/claude-code – then log in once by running: claude" >&2; return 1; }; }
 
+# Claude's answers are JSON: without jq every run would fail, so say so before anything is created.
+need_jq() { command -v jq >/dev/null ||
+    { echo "jq not found on PATH. autopilot-loop needs it to read Claude's answers. Install jq: sudo apt install jq (macOS: brew install jq) – then start again." >&2; return 1; }; }
+
 # Git without hooks, fsmonitor, external diff programs and pager: a prepared work directory must not be able
 # to run code through them while the script checks or commits.
 g() { git -c core.hooksPath=/dev/null -c core.fsmonitor= -c diff.external= -c core.pager=cat "$@"; }

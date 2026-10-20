@@ -15,7 +15,7 @@
 set -u -o pipefail
 # shellcheck source=common.sh
 . "$(dirname "$(readlink -f "$0")")/common.sh"
-need_claude || exit 1
+need_claude && need_jq || exit 1
 MAX=${MAX:-30}
 MAX_REJECTIONS=${MAX_REJECTIONS:-3}
 MAX_BLOCKED=${MAX_BLOCKED:-3}
