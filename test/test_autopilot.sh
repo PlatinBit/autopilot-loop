@@ -180,4 +180,178 @@ grep -q "separate project folder was created" "$T/draft3.txt" || fail "no note a
 [ ! -e "$T/home/readme-autopilot-autopilot" ] || fail "an unnecessary second folder was created"
 [ "$(ls -A "$T/home")" = "readme-autopilot
 readme.md" ] || fail "something else was created next to the plan: $(ls -A "$T/home" | tr '\n' ' ')"
+
+# ======== Part D: error messages ========
+mkdir -p "$T/d1"
+for w in "gone dir" "$T/absent/work"; do
+    printf 'WORKDIR=%q\nALLOWED=x\n' "$w" >"$T/d1/autopilot.conf"
+    case "$w" in /*) p=$w ;; *) p=$T/d1/$w ;; esac
+    AUTOPILOT_CONF="$T/d1/autopilot.conf" "$TOOL_DIR/menu.sh" trust "$T/d1/autopilot.conf" >/dev/null || fail "trust for the WORKDIR test failed"
+    AUTOPILOT_CONF="$T/d1/autopilot.conf" "$TOOL_DIR/autopilot.sh" >"$T/d1/out.txt" 2>&1 && fail "missing WORKDIR $w not refused"
+    grep -qF "$p" "$T/d1/out.txt" || fail "message does not name the missing path $p: $(cat "$T/d1/out.txt")"
+    grep -q "WORKDIR" "$T/d1/out.txt" || fail "message does not name WORKDIR: $(cat "$T/d1/out.txt")"
+    grep -qE '^cd:|line [0-9]+:' "$T/d1/out.txt" && fail "raw shell error for a missing WORKDIR: $(cat "$T/d1/out.txt")"
+done
+# status with the task list deleted: name the path, no raw grep error, exit 0
+mkdir -p "$T/d2/work" && printf -- '- [ ] 1. [x] one\n' >"$T/d2/work/My Tasks.md"
+printf 'WORKDIR=work\nTASKS_FILE=%q\nALLOWED=x\n' "My Tasks.md" >"$T/d2/autopilot.conf"
+export AUTOPILOT_CONF="$T/d2/autopilot.conf"
+"$TOOL_DIR/menu.sh" trust "$AUTOPILOT_CONF" >/dev/null || fail "trust for the task list test failed"
+"$TOOL_DIR/menu.sh" status | grep -q "0 done, 1 open" || fail "status with a task list wrong"
+rm "$T/d2/work/My Tasks.md"
+"$TOOL_DIR/menu.sh" status >"$T/d2/out.txt" 2>&1 || fail "status without a task list exits non-zero: $(cat "$T/d2/out.txt")"
+grep -qF "$T/d2/work/My Tasks.md" "$T/d2/out.txt" || fail "status does not name the missing task list: $(cat "$T/d2/out.txt")"
+grep -q '^grep:' "$T/d2/out.txt" && fail "raw grep error in status: $(cat "$T/d2/out.txt")"
+# approve with the acceptance file gone: refused, APPROVAL untouched (absent stays absent, present stays identical)
+mkdir -p "$T/d3/work" && echo "echo ok" >"$T/d3/work/accept.sh"
+printf 'WORKDIR=work\nACCEPT_FILES=(accept.sh)\nALLOWED=x\n' >"$T/d3/autopilot.conf"
+export AUTOPILOT_CONF="$T/d3/autopilot.conf"
+"$TOOL_DIR/menu.sh" trust "$AUTOPILOT_CONF" >/dev/null || fail "trust for the approve test failed"
+mv "$T/d3/work/accept.sh" "$T/d3/work/accept.old"
+"$TOOL_DIR/menu.sh" approve >"$T/d3/out.txt" 2>&1 && fail "approve without acceptance files exits 0"
+grep -q "approved" "$T/d3/out.txt" && fail "approve without acceptance files says approved: $(cat "$T/d3/out.txt")"
+[ ! -e "$T/d3/.autopilot/APPROVAL" ] || fail "approve without acceptance files created APPROVAL"
+mv "$T/d3/work/accept.old" "$T/d3/work/accept.sh"
+"$TOOL_DIR/menu.sh" approve >/dev/null || fail "approve with the acceptance file failed"
+before=$(sha256sum <"$T/d3/.autopilot/APPROVAL")
+mv "$T/d3/work/accept.sh" "$T/d3/work/accept.old"
+"$TOOL_DIR/menu.sh" approve >"$T/d3/out.txt" 2>&1 && fail "approve with a renamed acceptance file exits 0"
+grep -q "approved" "$T/d3/out.txt" && fail "approve with a renamed acceptance file says approved: $(cat "$T/d3/out.txt")"
+[ "$(sha256sum <"$T/d3/.autopilot/APPROVAL")" = "$before" ] || fail "approve with a renamed acceptance file changed APPROVAL"
+
+# ======== Part E: security ========
+# ACCEPT_FILES and LOCKED entries with a leading "-" are file names, not options
+new_round
+sample_project "$T/e1/work"
+mv accept.sh ./-accept.sh && mv plan.md ./-plan.md
+printf -- '- [ ] 1. [x] one\n' >TASKS.md && git add -A && git commit -qm start
+cat >"$T/e1/autopilot.conf" <<'EOF'
+WORKDIR=work
+TEST_CMD='bash check.sh'
+ACCEPT_CMD='bash ./-accept.sh'
+ACCEPT_FILES=(-accept.sh)
+LOCKED=(-plan.md)
+ALLOWED='^(checks\.txt|-accept\.sh|-plan\.md|TASKS\.md)$'
+EOF
+echo "echo check >>checks.txt; echo x >>./-accept.sh; $tick" >"$FAKE_DIR/steps/1.sh"
+echo "echo check >>checks.txt; echo x >>./-plan.md; $tick"   >"$FAKE_DIR/steps/2.sh"
+export AUTOPILOT_CONF="$T/e1/autopilot.conf"
+"$TOOL_DIR/menu.sh" trust "$AUTOPILOT_CONF" >/dev/null || fail "trust for the dash file test failed"
+"$TOOL_DIR/menu.sh" approve >"$T/e1/out.txt" 2>&1 || fail "approve with ACCEPT_FILES=(-accept.sh) failed: $(cat "$T/e1/out.txt")"
+"$TOOL_DIR/menu.sh" conditions | grep -qx -- './-accept.sh' || fail "conditions does not list -accept.sh"
+MAX=2 "$TOOL_DIR/autopilot.sh" >"$T/e1/out.txt" 2>&1 || fail "run with a dash acceptance file ended with an error: $(tail -3 "$T/e1/out.txt")"
+grep -q "NOT approved" "$T/e1/.autopilot/log/history.log" && fail "dash acceptance file not recognised as approved"
+grep -q "Run 1:" "$T/e1/.autopilot/log/history.log" || fail "run with a dash acceptance file did not get past the approval check"
+grep -q "Run 1 rejected: locked file changed: -accept.sh" "$T/e1/.autopilot/log/history.log" || fail "change to -accept.sh not rejected as locked"
+grep -q "Run 2 rejected: locked file changed: -plan.md" "$T/e1/.autopilot/log/history.log" || fail "change to LOCKED -plan.md not rejected as locked"
+[ "$(git log --oneline | wc -l)" = 1 ] && [ -z "$(git status --porcelain)" ] || fail "dash file change was committed or left behind"
+# Symlinks in allowed paths: pointing outside WORKDIR (absolute or ../) rejected, pointing inside allowed
+new_round
+sample_project "$T/e2/work"
+printf -- '- [ ] 1. [x] one\n' >TASKS.md && git add -A && git commit -qm start
+start_head=$(git rev-parse HEAD)
+printf 'WORKDIR=work\nTEST_CMD=%q\nALLOWED=%q\n' 'bash check.sh' '^(checks\.txt|out1|out2|in1|TASKS\.md)$' >"$T/e2/autopilot.conf"
+echo "secret" >"$T/e2/outside.txt"
+echo "echo check >>checks.txt; ln -s $T/e2/outside.txt out1; $tick" >"$FAKE_DIR/steps/1.sh"
+echo "echo check >>checks.txt; ln -s ../outside.txt out2; $tick"    >"$FAKE_DIR/steps/2.sh"
+echo "echo check >>checks.txt; ln -s checks.txt in1; $tick"         >"$FAKE_DIR/steps/3.sh"
+echo "VERDICT: ACCEPT" >"$FAKE_DIR/verdicts"
+export AUTOPILOT_CONF="$T/e2/autopilot.conf"
+"$TOOL_DIR/menu.sh" trust "$AUTOPILOT_CONF" >/dev/null || fail "trust for the symlink test failed"
+"$TOOL_DIR/menu.sh" approve >/dev/null || fail "approve for the symlink test failed"
+MAX=3 "$TOOL_DIR/autopilot.sh" >"$T/e2/out.txt" 2>&1 || fail "symlink run ended with an error: $(tail -3 "$T/e2/out.txt")"
+grep -q "Run 1 rejected: symlink .*out1" "$T/e2/.autopilot/log/history.log" || fail "absolute symlink outside WORKDIR not rejected"
+grep -q "Run 2 rejected: symlink .*out2" "$T/e2/.autopilot/log/history.log" || fail "../ symlink outside WORKDIR not rejected"
+grep -q "Run 3 accepted" "$T/e2/.autopilot/log/history.log" || fail "symlink inside WORKDIR not accepted"
+[ "$(git rev-parse HEAD~1)" = "$start_head" ] || fail "HEAD changed by a rejected symlink run"
+git ls-tree -r --name-only HEAD | grep -q '^out[12]$' && fail "outside symlink was committed"
+[ ! -L out1 ] && [ ! -L out2 ] || fail "outside symlink still lying around after the rejection"
+[ -L in1 ] && [ -z "$(git status --porcelain)" ] || fail "inside symlink missing or work directory not clean"
+# Submodules: an edited or a new file inside is rejected and the submodule restored; other changes still pass
+new_round
+mkdir -p "$T/e3/lib" && git -C "$T/e3/lib" init -q -b main && echo orig >"$T/e3/lib/lib.txt" &&
+    git -C "$T/e3/lib" add -A && git -C "$T/e3/lib" -c user.email=t@e.org -c user.name=T commit -qm lib
+sample_project "$T/e3/work"
+printf -- '- [ ] 1. [x] one\n' >TASKS.md
+git -c protocol.file.allow=always submodule add -q "$T/e3/lib" sub && git add -A && git commit -qm start
+start_head=$(git rev-parse HEAD)
+printf 'WORKDIR=work\nTEST_CMD=%q\nALLOWED=%q\n' 'bash check.sh' '^(checks\.txt|sub|sub/.*|TASKS\.md)$' >"$T/e3/autopilot.conf"
+echo "echo check >>checks.txt; echo changed >sub/lib.txt; $tick" >"$FAKE_DIR/steps/1.sh"
+echo "echo check >>checks.txt; echo new >sub/new.txt; $tick"     >"$FAKE_DIR/steps/2.sh"
+echo "echo check >>checks.txt; $tick"                            >"$FAKE_DIR/steps/3.sh"
+echo "VERDICT: ACCEPT" >"$FAKE_DIR/verdicts"
+export AUTOPILOT_CONF="$T/e3/autopilot.conf"
+"$TOOL_DIR/menu.sh" trust "$AUTOPILOT_CONF" >/dev/null || fail "trust for the submodule test failed"
+MAX=2 "$TOOL_DIR/autopilot.sh" >"$T/e3/out.txt" 2>&1 || fail "submodule run ended with an error: $(tail -3 "$T/e3/out.txt")"
+grep -q "Run 1 rejected: .*submodule.*sub" "$T/e3/.autopilot/log/history.log" || fail "edited file inside a submodule not rejected"
+grep -q "Run 2 rejected: .*submodule.*sub" "$T/e3/.autopilot/log/history.log" || fail "new file inside a submodule not rejected"
+[ "$(git rev-parse HEAD)" = "$start_head" ] || fail "HEAD changed by a rejected submodule run"
+[ -z "$(git status --porcelain)" ] || fail "work directory not clean after the submodule rejection: $(git status --porcelain)"
+[ -z "$(git -C sub status --porcelain)" ] || fail "submodule not restored after the rejection: $(git -C sub status --porcelain)"
+[ "$(cat sub/lib.txt)" = orig ] && [ ! -e sub/new.txt ] || fail "submodule files not back to the recorded state"
+MAX=1 "$TOOL_DIR/autopilot.sh" >"$T/e3/out.txt" 2>&1 || fail "submodule follow-up run ended with an error: $(tail -3 "$T/e3/out.txt")"
+grep -q "Run 1 accepted" "$T/e3/.autopilot/log/history.log" || fail "change outside the submodule rejected in a project with a submodule"
+# Prompt placeholders are filled in literally, even with & (bash 5.2 patsub_replacement) or a backslash
+new_round
+sample_project "$T/e4/work"
+printf -- '- [ ] 1. [x] one\n' >TASKS.md && git add -A && git commit -qm start
+printf 'WORKDIR=work\nTEST_CMD=%q\nACCEPT_CMD=%q\nALLOWED=%q\n' 'bash check.sh && true' 'printf "%s\n" x >/dev/null; bash accept.sh' \
+    '^(checks\.txt|TASKS\.md)$' >"$T/e4/autopilot.conf"
+echo "echo check >>checks.txt; $tick" >"$FAKE_DIR/steps/1.sh"
+echo "VERDICT: ACCEPT" >"$FAKE_DIR/verdicts"
+export AUTOPILOT_CONF="$T/e4/autopilot.conf"
+"$TOOL_DIR/menu.sh" trust "$AUTOPILOT_CONF" >/dev/null || fail "trust for the placeholder test failed"
+"$TOOL_DIR/menu.sh" approve >/dev/null || fail "approve for the placeholder test failed"
+MAX=1 "$TOOL_DIR/autopilot.sh" >"$T/e4/out.txt" 2>&1 || fail "placeholder run ended with an error: $(tail -3 "$T/e4/out.txt")"
+grep -qF 'Run `bash check.sh && true` and fix' "$FAKE_DIR/last-prompt" || fail "TEST_CMD with & not filled in literally: $(grep -m1 'and fix' "$FAKE_DIR/last-prompt")"
+grep -qF 'run `printf "%s\n" x >/dev/null; bash accept.sh`;' "$FAKE_DIR/last-prompt" || fail "ACCEPT_CMD with a backslash not filled in literally"
+grep -qF '{TEST_CMD}' "$FAKE_DIR/last-prompt" && fail "placeholder {TEST_CMD} left in the prompt"
+# Shortened task text never cuts an umlaut in half (history.log, BLOCKED.md, commit message)
+new_round
+sample_project "$T/e5/work"
+u=$(printf 'ü%.0s' $(seq 1 60))
+printf -- '- [ ] 1. [x] %s\n- [ ] 2. [x] a%s\n' "$u" "$u" >TASKS.md && git add -A && git commit -qm start
+printf 'WORKDIR=work\nTEST_CMD=%q\nALLOWED=%q\n' 'bash check.sh' '^(checks\.txt|TASKS\.md|BLOCKED\.md)$' >"$T/e5/autopilot.conf"
+for n in 1 2 3; do echo "echo check >>checks.txt; $tick" >"$FAKE_DIR/steps/$n.sh"; done
+printf 'VERDICT: REJECT: no\nVERDICT: REJECT: no\nVERDICT: ACCEPT\n' >"$FAKE_DIR/verdicts"
+export AUTOPILOT_CONF="$T/e5/autopilot.conf"
+"$TOOL_DIR/menu.sh" trust "$AUTOPILOT_CONF" >/dev/null || fail "trust for the umlaut test failed"
+LC_ALL=C.UTF-8 MAX=3 "$TOOL_DIR/autopilot.sh" >"$T/e5/out.txt" 2>&1 || fail "umlaut run ended with an error: $(tail -3 "$T/e5/out.txt")"
+grep -q "Task blocked" "$T/e5/.autopilot/log/history.log" && grep -q "Run 3 accepted" "$T/e5/.autopilot/log/history.log" || fail "umlaut run did not block task 1 and accept task 2"
+iconv -f UTF-8 -t UTF-8 "$T/e5/.autopilot/log/history.log" >/dev/null 2>&1 || fail "history.log contains a cut umlaut"
+iconv -f UTF-8 -t UTF-8 BLOCKED.md >/dev/null 2>&1 || fail "BLOCKED.md contains a cut umlaut"
+git log -1 --format=%B | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1 || fail "commit message contains a cut umlaut"
+git log -1 --format=%B | grep -q "Autopilot: \[x\] 2\. \[x\] aü" || fail "commit message without the shortened umlaut task"
+# Without a Git identity the loop stops before Claude is started
+new_round
+sample_project "$T/e6/work"
+printf -- '- [ ] 1. [x] one\n' >TASKS.md && git add -A && git commit -qm start
+git config --unset user.email && git config --unset user.name && git config user.useConfigOnly true
+printf 'WORKDIR=work\nTEST_CMD=%q\nALLOWED=%q\n' 'bash check.sh' '^(checks\.txt|TASKS\.md)$' >"$T/e6/autopilot.conf"
+echo "echo check >>checks.txt; $tick" >"$FAKE_DIR/steps/1.sh"
+export AUTOPILOT_CONF="$T/e6/autopilot.conf"
+"$TOOL_DIR/menu.sh" trust "$AUTOPILOT_CONF" >/dev/null || fail "trust for the identity test failed"
+env -u EMAIL -u GIT_COMMITTER_EMAIL -u GIT_AUTHOR_EMAIL GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 MAX=1 \
+    "$TOOL_DIR/autopilot.sh" >"$T/e6/out.txt" 2>&1 && fail "run without a Git identity not refused"
+grep -q "user.email" "$T/e6/out.txt" || fail "no user.email hint without a Git identity: $(tail -3 "$T/e6/out.txt")"
+grep -q "git config" "$T/e6/out.txt" || fail "no git config hint without a Git identity"
+[ -f "$FAKE_DIR/step-nr" ] && fail "Claude was started without a Git identity"
+git config user.email t@e.org && git config user.name T
+GIT_CONFIG_GLOBAL=/dev/null MAX=1 "$TOOL_DIR/autopilot.sh" >"$T/e6/out.txt" 2>&1 || fail "run with a local Git identity refused: $(tail -3 "$T/e6/out.txt")"
+[ -f "$FAKE_DIR/step-nr" ] || fail "Claude not started with a local Git identity"
+unset AUTOPILOT_CONF
+
+# ======== Part F: fresh machine ========
+# Detached HEAD: plan accept takes the commit as BASE_BRANCH instead of "main"
+new_round
+sample_project "$T/f1/repo"
+git add -A && git commit -qm start && git checkout -q --detach && git branch -qD main || fail "detached HEAD setup failed"
+head=$(git rev-parse HEAD)
+printf "===CONFIG===\nTEST_CMD='bash check.sh'\n===TASKS===\n- [ ] 1. [x] one. Done when a test passes.\n" >"$FAKE_DIR/setup.txt"
+"$TOOL_DIR/menu.sh" plan "$T/f1/repo/plan.md" >"$T/f1/out.txt" 2>&1 || fail "draft with a detached HEAD failed: $(tail -3 "$T/f1/out.txt")"
+"$TOOL_DIR/menu.sh" plan accept >"$T/f1/out.txt" 2>&1 || fail "accept with a detached HEAD failed: $(tail -3 "$T/f1/out.txt")"
+( . "$T/f1/repo/autopilot.conf"; [ "$BASE_BRANCH" = "$head" ] ) || fail "BASE_BRANCH is not the detached commit: $(grep BASE_BRANCH "$T/f1/repo/autopilot.conf")"
+"$TOOL_DIR/menu.sh" result >"$T/f1/out.txt" 2>&1 || fail "result with a detached-HEAD base exits non-zero: $(cat "$T/f1/out.txt")"
+grep -q "fatal:" "$T/f1/out.txt" && fail "result with a detached-HEAD base shows a Git error: $(cat "$T/f1/out.txt")"
+grep -q "Autopilot: tasks from plan.md" "$T/f1/out.txt" || fail "result with a detached-HEAD base does not list the new commit"
 echo ok

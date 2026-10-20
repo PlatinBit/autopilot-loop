@@ -27,7 +27,9 @@ CSV=$LOGS/progress.csv
 HEADER="time;run;result;open_tasks;tests;accept;seconds;cost_usd;kind;worker;reviewer"
 # What must never change, whatever ALLOWED says: Git, Claude, CI and autopilot management
 ALWAYS_LOCKED='^(\.git|\.claude/|\.github/|\.autopilot/|autopilot\.conf$|CLAUDE\.md$)'
+[ -d "$WORKDIR" ] || { echo "WORKDIR $WORKDIR from $CONF does not exist. Fix WORKDIR there (then: autopilot trust $CONF)." >&2; exit 1; }
 cd "$WORKDIR" || exit 1
+ROOT=$(pwd -P)
 
 note() { echo "$(date '+%F %T') $1" | tee -a "$LOGS/history.log"; }
 announce() { note "$2"; notify "$1" "$2" >/dev/null 2>&1 || true; }
@@ -43,6 +45,10 @@ add_extra_cost() { # add the cost of reviewer and image review to the run
     cost=$(add "$cost" "$(awk '{s += $1} END {print s + 0}' "$STATE/cost-extra")"); rm -f "$STATE/cost-extra"
 }
 is_number() { [[ ${1:-} =~ ^[0-9]+$ ]]; }
+# Like `cut -c FROM-TO`, but counts characters instead of bytes (GNU cut would cut an umlaut in half)
+cut_chars() { # FROM TO <lines
+    local l; while IFS= read -r l; do echo "${l:$1-1:$2-$1+1}"; done
+}
 
 # Fingerprint of the Git management (config, info, hooks): if a run changes it, the loop stops,
 # because the next Git call could run code through it.
@@ -80,8 +86,14 @@ run_accept() {
     local k; k=$(number_from "$1" "$ACCEPT_REGEX"); is_number "$k" && echo "$k" || echo 0
 }
 
+# Work directory and submodules back to COMMIT (reset does not touch the inside of submodules)
+restore() { # COMMIT
+    g reset -q --hard "$1" && g clean -qfd &&
+        g submodule --quiet update --force --recursive && g submodule --quiet foreach --recursive 'git clean -qffd'
+}
+
 reject() { # BEFORE REASON [LOGFILE]
-    g reset -q --hard "$1" && g clean -qfd
+    restore "$1"
     note "Run $i rejected: $2"
     { echo "The last attempt at this task was rejected. Reason: $2"
       [ -n "${3:-}" ] && { echo; echo "Last lines of $(basename "$3"):"; tail -40 "$3"; }; } >"$FEEDBACK"
@@ -90,7 +102,7 @@ reject() { # BEFORE REASON [LOGFILE]
 
 block_task() { # REASON: mark the first open task as [~] so the loop can move on
     local open_before; open_before=$(grep -c '^- \[ \]' "$TASKS_FILE")
-    echo "- $(date +%F), $(grep -m1 '^- \[ \]' "$TASKS_FILE" | cut -c7-60): $1" >>BLOCKED.md
+    echo "- $(date +%F), $(grep -m1 '^- \[ \]' "$TASKS_FILE" | cut_chars 7 60): $1" >>BLOCKED.md
     block_first_open "$TASKS_FILE"
     [ "$(grep -c '^- \[ \]' "$TASKS_FILE")" -lt "$open_before" ] || { announce crit "Task could not be marked as blocked, stopped"; exit 1; }
     g add -A && g commit -q -m "Autopilot: blocked – $1"
@@ -138,12 +150,27 @@ supervised_stop() {
 
 # File names of the staged changes, without rename detection (otherwise the old path would drop out)
 changed() { g diff --cached --name-only --no-renames -- "$@"; }
+# New or changed symlinks whose target lies outside the work directory (tests and Claude would follow them)
+outside_links() {
+    local f t
+    g -c core.quotePath=false diff --cached --name-only --no-renames --diff-filter=d | while IFS= read -r f; do
+        [ -L "$f" ] || continue
+        t=$(readlink -f -- "$f") || t=''
+        case "$t" in "$ROOT"/*) ;; *) echo "$f" ;; esac
+    done
+}
+# Submodules with a new commit or edited/new files inside (mode 160000 on either side of the diff)
+changed_submodules() {
+    g -c core.quotePath=false diff HEAD --raw --no-renames --ignore-submodules=none |
+        awk -F'\t' '$1 ~ /^:(160000 [0-7]+|[0-7]+ 160000) / {print $2}'
+}
 
 [ -n "$TEST_CMD" ] || { announce crit "TEST_CMD is not set in $CONF"; exit 1; }
 [ -n "$ALLOWED" ] || { announce crit "ALLOWED is not set in $CONF – which paths may Claude change?"; exit 1; }
 [ -f "$TASKS_FILE" ] || { announce crit "Task list $WORKDIR/$TASKS_FILE is missing"; exit 1; }
 is_approved || { announce warn "Acceptance test NOT approved: choose \"Approve acceptance test\" in the menu (or: autopilot approve)"; exit 1; }
 [ -n "$(g status --porcelain)" ] && { announce crit "Work directory not clean, aborting"; exit 1; }
+g var GIT_COMMITTER_IDENT >/dev/null 2>&1 || { announce crit "Git cannot commit in $WORKDIR: no identity. Set one: git config --global user.email you@example.org; git config --global user.name \"Your Name\""; exit 1; }
 rm -f "$STATE/WAITING" "$STATE/CONTINUE" "$STATE/cost-extra"
 
 i=0; start=$(date +%s); acc=0; cost=0; kind=-
@@ -174,12 +201,13 @@ while [ "$i" -lt "$MAX" ]; do
     i=$((i + 1)); start=$(date +%s); before=$(g rev-parse HEAD); cost=0
     open_task=$(grep -m1 '^- \[ \]' "$TASKS_FILE"); kind=$(kind_of "$open_task")
     [ "$open_task" != "$last" ] && { last=$open_task; rejections=0; timeouts=0; rm -f "$FEEDBACK"; }
-    note "Run $i: $(echo "$open_task" | cut -c7-80)"
+    note "Run $i: $(echo "$open_task" | cut_chars 7 80)"
     prompt=$(cat "$PROMPT_FILE")
-    prompt=${prompt//\{TASKS_FILE\}/$TASKS_FILE}
-    prompt=${prompt//\{DECISIONS_FILE\}/$DECISIONS_FILE}
-    prompt=${prompt//\{TEST_CMD\}/$TEST_CMD}
-    prompt=${prompt//\{ACCEPT_CMD\}/${ACCEPT_CMD:-(no acceptance test)}}
+    # Quoted replacements: taken literally (no & from bash 5.2 patsub_replacement, no backslash handling)
+    prompt=${prompt//\{TASKS_FILE\}/"$TASKS_FILE"}
+    prompt=${prompt//\{DECISIONS_FILE\}/"$DECISIONS_FILE"}
+    prompt=${prompt//\{TEST_CMD\}/"$TEST_CMD"}
+    prompt=${prompt//\{ACCEPT_CMD\}/"${ACCEPT_CMD:-(no acceptance test)}"}
     prompt+=$(plan_section)
     [ -s "$FEEDBACK" ] && prompt+=$'\n\n## Feedback on the previous attempt\n'"$(cat "$FEEDBACK")"
     cost=$(CLAUDE_TIMEOUT=45m claude_run "$LOGS/run-$i.txt" --model "$WORKER_MODEL" --permission-mode acceptEdits \
@@ -194,7 +222,7 @@ while [ "$i" -lt "$MAX" ]; do
 
     # Subscription usage limit: wait instead of using up a run (at most 20 times).
     if [ "$rc" -ne 0 ] && usage_limit "$LOGS/run-$i.txt"; then
-        g reset -q --hard "$before" && g clean -qfd
+        restore "$before"
         i=$((i - 1)); waits=$((waits + 1))
         [ "$waits" -gt 20 ] && { announce crit "Usage limit persists, stopped"; exit 1; }
         note "Usage limit, waiting $((LIMIT_WAIT / 60)) min"; sleep "$LIMIT_WAIT"; continue
@@ -208,7 +236,7 @@ while [ "$i" -lt "$MAX" ]; do
 
     # Script checks: only green, not weakened work in allowed paths counts.
     g add -A
-    task=$(g diff --cached --no-ext-diff -U0 -- "$TASKS_FILE" | grep -m1 '^+- \[[x~]\]' | cut -c4-90)
+    task=$(g diff --cached --no-ext-diff -U0 -- "$TASKS_FILE" | grep -m1 '^+- \[[x~]\]' | cut_chars 4 90)
     if [ -z "$task" ]; then
         reject "$before" "no task ticked off or blocked (rc $rc)${denied:+; denied tool calls: $denied}" "$LOGS/run-$i.txt"
         # Time limit twice on the same task: too big for one run – block it instead of burning more runs.
@@ -216,11 +244,15 @@ while [ "$i" -lt "$MAX" ]; do
             block_task "time limit reached twice – task too big for one run, please split it"
         continue
     fi
+    subs=$(changed_submodules)
+    if [ -n "$subs" ]; then reject "$before" "change inside a submodule: $(echo $subs)"; continue; fi
     foreign=$(changed | grep -Ev "$ALLOWED")
     if [ -n "$foreign" ]; then reject "$before" "change outside allowed paths: $(echo $foreign)"; continue; fi
     locked=$( { changed | grep -E "$ALWAYS_LOCKED"
                 for p in ${LOCKED[@]+"${LOCKED[@]}"} ${ACCEPT_FILES[@]+"${ACCEPT_FILES[@]}"}; do changed "$p"; done; } | sort -u)
     if [ -n "$locked" ]; then reject "$before" "locked file changed: $(echo $locked)"; continue; fi
+    links=$(outside_links)
+    if [ -n "$links" ]; then reject "$before" "symlink pointing outside the work directory: $(echo $links)"; continue; fi
     added=$(g diff --cached --no-ext-diff --no-renames -U0 -- . ":(exclude)$TASKS_FILE" ":(exclude)BLOCKED.md" ":(exclude)$DECISIONS_FILE" |
         grep '^+' | grep -v '^+++' | sed 's/^+//')
     if [ -n "$FORBIDDEN_CONTENT" ] && grep -qE "$FORBIDDEN_CONTENT" <<<"$added"; then
