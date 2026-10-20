@@ -2,7 +2,7 @@
 # Test double for `claude -p --output-format json …` (only for test/test_autopilot.sh).
 # The prompt comes as an argument or via stdin (claude_run always uses stdin).
 # Controlled via $FAKE_DIR: steps/<n>.sh (worker runs), verdicts (one line per review),
-# setup.txt, planner.txt, report.txt (fixed answers). Every answer costs 0.01 USD.
+# setup.txt, planner.txt, report.txt (fixed answers), garbage (raw non-JSON output for the setup call). Every answer costs 0.01 USD.
 d=$FAKE_DIR
 prompt=''
 for a in "$@"; do case "$a" in -p|--output-format|json) ;; --*) break ;; *) prompt=$a; break ;; esac; done
@@ -20,7 +20,7 @@ answer() { # a step may write $FAKE_DIR/denied (one command per line): reported 
 case "$prompt" in
     *"You are the reviewer"*) answer "Reasoning …
 $(sed -n "$(count verdict-nr)p" "$d/verdicts")" ;;
-    *"You are setting up an autopilot"*) answer "$(cat "$d/setup.txt")" ;;
+    *"You are setting up an autopilot"*) if [ -f "$d/garbage" ]; then cat "$d/garbage"; else answer "$(cat "$d/setup.txt")"; fi ;;
     *"You are the planner"*) answer "$(cat "$d/planner.txt")" ;;
     *"You are writing the brief"*) count brief-nr >/dev/null; answer "BRIEF: reuse check.sh, add one check line" ;;
     *"Summarise this for the project owner"*) answer "$(cat "$d/report.txt")" ;;

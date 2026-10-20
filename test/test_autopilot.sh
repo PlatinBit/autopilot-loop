@@ -469,4 +469,12 @@ grep -qF "Invalid API key · Please run /login" "$T/er-conf/.autopilot/log/histo
 [ "$(cat "$T/er-conf/.autopilot/grades.csv" 2>/dev/null)" = "$er_grades" ] || fail "claude error: grades.csv changed"
 [ -z "$(git status --porcelain)" ] || fail "claude error: work directory not clean"
 [ "$(git rev-parse HEAD)" = "$er_head" ] || fail "claude error: HEAD changed"
+# Claude answers with raw text or nothing: `plan` names the answer file, no jq/parse errors
+new_round; sample_project "$T/gb"; git add -A && git commit -qm start || fail "garbage setup failed"
+for g in 'this is { not json' ''; do
+    printf '%s' "$g" >"$FAKE_DIR/garbage"
+    "$TOOL_DIR/menu.sh" plan "$T/gb/plan.md" >"$T/gb.txt" 2>&1 && fail "garbage '$g': plan exits 0"
+    grep -q "Claude gave no usable answer" "$T/gb.txt" && grep -qF "$T/gb/.autopilot/draft/answer.txt" "$T/gb.txt" || fail "garbage '$g': message incomplete: $(cat "$T/gb.txt")"
+    ! grep -qE '^(jq:|parse error)' "$T/gb.txt" || fail "garbage '$g': raw jq error shown"
+done
 echo ok

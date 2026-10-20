@@ -90,6 +90,8 @@ $(cat "$file")
 $(g -C "$repo" ls-files | head -300)"
     cost=$(cd "$repo" && claude_run "$e/answer.txt" --model "${PLANNER_MODEL:-opus}" --allowedTools Read Grep Glob <<<"$prompt") ||
         fail "Claude exited with an error, see $e/answer.txt"
+    jq -e . "$e/answer.txt.json" >/dev/null 2>&1 && [ -s "$e/answer.txt" ] ||
+        fail "Claude gave no usable answer (invalid JSON or empty output), see $e/answer.txt – run autopilot plan <file> again."
     sed -n '/^===CONFIG===/,/^===TASKS===/p' "$e/answer.txt" | sed '1d;$d' >"$e/config.raw"
     sed -n '/^===TASKS===/,$p' "$e/answer.txt" | sed '1d' >"$e/tasks.md"
     safe_conf "$e/config.raw" >"$e/autopilot.part" 2>"$e/discarded.txt"
