@@ -68,8 +68,10 @@ async function more($: Engine): Promise<string> {
 }
 
 async function menu($: Engine): Promise<string> {
-  const status = await autopilot($, ['status'])
-  if (!status.startsWith('Status:')) {  // no project yet
+  const r = await $.process.run([`${$.plugin.root}/menu.sh`, 'status'], { timeoutMs: 60_000 })
+  const status = (r.stdout + r.stderr).trim()
+  if (r.exitCode === 4 || status.includes('autopilot trust')) return status  // conf not confirmed yet: show the trust message
+  if (r.exitCode === 3 || !status.startsWith('Status:')) {  // no project yet
     const yes = await ask($, `${status}\n\nCreate a new project from a plan file?`, 'Autopilot', ['New project from file', 'Cancel'])
     return yes === 'New project from file' ? newProject($) : 'Cancelled.'
   }

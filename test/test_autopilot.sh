@@ -612,5 +612,18 @@ AUTOPILOT_CONF="$T/nt-conf/autopilot.conf" PATH="$T/nocl" "$TOOL_DIR/menu.sh" st
 grep -q tmux "$T/nt.txt" && { grep -q "apt install tmux" "$T/nt.txt" || grep -q "brew install tmux" "$T/nt.txt"; } || fail "start without tmux: message incomplete: $(cat "$T/nt.txt")"
 ! grep -q Started "$T/nt.txt" || fail "start without tmux printed Started: $(cat "$T/nt.txt")"
 AUTOPILOT_CONF="$T/nt-conf/autopilot.conf" PATH="$T/nocl" "$TOOL_DIR/menu.sh" start 5 gpt >/dev/null 2>&1; [ $? -eq 2 ] || fail "start without tmux: usage check no longer exits 2"
+# status gives the plugin a clear signal: no project -> 3 + "autopilot plan", untrusted conf -> 4 + "autopilot trust", never "Status:" first
+mkdir -p "$T/sig/none" "$T/sig/cfg" "$T/sig/untr"; cd "$T/sig/none" || exit 1
+printf 'NAME=sig\nWORKDIR=%q\n' "$T/sig/untr" >"$T/sig/untr/autopilot.conf"
+for a in "" --short; do
+    env -u AUTOPILOT_CONF XDG_CONFIG_HOME="$T/sig/cfg" "$TOOL_DIR/menu.sh" status $a >"$T/sig/out.txt" 2>&1; rc=$?
+    [ $rc = 3 ] || fail "status $a without project: exit code $rc, expected 3: $(cat "$T/sig/out.txt")"
+    grep -q "autopilot plan" "$T/sig/out.txt" || fail "status $a without project: no 'autopilot plan' hint: $(cat "$T/sig/out.txt")"
+    ! head -c7 "$T/sig/out.txt" | grep -q '^Status:' || fail "status $a without project starts with Status: $(cat "$T/sig/out.txt")"
+    AUTOPILOT_CONF="$T/sig/untr/autopilot.conf" XDG_CONFIG_HOME="$T/sig/cfg" "$TOOL_DIR/menu.sh" status $a >"$T/sig/out.txt" 2>&1; rc=$?
+    [ $rc = 4 ] || fail "status $a with untrusted conf: exit code $rc, expected 4: $(cat "$T/sig/out.txt")"
+    grep -q "autopilot trust" "$T/sig/out.txt" || fail "status $a with untrusted conf: no 'autopilot trust' hint: $(cat "$T/sig/out.txt")"
+    ! head -c7 "$T/sig/out.txt" | grep -q '^Status:' || fail "status $a with untrusted conf starts with Status: $(cat "$T/sig/out.txt")"
+done
 cd "$T" || exit 1
 echo ok
