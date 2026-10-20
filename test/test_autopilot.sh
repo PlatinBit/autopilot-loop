@@ -180,6 +180,16 @@ printf -- '- [ ] 2. [new] two. Done when two more tests pass.\nNot a valid sente
 grep -q '^- \[ \] 2\. \[new\] two' "$T/p2-autopilot/AUTOPILOT-TASKS.md" || fail "suggestion missing in the task list"
 echo "Short report: all good." >"$FAKE_DIR/report.txt"
 "$TOOL_DIR/menu.sh" report | grep -q "Short report: all good" || fail "report wrong"
+# no python3 on PATH: report still works, chart says so clearly
+mkdir -p "$T/nopy"
+for c in bash env dirname readlink basename mkdir rm mv cp cat ls touch grep sed awk cut tr sort head tail wc tee date find git jq sha256sum shasum nice timeout gtimeout mktemp id kill; do
+    p=$(command -v "$c") && case $p in /*) ln -sf "$p" "$T/nopy/$c" ;; esac; done
+ln -sf "$TOOL_DIR/test/fake-claude" "$T/nopy/claude"
+PATH="$T/nopy" "$TOOL_DIR/menu.sh" report >"$T/np-r.txt" 2>&1
+grep -q "Short report: all good" "$T/np-r.txt" || fail "report without python3: $(cat "$T/np-r.txt")"
+PATH="$T/nopy" "$TOOL_DIR/menu.sh" chart >"$T/np-c.txt" 2>&1 && fail "chart without python3 exits 0"
+grep -q python3 "$T/np-c.txt" || fail "chart without python3: message lacks python3: $(cat "$T/np-c.txt")"
+! grep -q "command not found" "$T/np-r.txt" "$T/np-c.txt" || fail "no python3: command not found: $(cat "$T/np-r.txt" "$T/np-c.txt")"
 [ -z "$("$TOOL_DIR/menu.sh" status --short)" ] || fail "status line shows something although nothing runs"
 sleep 0 & dead=$!; wait $dead
 printf '%s\nstale task\n' "$dead" >"$T/p2/.autopilot/WAITING"   # leftover after a crash: writer is gone

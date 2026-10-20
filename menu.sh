@@ -117,7 +117,9 @@ costs() {
         awk -F';' '{ s[$2] += $3 } END { printf "\nOther:\n"; for (k in s) printf "  %-8s %8.2f USD\n", k, s[k] }' "$STATE/log/costs-extra.csv"
     echo; echo "(With a subscription these are notional values; billing goes through the usage limit.)"
 }
-chart() { python3 "$TOOL_DIR/chart.py" "$STATE" "$NAME" "$(number_from "$STATE/log/accept-start.txt" "$ACCEPT_REGEX" 2 2>/dev/null)"; }
+chart() {
+    command -v python3 >/dev/null || { echo "python3 not found on PATH. The chart needs it: install python3 (Linux: e.g. sudo apt install python3, macOS: brew install python3). Everything else works without it."; return 1; }
+    python3 "$TOOL_DIR/chart.py" "$STATE" "$NAME" "$(number_from "$STATE/log/accept-start.txt" "$ACCEPT_REGEX" 2 2>/dev/null)"; }
 clean_up() { g -C "$WORKDIR" reset -q --hard && g -C "$WORKDIR" clean -qfd; }
 
 suggestion() {
@@ -138,7 +140,7 @@ suggestion() {
 
 report() { # [--if-new]
     local since recent text k
-    since=$(python3 -c 'import datetime as d; print((d.datetime.now() - d.timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S"))')
+    since=$(date -d '1 day ago' '+%F %T' 2>/dev/null || date -v-1d '+%F %T')
     recent=$(awk -v s="$since" 'substr($0, 1, 19) >= s' "$STATE/log/history.log" 2>/dev/null)
     [ "${1:-}" = --if-new ] && [ -z "$recent" ] && return 0
     text="Autopilot project: $NAME$( [ -n "$PLAN_FILE" ] && echo " (plan: $(basename "$PLAN_FILE"))")
