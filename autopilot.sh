@@ -49,6 +49,11 @@ fi
 echo $$ >"$lock/pid"; trap 'rm -rf "$lock"' EXIT
 # Move older progress files with different columns aside
 [ -s "$CSV" ] && [ "$(head -1 "$CSV")" != "$HEADER" ] && mv "$CSV" "$LOGS/progress-$(date +%F-%H%M%S).csv"
+# Per-run logs of the previous start go to log/archive/<time>/, otherwise run-1.txt etc. would be overwritten
+shopt -s nullglob; old_logs=("$LOGS"/{run,brief,review,tests,accept,smoke,image-review}-* "$LOGS"/start.txt*); shopt -u nullglob
+if [ ${#old_logs[@]} -gt 0 ]; then
+    archive=$LOGS/archive/$(date +%F-%H%M%S)-$$; mkdir -p "$archive" && mv "${old_logs[@]}" "$archive/"
+fi
 record() { # RESULT
     [ -s "$CSV" ] || echo "$HEADER" >"$CSV"
     echo "$(date '+%F %T');$i;$1;$(grep -c '^- \[ \]' "$TASKS_FILE");$count;$acc;$(( $(date +%s) - start ));$cost;$kind;$WORKER_MODEL;$REVIEWER_MODEL;$PLANNER_MODEL" >>"$CSV"
@@ -85,18 +90,29 @@ grade() { # GRADE (1 accepted, 0 rejected)
     fi
 }
 
-# Number of passed tests, empty if the result is red or no number can be read.
+# Test, acceptance and smoke command: time limit TEST_TIMEOUT (exit code 124), lower priority, and with
+# SANDBOX=on in bubblewrap: no network, a minimal /dev, read-only outside the work directory, own /tmp.
+run_cmd() { # COMMAND
+    if [ "$SANDBOX" = on ]; then
+        with_timeout "$TEST_TIMEOUT" nice -n 10 bwrap --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp --bind "$ROOT" "$ROOT" \
+            --unshare-all --new-session --die-with-parent --chdir "$ROOT" bash -c "$1"
+    else with_timeout "$TEST_TIMEOUT" nice -n 10 bash -c "$1"; fi
+}
+# Number of passed tests, empty if the result is red or no number can be read; returns 124 at the time limit.
 run_tests() {
-    local n
-    nice -n 10 bash -c "$TEST_CMD" >"$1" 2>&1 || return 0
+    local n rc
+    run_cmd "$TEST_CMD" >"$1" 2>&1; rc=$?
+    [ "$rc" = 124 ] && { echo "(time limit TEST_TIMEOUT=$TEST_TIMEOUT reached)" >>"$1"; return 124; }
+    if [ "$rc" -ne 0 ]; then [ "$rc" = "${TEST_EMPTY_RC:--}" ] && echo 0; return 0; fi  # e.g. pytest: 5 = no tests
     if [ -n "$TEST_COUNT_CMD" ]; then n=$(bash -c "$TEST_COUNT_CMD" <"$1" | tail -1)
     else n=$(number_from "$1" "$TEST_COUNT_REGEX"); fi
-    is_number "$n" && echo "$n"
+    is_number "$n" && echo "$n"; return 0
 }
 # Met acceptance conditions, 0 if the test does not run (it may be red).
 run_accept() {
     [ -n "$ACCEPT_CMD" ] || { echo 0; return; }
-    nice -n 10 bash -c "$ACCEPT_CMD" >"$1" 2>&1
+    run_cmd "$ACCEPT_CMD" >"$1" 2>&1
+    [ $? = 124 ] && echo "(time limit TEST_TIMEOUT=$TEST_TIMEOUT reached)" >>"$1"
     local k; k=$(number_from "$1" "$ACCEPT_REGEX"); is_number "$k" && echo "$k" || echo 0
 }
 
@@ -110,7 +126,7 @@ restore() { # COMMIT
 kill_tree() { local c; for c in $(ps -A -o pid= -o ppid= | awk -v p="$1" '$2 == p {print $1}'); do kill_tree "$c"; done; kill "$1" 2>/dev/null; }
 
 interrupted() { # EXITCODE: Ctrl+C / kill during a run
-    trap '' INT TERM
+    trap '' INT TERM HUP
     [ -n "${worker:-}" ] && kill_tree "$worker"
     wait 2>/dev/null
     restore HEAD  # not "$before": a commit made in this run (e.g. block_task) must survive
@@ -166,7 +182,8 @@ review() {
 # Optional real test; with IMAGE_REVIEW_FILE the reviewer also judges the image it produced.
 smoke_test() { # → 0 passed, otherwise the reason in $reason
     [ -n "$SMOKE_TEST_CMD" ] || return 0
-    nice -n 10 bash -c "$SMOKE_TEST_CMD" >"$LOGS/smoke-$i.txt" 2>&1 || { reason="smoke test red"; return 1; }
+    run_cmd "$SMOKE_TEST_CMD" >"$LOGS/smoke-$i.txt" 2>&1
+    case $? in 0) ;; 124) reason="smoke test hit the time limit (TEST_TIMEOUT=$TEST_TIMEOUT)"; return 1 ;; *) reason="smoke test red"; return 1 ;; esac
     [ -n "$IMAGE_REVIEW_FILE" ] || return 0
     [ -f "$IMAGE_REVIEW_FILE" ] || { reason="smoke test produced no image ($IMAGE_REVIEW_FILE)"; return 1; }
     printf '%s\n\nRead the image %s with the Read tool. Question: %s\nThe last line must be: VERDICT: ACCEPT or VERDICT: REJECT: <reason>\n' \
@@ -207,13 +224,15 @@ bad=$(bad_patterns); [ -z "$bad" ] || { announce crit "$(echo $bad) in $CONF is 
 [ -n "$ACCEPT_CMD" ] && [ ${#ACCEPT_FILES[@]} -eq 0 ] &&
     { announce crit "ACCEPT_CMD is set but ACCEPT_FILES is empty in $CONF: the acceptance test would not be locked"; exit 1; }
 [ -f "$TASKS_FILE" ] || { announce crit "Task list $WORKDIR/$TASKS_FILE is missing"; exit 1; }
+[ "$SANDBOX" = on ] && ! command -v bwrap >/dev/null &&
+    { announce crit "SANDBOX=on in $CONF needs bubblewrap (bwrap, Linux only), not found on PATH: install it (e.g. sudo apt install bubblewrap) or set SANDBOX=off"; exit 1; }
 is_approved || { announce warn "Acceptance test NOT approved: choose \"Approve acceptance test\" in the menu (or: autopilot approve)"; exit 1; }
 [ -n "$(g status --porcelain)" ] && { announce crit "Work directory not clean, aborting"; exit 1; }
 g var GIT_COMMITTER_IDENT >/dev/null 2>&1 || { announce crit "Git cannot commit in $WORKDIR: no identity. Set one: git config --global user.email you@example.org; git config --global user.name \"Your Name\""; exit 1; }
 rm -f "$STATE/WAITING" "$STATE/CONTINUE" "$STATE/cost-extra"
 
 i=0; start=$(date +%s); acc=0; cost=0; kind=-
-count=$(run_tests "$LOGS/start.txt")
+count=$(run_tests "$LOGS/start.txt") || { announce crit "Tests hit the time limit (TEST_TIMEOUT=$TEST_TIMEOUT) before the start, see $LOGS/start.txt"; exit 1; }
 [ -n "$count" ] || { announce crit "Tests already red before the start or without a readable number, see $LOGS/start.txt"; exit 1; }
 acc=$(run_accept "$LOGS/accept-start.txt")
 target=$( [ -n "$ACCEPT_CMD" ] && number_from "$LOGS/accept-start.txt" "$ACCEPT_REGEX" 2 )
@@ -222,7 +241,7 @@ fingerprint=$(git_fingerprint)
 announce info "Start: $count tests green${ACCEPT_CMD:+, Accept $acc of ${target:-?}}, at most $MAX runs, planner $PLANNER_MODEL, worker $WORKER_MODEL, reviewer $REVIEWER_MODEL"
 
 failures=0; waits=0; rejections=0; timeouts=0; last=""; accepted=0; no_progress=0; worker=''
-trap 'interrupted 130' INT; trap 'interrupted 143' TERM
+trap 'interrupted 130' INT; trap 'interrupted 143' TERM; trap 'interrupted 129' HUP  # HUP: tmux session killed
 while [ "$i" -lt "$MAX" ]; do
     [ -e "$STATE/STOP" ] && { rm -f "$STATE/STOP"; announce info "Stopped via STOP after $i runs"; exit 0; }
     if ! grep -q '^- \[ \]' "$TASKS_FILE"; then
@@ -329,7 +348,7 @@ while [ "$i" -lt "$MAX" ]; do
     if { [ -z "$TEST_COUNT_CMD" ] && grep -qE "$fake_t" <<<"$added"; } || { [ -n "$ACCEPT_CMD" ] && grep -qE "$fake_a" <<<"$added"; }; then
         reject "$before" "new code contains the count line of the test command or acceptance test (could fake the result)"; continue
     fi
-    new=$(run_tests "$LOGS/tests-$i.txt")
+    new=$(run_tests "$LOGS/tests-$i.txt") || { reject "$before" "tests hit the time limit (TEST_TIMEOUT=$TEST_TIMEOUT)" "$LOGS/tests-$i.txt"; continue; }
     if [ -z "$new" ]; then reject "$before" "tests red or without a readable number" "$LOGS/tests-$i.txt"; continue; fi
     if [ "$new" -lt "$count" ]; then reject "$before" "tests dropped from $count to $new"; continue; fi
     ticked=$(( $(grep -c '^- \[x\]' "$TASKS_FILE") - $(g show "$before:$TASKS_FILE" | grep -c '^- \[x\]') ))

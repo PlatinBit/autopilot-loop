@@ -170,13 +170,21 @@ start_now() { # RUNS [REVIEWER] [REJECTIONS] [WORKER] [PLANNER]
     command -v tmux >/dev/null || { echo "tmux not found on PATH. Install it (Linux: e.g. sudo apt install tmux, macOS: brew install tmux), then run: autopilot start $n"; return 1; }
     is_running && { echo "The autopilot is already running."; return 1; }
     is_approved || { echo "The acceptance test is NOT approved yet (autopilot approve)."; return 1; }
-    [ -n "$(g -C "$WORKDIR" status --porcelain)" ] && { clean_up; echo "Leftovers of an aborted run discarded."; }
+    [ -n "$(g -C "$WORKDIR" status --porcelain)" ] && { clean_up; echo "Leftovers of an aborted run discarded (git reset --hard, git clean -fd in $WORKDIR)."; }
     rm -f "$STATE/STOP"
-    tmux new -d -s "$SESSION" -e "AUTOPILOT_CONF=$CONF" -e "MAX=$n" -e "WORKER_MODEL=$worker" -e "PLANNER_MODEL=$planner" \
-        -e "REVIEWER_MODEL=$reviewer" -e "MAX_REJECTIONS=$rejections" "$HERE/autopilot.sh" ||
+    # PATH from here (a running tmux server would otherwise pass on its own, maybe without claude);
+    # the output also goes to console.txt, so that an immediate failure is not lost with the session.
+    local console=$STATE/log/console.txt; : >"$console"
+    tmux new -d -s "$SESSION" -e "PATH=$PATH" -e "AUTOPILOT_CONF=$CONF" -e "MAX=$n" -e "WORKER_MODEL=$worker" -e "PLANNER_MODEL=$planner" \
+        -e "REVIEWER_MODEL=$reviewer" -e "MAX_REJECTIONS=$rejections" \
+        bash -c '{ "$1" 2>&1; echo "autopilot.sh ended with exit code $?"; } | tee -a "$2"' autopilot "$HERE/autopilot.sh" "$console" ||
         { echo "Could not start the tmux session $SESSION."; return 1; }
+    for _ in 1 2 3 4 5 6; do sleep 0.5; is_running || break; done
+    if ! is_running && ! grep -q 'exit code 0$' "$console"; then
+        echo "The autopilot ended right after the start ($console):"; tail -5 "$console"; return 1
+    fi
     echo "Started: at most $n runs, planner $planner, worker $worker, reviewer $reviewer, stop after $rejections rejections in a row."
-    [ "$planner" != "$worker" ] && echo "The planner writes a brief for every task, the worker implements it."
+    [ "$planner" = "$worker" ] || echo "The planner writes a brief for every task, the worker implements it."
 }
 
 case "${1:-}" in
@@ -202,8 +210,14 @@ case "${1:-}" in
         touch "$STATE/STOP"; echo "Stops after the current run."; exit 0 ;;
     abort)
         is_running || { echo "The autopilot is not running."; exit 0; }
-        tmux kill-session -t "=$SESSION"; sleep 1; clean_up; rm -f "$STATE/STOP" "$STATE/WAITING"
-        echo "Aborted, the unfinished run was discarded."; exit 0 ;;
+        # Stop autopilot.sh itself first: it ends the worker and resets (killing the session alone leaves the worker running)
+        pid=''; read -r pid <"$STATE/lock/pid" 2>/dev/null
+        if [[ $pid =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
+            kill -TERM "$pid"
+            for _ in $(seq 1 30); do kill -0 "$pid" 2>/dev/null || break; sleep 0.5; done
+        fi
+        tmux kill-session -t "=$SESSION" 2>/dev/null; clean_up; rm -f "$STATE/STOP" "$STATE/WAITING"
+        echo "Aborted, the unfinished run was discarded (git reset --hard, git clean -fd in $WORKDIR)."; exit 0 ;;
     start) shift; start_now "$@"; exit $? ;;
     "") ;;
     *) sed -n '2,13p' "$0" | cut -c3-; exit 2 ;;

@@ -33,6 +33,7 @@ safe_conf() { # FILE → valid lines on stdout, discarded ones on stderr
     while IFS= read -r z; do
         if [[ $z =~ ^(TEST_CMD|TEST_COUNT_CMD|ALLOWED|FORBIDDEN_CONTENT)=\'[^\']*\'$ ]] ||
            [[ $z =~ ^(TEST_COUNT_REGEX|ACCEPT_REGEX)=\'[^\']*\(\[0-9\]\+\)[^\']*\'$ ]] ||
+           [[ $z =~ ^TEST_EMPTY_RC=[0-9]{1,3}$ ]] ||
            [[ $z =~ ^WORKER_TOOLS=\(\ ?$tool(\ $tool)*\ ?\)$ ]]; then
             [[ $seen == *" ${z%%=*} "* ]] && { echo "discarded (duplicate): $z" >&2; continue; }
             seen+="${z%%=*} "; echo "$z"

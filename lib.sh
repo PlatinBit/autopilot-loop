@@ -52,12 +52,14 @@ claude_run() { # TEXTFILE [claude arguments …] <prompt
 
 # Does the answer report a usage limit? Checks the error field or the CLI's own error message,
 # not the model's text (otherwise a plan could trigger endless waiting through its text).
+# Narrow pattern: "context limit" or "output token limit" are errors, not a reason to wait for hours.
+LIMIT_PATTERN='usage limit|rate.?limit|limit reached|hit your limit|resets|429'
 usage_limit() { # TEXTFILE (from claude_run)
     local raw=$1.json
     if jq -e . "$raw" >/dev/null 2>&1; then
-        jq -e '(.is_error == true) and ((.result // "") | test("limit"; "i"))' "$raw" >/dev/null
+        jq -e --arg p "$LIMIT_PATTERN" '(.is_error == true) and ((.result // "") | test($p; "i"))' "$raw" >/dev/null
     else
-        grep -qi 'limit' "$raw"
+        grep -qiE "$LIMIT_PATTERN" "$raw"
     fi
 }
 
