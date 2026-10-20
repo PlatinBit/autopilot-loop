@@ -8,3 +8,4 @@
 - Task 8: `cut_chars` in autopilot.sh shortens with bash substrings, so it counts characters in the current locale; under a non-UTF-8 locale (LC_ALL=C) bash counts bytes again and could still cut an umlaut – accepted, since the test and normal systems use a UTF-8 locale.
 - Task 9: the identity check (`g var GIT_COMMITTER_IDENT`) runs after the clean-tree check and before the start tests, so a missing identity stops the loop before any test or Claude run; the hint suggests `git config --global`, a repo-local identity also passes.
 - Task 10: with a detached HEAD the full commit hash (`rev-parse HEAD` of the original repo at accept time) becomes BASE_BRANCH; the "main" fallback is gone, since a repo without commits is already refused by `plan <file>`.
+- Task 11: only a test was added (no product code changed); the repo is built by hand with `git init -b trunk` instead of `sample_project`, and `status` is run from outside the repo so `standard.conf` is used.

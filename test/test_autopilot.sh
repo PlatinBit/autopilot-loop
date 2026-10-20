@@ -363,4 +363,21 @@ printf "===CONFIG===\nTEST_CMD='bash check.sh'\n===TASKS===\n- [ ] 1. [x] one. D
 "$TOOL_DIR/menu.sh" result >"$T/f1/out.txt" 2>&1 || fail "result with a detached-HEAD base exits non-zero: $(cat "$T/f1/out.txt")"
 grep -q "fatal:" "$T/f1/out.txt" && fail "result with a detached-HEAD base shows a Git error: $(cat "$T/f1/out.txt")"
 grep -q "Autopilot: tasks from plan.md" "$T/f1/out.txt" || fail "result with a detached-HEAD base does not list the new commit"
+# Nested plan file, branch "trunk", path with space, $ and umlaut
+new_round
+R="$T/f2/my \$dir ü/repo"
+mkdir -p "$R/docs/spec" && cd "$R" || fail "nested plan setup failed"
+git init -q -b trunk . && git config user.email t@e.org && git config user.name T
+echo 'Plan: nested.' >docs/spec/plan.md
+echo 'echo "TESTS: 1 passed"' >check.sh
+git add -A && git commit -qm start
+git rev-parse -q --verify refs/heads/main >/dev/null && fail "nested plan setup: branch main exists"
+printf "===CONFIG===\nTEST_CMD='bash check.sh'\n===TASKS===\n- [ ] 1. [x] one. Done when a test passes.\n" >"$FAKE_DIR/setup.txt"
+"$TOOL_DIR/menu.sh" plan "$R/docs/spec/plan.md" >"$T/f2/out.txt" 2>&1 || fail "nested plan draft failed: $(tail -3 "$T/f2/out.txt")"
+"$TOOL_DIR/menu.sh" plan accept >"$T/f2/out.txt" 2>&1 || fail "nested plan accept failed: $(tail -3 "$T/f2/out.txt")"
+( . "$R/autopilot.conf"; [ "$BASE_BRANCH" = trunk ] && [ "${#LOCKED[@]}" = 1 ] && [ "${LOCKED[0]}" = docs/spec/plan.md ] && [ "$PLAN_FILE" = "$R/docs/spec/plan.md" ] && [ "$WORKDIR" = "$R-autopilot" ] ) || fail "nested plan conf wrong: $(cat "$R/autopilot.conf")"
+[ -d "$R-autopilot" ] || fail "nested plan: worktree $R-autopilot missing"
+cd "$T/f2"
+"$TOOL_DIR/menu.sh" status >"$T/f2/status.txt" 2>&1 || fail "status exits non-zero: $(cat "$T/f2/status.txt")"
+grep -qF "Plan:        $R/docs/spec/plan.md" "$T/f2/status.txt" || fail "status does not show the nested plan path: $(cat "$T/f2/status.txt")"
 echo ok
