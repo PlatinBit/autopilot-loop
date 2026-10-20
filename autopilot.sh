@@ -36,6 +36,17 @@ ROOT=$(pwd -P)
 
 note() { echo "$(date '+%F %T') $1" | tee -a "$LOGS/history.log"; }
 announce() { note "$2"; notify "$1" "$2" >/dev/null 2>&1 || true; }
+# One run per project: a lock directory with the PID (mkdir is atomic); a lock whose PID is dead is taken over
+lock=$STATE/lock
+if ! mkdir "$lock" 2>/dev/null; then
+    pid=''; read -r pid <"$lock/pid" 2>/dev/null
+    if [[ $pid =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
+        echo "Autopilot is already running for this project (PID $pid). Wait for it to finish, or: autopilot continue / autopilot stop / autopilot abort." >&2; exit 1
+    fi
+    rm -rf "$lock"
+    mkdir "$lock" 2>/dev/null || { echo "Autopilot is already running for this project (lock $lock taken just now). Wait for it to finish, or: autopilot stop / autopilot abort." >&2; exit 1; }
+fi
+echo $$ >"$lock/pid"; trap 'rm -rf "$lock"' EXIT
 # Move older progress files with different columns aside
 [ -s "$CSV" ] && [ "$(head -1 "$CSV")" != "$HEADER" ] && mv "$CSV" "$LOGS/progress-$(date +%F-%H%M%S).csv"
 record() { # RESULT

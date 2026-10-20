@@ -157,6 +157,12 @@ echo "VERDICT: ACCEPT" >"$FAKE_DIR/verdicts"
 WORKER_MODEL=sonnet PLANNER_MODEL=opus "$TOOL_DIR/autopilot.sh" >"$T/output2.txt" 2>&1 &
 for _ in $(seq 1 40); do [ -e "$T/p2/.autopilot/WAITING" ] && break; sleep 0.5; done
 [ -e "$T/p2/.autopilot/WAITING" ] || fail "supervised mode does not wait for the OK"
+# A second instance for the same project is refused quickly and leaves the first run's state alone
+SECONDS=0; timeout 10 "$TOOL_DIR/autopilot.sh" >"$T/second.txt" 2>&1 && fail "second instance started: $(cat "$T/second.txt")"
+[ "$SECONDS" -le 5 ] || fail "second instance needed ${SECONDS}s to be refused: $(cat "$T/second.txt")"
+grep -q "already running" "$T/second.txt" || fail "second instance: no 'already running' message: $(cat "$T/second.txt")"
+[ -e "$T/p2/.autopilot/WAITING" ] || fail "second instance removed WAITING"
+[ -d "$T/p2/.autopilot/lock" ] || fail "second instance removed the lock of the first run"
 "$TOOL_DIR/menu.sh" status | grep -q "WAITING for your OK" || fail "status does not show the waiting"
 "$TOOL_DIR/menu.sh" continue | grep -q "OK given" || fail "continue failed"
 wait $! || fail "run ended with an error after the supervised step: $(tail -3 "$T/output2.txt")"
@@ -528,4 +534,12 @@ if kill -0 "$pid" 2>/dev/null; then kill -KILL "$pid"; fail "SIGTERM: still runn
 [ -z "$(git status --porcelain)" ] || fail "SIGTERM: work directory not clean: $(git status --porcelain) $(cat "$T/si.txt")"
 grep -qi interrupted "$T/si-conf/.autopilot/log/history.log" || fail "SIGTERM: 'interrupted' missing: $(cat "$T/si.txt")"
 grep -q "autopilot start" "$T/si-conf/.autopilot/log/history.log" || fail "SIGTERM: hint 'autopilot start' missing: $(cat "$T/si.txt")"
+[ ! -e "$T/si-conf/.autopilot/lock" ] || fail "SIGTERM: lock not released"
+# A lock whose PID is dead (crash) is taken over, and released at the end
+new_round; echo "echo check >>checks.txt; $tick" >"$FAKE_DIR/steps/1.sh"; echo "VERDICT: ACCEPT" >"$FAKE_DIR/verdicts"
+sleep 0 & dead=$!; wait $dead
+mkdir -p "$T/si-conf/.autopilot/lock"; echo "$dead" >"$T/si-conf/.autopilot/lock/pid"
+AUTOPILOT_CONF="$T/si-conf/autopilot.conf" MAX=1 "$TOOL_DIR/autopilot.sh" >"$T/sl.txt" 2>&1 || fail "stale lock: autopilot.sh did not start: $(cat "$T/sl.txt")"
+git log --format=%s | grep -q '^Autopilot:' || fail "stale lock: the run did not accept the task: $(cat "$T/sl.txt")"
+[ ! -e "$T/si-conf/.autopilot/lock" ] || fail "stale lock: lock not released at the end"
 echo ok
