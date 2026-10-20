@@ -407,4 +407,20 @@ grep -qF "$T/f4/repo-autopilot" "$T/f4/out.txt" || fail "work branch error does 
 grep -qiE 'move|remove' "$T/f4/out.txt" || fail "work branch error gives no hint what to do: $(cat "$T/f4/out.txt")"
 grep -q "already exists" "$T/f4/out.txt" || fail "work branch error lacks Git's reason: $(cat "$T/f4/out.txt")"
 [ "$(cat "$T/f4/repo-autopilot")" = keep ] || fail "work branch error: the file in the way was changed"
+# config directory without write permission: `plan` and `trust` name the folder and XDG_CONFIG_HOME, no raw mkdir error
+if [ "$(id -u)" != 0 ]; then
+    new_round
+    mkdir -p "$T/ro" && chmod 555 "$T/ro"
+    sample_project "$T/ro-p"
+    git add -A && git commit -qm start || fail "read-only config setup failed"
+    printf "TEST_CMD=true\n" >"$T/ro-p/x.conf"
+    XDG_CONFIG_HOME="$T/ro/config" "$TOOL_DIR/menu.sh" plan "$T/ro-p/plan.md" >"$T/ro-out1.txt" 2>&1 && { chmod 755 "$T/ro"; fail "plan with a read-only config dir exits 0"; }
+    XDG_CONFIG_HOME="$T/ro/config" "$TOOL_DIR/menu.sh" trust "$T/ro-p/x.conf" >"$T/ro-out2.txt" 2>&1 && { chmod 755 "$T/ro"; fail "trust with a read-only config dir exits 0"; }
+    chmod 755 "$T/ro"
+    for o in "$T/ro-out1.txt" "$T/ro-out2.txt"; do
+        grep -qF "$T/ro/config/autopilot-loop" "$o" || fail "read-only config dir: folder not named: $(cat "$o")"
+        grep -qF XDG_CONFIG_HOME "$o" || fail "read-only config dir: no hint about XDG_CONFIG_HOME: $(cat "$o")"
+        ! grep -q '^mkdir:' "$o" || fail "read-only config dir: raw mkdir error: $(cat "$o")"
+    done
+fi
 echo ok

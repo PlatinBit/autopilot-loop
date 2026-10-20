@@ -13,7 +13,7 @@ TOOL_DIR=$(dirname "$(readlink -f "$0")")
 CONF_BASE=${XDG_CONFIG_HOME:-$HOME/.config}/autopilot-loop
 LAST=$CONF_BASE/last-draft
 TASKS_FILE=AUTOPILOT-TASKS.md   # own name, so that no existing TASKS.md is overwritten
-mkdir -p "$CONF_BASE"
+conf_dir_writable "$CONF_BASE" || exit 1
 
 fail() { echo "$1" >&2; exit 1; }
 exclude_state() { # REPO: state directory and configuration never in Git

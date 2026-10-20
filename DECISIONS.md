@@ -11,3 +11,4 @@
 - Task 11: only a test was added (no product code changed); the repo is built by hand with `git init -b trunk` instead of `sample_project`, and `status` is run from outside the repo so `standard.conf` is used.
 - Task 12: `accept()` commits the task list only if `diff --cached` shows a change (a second run with the same list has nothing to commit); the error message for a real commit failure is unchanged.
 - Task 13: Bei Fehler im Work-Branch-Anlegen bleiben Draft und LAST erhalten; die Meldung nennt Zielpfad, Gits letzte stderr-Zeile und den Hinweis, `plan accept` erneut auszuführen.
+- Task 14: `conf_dir_writable` in lib.sh (mkdir plus `-w` check, message names the folder and XDG_CONFIG_HOME) is used by `trust()` and `plan.sh`; the check that the new test fails without the fix was only done by reasoning (old code prints a raw `mkdir:` line), not by a run.

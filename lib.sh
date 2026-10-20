@@ -57,9 +57,13 @@ usage_limit() { # TEXTFILE (from claude_run)
 # has been confirmed (automatically after `autopilot plan accept`, otherwise with `autopilot trust`).
 TRUSTED_FILE=${XDG_CONFIG_HOME:-$HOME/.config}/autopilot-loop/trusted
 is_trusted() { [ -f "$1" ] && grep -qxF "$(hash_only <"$1") $(readlink -f "$1")" "$TRUSTED_FILE" 2>/dev/null; }
+conf_dir_writable() { # DIR: create it; on failure name it and XDG_CONFIG_HOME
+    mkdir -p "$1" 2>/dev/null && [ -w "$1" ] ||
+        { echo "Cannot write to the config directory $1 – make it writable or set XDG_CONFIG_HOME to a writable folder." >&2; return 1; }
+}
 trust() { # FILE
     local path; path=$(readlink -f "$1") && [ -f "$path" ] || { echo "File not found: $1" >&2; return 1; }
-    mkdir -p "$(dirname "$TRUSTED_FILE")"
+    conf_dir_writable "$(dirname "$TRUSTED_FILE")" || return 1
     { awk -v p="$path" 'substr($0, 66) != p' "$TRUSTED_FILE" 2>/dev/null; echo "$(hash_only <"$path") $path"; } >"$TRUSTED_FILE.new" &&
         mv "$TRUSTED_FILE.new" "$TRUSTED_FILE"
 }
