@@ -35,6 +35,9 @@ DECISIONS_FILE=DECISIONS.md
 TEST_CMD=''
 TEST_COUNT_REGEX='^TESTS: ([0-9]+)'
 TEST_COUNT_CMD=''         # instead of TEST_COUNT_REGEX: command that gets the output of TEST_CMD on stdin and prints the number
+TEST_EMPTY_RC=''          # exit code of TEST_CMD that means "0 tests", not red (pytest: 5)
+TEST_TIMEOUT=30m          # time limit for TEST_CMD, ACCEPT_CMD and SMOKE_TEST_CMD (each call)
+SANDBOX=off               # on (Linux, needs bubblewrap): those commands run without network and devices, read-only outside WORKDIR
 ACCEPT_CMD=''
 ACCEPT_REGEX='^ACCEPT: ([0-9]+) of ([0-9]+)'
 ACCEPT_FILES=()
@@ -72,7 +75,8 @@ PLANNER_FILE=$(abs_path "${PLANNER_FILE:-$TOOL_DIR/templates/PLANNER.md}")
 BRIEF_FILE=$(abs_path "${BRIEF_FILE:-$TOOL_DIR/templates/BRIEF.md}")
 [ -n "$PLAN_FILE" ] && PLAN_FILE=$(abs_path "$PLAN_FILE")
 STATE=$CONF_DIR/.autopilot  # logs, APPROVAL, STOP, feedback, grades, suggestions
-SESSION="autopilot-$NAME-$(printf '%s' "$CONF_DIR" | hash_only | cut -c1-8)"  # same NAME in two folders: two sessions
+# Same NAME in two folders: two sessions. Only [A-Za-z0-9_-]: tmux silently renames "." and ":".
+SESSION="autopilot-$(printf '%s' "$NAME" | tr -c 'A-Za-z0-9_-' '_')-$(printf '%s' "$CONF_DIR" | hash_only | cut -c1-8)"
 mkdir -p "$STATE/log" "$STATE/licence"
 [ -f "$STATE/.gitignore" ] || echo '*' >"$STATE/.gitignore"  # logs contain complete prompts: never in Git
 # If the configuration lives in the work directory, state and configuration must never end up in Git.

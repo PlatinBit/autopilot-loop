@@ -31,6 +31,7 @@ safe_conf() { # FILE → valid lines on stdout, discarded ones on stderr
     while IFS= read -r z; do
         if [[ $z =~ ^(TEST_CMD|TEST_COUNT_CMD|ALLOWED|FORBIDDEN_CONTENT|ACCEPT_CMD)=\'[^\']*\'$ ]] ||
            [[ $z =~ ^(TEST_COUNT_REGEX|ACCEPT_REGEX)=\'[^\']*\(\[0-9\]\+\)[^\']*\'$ ]] ||
+           [[ $z =~ ^TEST_EMPTY_RC=[0-9]{1,3}$ ]] ||
            [[ $z =~ ^WORKER_TOOLS=\(\ ?$tool(\ $tool)*\ ?\)$ ]]; then echo "$z"
         elif [ -n "$z" ]; then echo "discarded: $z" >&2; fi
     done <"$1"

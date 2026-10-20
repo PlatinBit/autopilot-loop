@@ -11,7 +11,7 @@ ALLOWED='<regular expression on file paths relative to the project that the work
 WORKER_TOOLS=(Read Edit Write Glob Grep 'Bash(<test command without arguments>:*)')
 
 (Instead of TEST_COUNT_REGEX you may write TEST_COUNT_CMD='<command>': it gets the output of the test command on stdin and prints only the number – for tools without a summary line. Proven values:
- pytest: TEST_CMD='pytest -q', TEST_COUNT_REGEX='([0-9]+) passed' · Jest/Vitest: TEST_COUNT_REGEX='Tests:? +([0-9]+) passed' ·
+ pytest: TEST_CMD='pytest -q', TEST_COUNT_REGEX='([0-9]+) passed', TEST_EMPTY_RC=5 (pytest exits with 5 while there are no tests yet) · Jest/Vitest: TEST_COUNT_REGEX='Tests:? +([0-9]+) passed' ·
  Go: TEST_CMD='go test -v ./...', TEST_COUNT_CMD='grep -c -- "--- PASS"' ·
  Rust: TEST_CMD='cargo test', TEST_COUNT_CMD='grep -o "[0-9]* passed" | awk "{s+=\$1} END {print s}"' ·
  Maven: TEST_COUNT_REGEX='Tests run: ([0-9]+)' · .NET: TEST_COUNT_REGEX='Passed: +([0-9]+)' · PHPUnit: TEST_COUNT_REGEX='OK \(([0-9]+) tests?' ·
