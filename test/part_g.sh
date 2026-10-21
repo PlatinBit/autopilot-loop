@@ -16,9 +16,9 @@ EOF
     grep -q "2 done, 0 open, 0 blocked" "$T/pg1-sum.txt" || fail "G1: task counts wrong: $(cat "$T/pg1-sum.txt")"
     grep -q "Tests:       1 -> 3" "$T/pg1-sum.txt" || fail "G1: test counts wrong: $(cat "$T/pg1-sum.txt")"
     grep -q "2 runs" "$T/pg1-sum.txt" && grep -q "0.04 USD" "$T/pg1-sum.txt" || fail "G1: runs or cost wrong: $(cat "$T/pg1-sum.txt")"
-    grep -q "Ended:       goal reached" "$T/pg1-sum.txt" || fail "G1: 'goal reached' missing: $(cat "$T/pg1-sum.txt")"
-    grep -q "Next:.*autopilot result" "$T/pg1-sum.txt" || fail "G1: next-step hint missing: $(cat "$T/pg1-sum.txt")"
-    [ "$("$TOOL_DIR/menu.sh" summary --short)" = "2 done, 0 blocked, tests 1 -> 3, 0.04 USD" ] ||
+    grep -q "Ended:       not delivered (no demo: DEMO_CMD and SMOKE_TEST_CMD are empty" "$T/pg1-sum.txt" || fail "G1: outcome missing: $(cat "$T/pg1-sum.txt")"
+    grep -q "Next:.*autopilot handover.*autopilot result" "$T/pg1-sum.txt" || fail "G1: next-step hint missing: $(cat "$T/pg1-sum.txt")"
+    [ "$("$TOOL_DIR/menu.sh" summary --short)" = "not delivered (no demo: DEMO_CMD and SMOKE_TEST_CMD are empty, so nothing shows that the result works) - 2 done, 0 blocked, tests 1 -> 3, 0.04 USD" ] ||
         fail "G1: --short one-liner wrong: $("$TOOL_DIR/menu.sh" summary --short)"
     PATH="$T/nocl" "$TOOL_DIR/menu.sh" summary >/dev/null 2>&1 || fail "G1: summary does not work without claude on PATH"
 }

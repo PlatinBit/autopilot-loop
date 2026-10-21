@@ -63,24 +63,30 @@ suggest_install() { # COMMAND EXITCODE LOGFILE
 # to run code through them while the script checks or commits.
 g() { git -c core.hooksPath=/dev/null -c core.fsmonitor= -c diff.external= -c core.pager=cat "$@"; }
 
-# Every Claude run: only the user's own settings (never .claude/ from the work directory, whose hooks would
-# otherwise run), and never writing to Git, Claude or autopilot management files.
-CLAUDE_SAFE=(--setting-sources user --disallowedTools
+# Every Claude run: --safe-mode keeps foreign hooks, plugins, MCP servers and the automatic CLAUDE.md out
+# (a hook once rewrote the test command; the project's CLAUDE.md is passed in the prompt instead) and
+# still uses the normal login. --bare would do the same but ignores the OAuth login (API key only).
+# --setting-sources user: never .claude/ from the work directory, whose permission rules would widen the
+# tools. And never writing to Git, Claude or autopilot management files.
+CLAUDE_SAFE=(--safe-mode --setting-sources user --disallowedTools
     "Edit(.git)" "Write(.git)" "Edit(.git/**)" "Write(.git/**)" "Edit(.claude/**)" "Write(.claude/**)"
     "Edit(.autopilot/**)" "Write(.autopilot/**)" "Edit(autopilot.conf)" "Write(autopilot.conf)")
 
 # claude -p with JSON output; the prompt comes via stdin (no length limit for arguments).
-# Answer text goes to TEXTFILE, cost in USD to stdout (0 if unknown). Returns the exit code of claude.
+# Answer text goes to TEXTFILE, cost in USD to stdout (0 if unknown, "?" after the time limit: the
+# tokens were spent but never reported). Returns the exit code of claude.
 # Time limit via CLAUDE_TIMEOUT (default 20m).
 claude_run() { # TEXTFILE [claude arguments …] <prompt
-    local text=$1 raw=$1.json rc; shift
+    local text=$1 raw=$1.json rc cost; shift
     with_timeout "${CLAUDE_TIMEOUT:-20m}" claude -p --output-format json "$@" "${CLAUDE_SAFE[@]}" >"$raw" 2>&1; rc=$?
     if jq -e . "$raw" >/dev/null 2>&1; then
         jq -r '.result // ""' "$raw" >"$text"
-        jq -r '.total_cost_usd // 0' "$raw"
+        cost=$(jq -r '.total_cost_usd // 0' "$raw")
     else
-        cp "$raw" "$text"; echo 0
+        cp "$raw" "$text"; cost=0
     fi
+    [ "$rc" = 124 ] && cost='?'
+    echo "$cost"
     return $rc
 }
 

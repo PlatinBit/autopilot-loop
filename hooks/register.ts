@@ -28,7 +28,9 @@ const cancelled = new Error('cancelled')
 const ask = ($: Engine, text: string, header: string, options: string[]) =>
   $.ui.ask(text, { header, options }).catch(() => { throw cancelled })
 
-async function start($: Engine): Promise<string> {
+async function start($: Engine, status: string): Promise<string> {
+  // `menu.sh status` prints "Demo: none" when neither DEMO_CMD nor SMOKE_TEST_CMD is set
+  const noDemo = /^Demo:\s+none/m.test(status) ? '\n\nNo demo configured (DEMO_CMD or SMOKE_TEST_CMD): the result can never be reported as delivered.' : ''
   const n = number(await ask($, 'How many runs at most (one task per run)?', 'Runs', ['5 (Recommended)', '10', '20', '30']))
   if (!n) return 'Cancelled: no number chosen.'
   const planner = firstWord(await ask($, 'Which model should plan (a brief for every task, new tasks)?', 'Planner',
@@ -39,7 +41,7 @@ async function start($: Engine): Promise<string> {
     ['sonnet (Recommended, balanced)', 'opus (more thorough, more expensive)', 'haiku (cheap, less strict)']))
   const rejections = number(await ask($, 'Stop after how many rejections in a row?', 'Brake', ['3 (Recommended)', '2', '5']))
   if (!rejections) return 'Cancelled: no number chosen.'
-  const ok = await ask($, `Start with ${n} runs, planner ${planner}, builder ${worker}, reviewer ${reviewer}, stop after ${rejections} rejections in a row?`,
+  const ok = await ask($, `Start with ${n} runs, planner ${planner}, builder ${worker}, reviewer ${reviewer}, stop after ${rejections} rejections in a row?${noDemo}`,
     'Confirm', ['Start', 'Cancel'])
   return ok === 'Start' ? autopilot($, ['start', n, reviewer, rejections, worker, planner]) : 'Not started.'
 }
@@ -62,8 +64,18 @@ async function newProject($: Engine): Promise<string> {
   if (file.startsWith('Enter a path')) return 'Please type the path under "Other": run /autopilot-loop again.'
   const draft = await autopilot($, ['plan', file])
   if (!draft.includes('Set up: autopilot plan accept')) return draft
-  const yes = await ask($, `${draft}\n\nSet it up like this?`, 'Draft', ['Set up', 'Discard'])
-  return yes === 'Set up' ? autopilot($, ['plan', 'accept']) : 'Draft not adopted (view it: autopilot plan show).'
+  // Without a demo command `plan accept` refuses; the owner may still set up without one (never "delivered").
+  // A proposed acceptance test is dropped unless the owner adopts it.
+  const noDemo = draft.includes('No demo command (DEMO_CMD)')
+  const setUp = noDemo ? 'Set up without demo (never reported as delivered)' : 'Set up'
+  const yes = await ask($, `${draft}\n\nSet it up like this?`, 'Draft', [setUp, 'Discard'])
+  if (yes !== setUp) return 'Draft not adopted (view it: autopilot plan show).'
+  const flags = noDemo ? ['--no-demo'] : []
+  if (draft.includes('proposes an acceptance test')) {
+    const adopt = await ask($, 'Adopt the proposed acceptance test too? Its files are locked for the worker; approve them before the first start.', 'Acceptance test', ['Adopt', 'Drop'])
+    if (adopt === 'Adopt') flags.push('--with-accept')
+  }
+  return autopilot($, ['plan', 'accept', ...flags])
 }
 
 async function planner($: Engine): Promise<string> {
@@ -82,12 +94,22 @@ async function planner($: Engine): Promise<string> {
   }
 }
 
+// $.ui.ask takes at most four options, so the rest is two pages.
 async function more($: Engine): Promise<string> {
-  const choice = await ask($, 'What would you like to see?', 'More', ['Costs and chart', 'Read decisions', 'View result', 'Report now', 'Doctor: check requirements'])
+  const choice = await ask($, 'What would you like to see?', 'More', ['Handover: result and how to try it', 'View result', 'Costs and chart', 'More …'])
   switch (choice) {
-    case 'Costs and chart': return `${await autopilot($, ['costs'])}\n\nChart: ${await autopilot($, ['chart'])}`
-    case 'Read decisions': return autopilot($, ['notes'])
+    case 'Handover: result and how to try it': return autopilot($, ['handover'])
     case 'View result': return autopilot($, ['result'])
+    case 'Costs and chart': return `${await autopilot($, ['costs'])}\n\nChart: ${await autopilot($, ['chart'])}`
+    case 'More …': return evenMore($)
+    default: return `Unknown choice: ${choice}`
+  }
+}
+
+async function evenMore($: Engine): Promise<string> {
+  const choice = await ask($, 'What would you like to see?', 'More', ['Read decisions', 'Report now', 'Doctor: check requirements'])
+  switch (choice) {
+    case 'Read decisions': return autopilot($, ['notes'])
     case 'Report now': return autopilot($, ['report'])
     case 'Doctor: check requirements': return autopilot($, ['doctor'])
     default: return `Unknown choice: ${choice}`
@@ -108,7 +130,7 @@ async function menu($: Engine): Promise<string> {
   const running = /^Status:\s+running/m.test(status)
   const waiting = status.includes('WAITING for your OK')
   const approved = !status.includes('NOT approved')
-  const head = status.split('\n').filter(z => /^(Status|Acceptance|Plan|Tasks|Next|Suggestion):/.test(z)).join('\n')
+  const head = status.split('\n').filter(z => /^(Status|Acceptance|Demo|Plan|Tasks|Next|Suggestion):/.test(z)).join('\n')
   const options = waiting ? ['Continue (supervised OK)', 'Status and grades', 'Stop gently', 'More …']
     : running ? ['Status and grades', 'Stop gently', 'Abort now', 'More …']
       : approved ? ['Start', 'Status and grades', 'Planner and new projects', 'More …']
@@ -116,7 +138,7 @@ async function menu($: Engine): Promise<string> {
   const choice = await ask($, `${head}\n\nWhat would you like to do?`, 'Autopilot', options)
 
   switch (choice) {
-    case 'Start': return start($)
+    case 'Start': return start($, status)
     case 'Continue (supervised OK)': return autopilot($, ['continue'])
     case 'Status and grades': return `${status}\n\nGrades:\n${await autopilot($, ['grades'])}`
     case 'Stop gently': return autopilot($, ['stop'])
@@ -137,19 +159,22 @@ async function menu($: Engine): Promise<string> {
 
 // Status line and finish toast: poll `menu.sh status --short` (every minute, and right after each
 // /autopilot-loop command). A running project shows as the status line; when the last poll saw it
-// running and this one does not, the run just finished: one toast with `menu.sh summary --short`,
-// and a "finished" line that stays until the next session or the next start.
+// running and this one does not, the run just finished: one toast with `menu.sh summary --short`
+// (outcome first: "delivered - …" or "not delivered (reason) - …"), and a "finished" line that stays
+// until the next session or the next start.
 async function pollStatus($: Engine): Promise<void> {
-  const line = await autopilot($, ['status', '--short']).catch(() => null)
-  if (line === null) return  // could not ask: keep the last state, decide nothing
+  const r = await $.process.run([`${$.plugin.root}/menu.sh`, 'status', '--short'], { timeoutMs: 60_000 }).catch(() => null)
+  // Could not ask, or status failed (exit 4 = conf not trusted, e.g. just edited; any other error): keep the last state, decide nothing.
+  if (r === null || r.exitCode !== 0) return
+  const line = (r.stdout + r.stderr).trim()
   const held = (await $.state.get(finishRef)).value ?? { running: '', done: '' }
   if (line.startsWith('Autopilot ')) {
     if (held.running !== line || held.done) await $.state.set(finishRef, { running: line, done: '' })
     $.ui.status(line)
   } else if (held.running) {  // ran at the last poll, not any more: it finished
     const name = held.running.match(/^Autopilot (.*?):/)?.[1] ?? ''
-    const result = await autopilot($, ['summary', '--short']).catch(() => '')
-    const done = `Autopilot ${name} finished: ${result || 'see the summary'} - /autopilot-loop summary`
+    const result = (await autopilot($, ['summary', '--short']).catch(() => '')) || 'see the summary'
+    const done = `Autopilot ${name}: ${result[0].toUpperCase()}${result.slice(1)} - /autopilot-loop handover`
     await $.state.set(finishRef, { running: '', done })
     $.ui.toast(done)
     $.ui.status(done)
@@ -167,8 +192,8 @@ export const register: Register = on => {
     $.clock.every(60_000, showStatus)
     await $.command.register({
       name: 'autopilot-loop',
-      description: 'Autopilot menu: project from a plan file, start, stop, status, planner, costs',
-      argumentHint: '[status|summary|doctor|stop|continue|trust <file>|plan <file>|plan idea "<idea>"|start <runs> [reviewer] [max-rejections] [worker] [planner]]',
+      description: 'Autopilot menu: project from a plan file, start, stop, status, handover, planner, costs',
+      argumentHint: '[status|summary|handover|doctor|stop|continue|trust <file>|plan <file>|plan idea "<idea>"|plan accept [--no-demo] [--with-accept]|start <runs> [reviewer] [max-rejections] [worker] [planner]]',
     }).catch(err => $.ui.log(`autopilot-loop: /autopilot-loop not registered: ${err instanceof Error ? err.message : err}`))
     return next(e)
   })

@@ -42,7 +42,7 @@ LOCKED=(plan.md)
 ALLOWED='^(checks\.txt|code\.txt|red|plan\.md|TASKS\.md|BLOCKED\.md|DECISIONS\.md)$'
 FORBIDDEN_CONTENT='FORBIDDEN'
 LICENCE_MIN_RUNS=2
-STALL_WARN_AFTER=1
+STALL_WARN_AFTER=0
 EOF
 s=$FAKE_DIR/steps
 echo "echo check >>checks.txt; $tick"                            >"$s/1.sh"   # accepted (stall: acceptance stays 0)
@@ -79,7 +79,7 @@ grep -q "NOT approved" "$T/.autopilot/log/history.log" || fail "no message about
 v=$T/.autopilot/log/history.log
 for expected in "Goal reached" "no task ticked off" "without a new test" "outside allowed paths: accept.sh" \
                 "locked file changed: plan.md" "forbidden content" "Reviewer: too thin" "Task blocked" \
-                "dropped from 2 to 1" "tests red" "Stall" "Licence granted for task kind \"edge\"" \
+                "dropped from 2 to 1" "tests red" "Licence granted for task kind \"edge\"" \
                 "count line of the test command" "outside allowed paths: secret.txt" \
                 "tool calls denied (allow them in WORKER_TOOLS, or a hook rewrote them): rtk gradlew build" \
                 "denied tool calls: rtk gradlew build"; do
@@ -124,6 +124,7 @@ cat >"$FAKE_DIR/setup.txt" <<'EOF'
 I have looked at the project.
 ===CONFIG===
 TEST_CMD='bash check.sh'
+DEMO_CMD='bash check.sh'
 TEST_COUNT_CMD='grep -o "TESTS: [0-9]*" | grep -o "[0-9]*"'
 ALLOWED='^checks\.txt$'
 WORKER_TOOLS=(Read Edit 'Bash(bash check.sh:*)')
@@ -402,7 +403,7 @@ new_round
 sample_project "$T/f1/repo"
 git add -A && git commit -qm start && git checkout -q --detach && git branch -qD main || fail "detached HEAD setup failed"
 head=$(git rev-parse HEAD)
-printf "===CONFIG===\nTEST_CMD='bash check.sh'\n===TASKS===\n- [ ] 1. [x] one. Done when a test passes.\n" >"$FAKE_DIR/setup.txt"
+printf "===CONFIG===\nTEST_CMD='bash check.sh'\nDEMO_CMD='bash check.sh'\n===TASKS===\n- [ ] 1. [x] one. Done when a test passes.\n" >"$FAKE_DIR/setup.txt"
 "$TOOL_DIR/menu.sh" plan "$T/f1/repo/plan.md" >"$T/f1/out.txt" 2>&1 || fail "draft with a detached HEAD failed: $(tail -3 "$T/f1/out.txt")"
 "$TOOL_DIR/menu.sh" plan accept >"$T/f1/out.txt" 2>&1 || fail "accept with a detached HEAD failed: $(tail -3 "$T/f1/out.txt")"
 ( . "$T/f1/repo/autopilot.conf"; [ "$BASE_BRANCH" = "$head" ] ) || fail "BASE_BRANCH is not the detached commit: $(grep BASE_BRANCH "$T/f1/repo/autopilot.conf")"
@@ -418,7 +419,7 @@ echo 'Plan: nested.' >docs/spec/plan.md
 echo 'echo "TESTS: 1 passed"' >check.sh
 git add -A && git commit -qm start
 git rev-parse -q --verify refs/heads/main >/dev/null && fail "nested plan setup: branch main exists"
-printf "===CONFIG===\nTEST_CMD='bash check.sh'\n===TASKS===\n- [ ] 1. [x] one. Done when a test passes.\n" >"$FAKE_DIR/setup.txt"
+printf "===CONFIG===\nTEST_CMD='bash check.sh'\nDEMO_CMD='bash check.sh'\n===TASKS===\n- [ ] 1. [x] one. Done when a test passes.\n" >"$FAKE_DIR/setup.txt"
 "$TOOL_DIR/menu.sh" plan "$R/docs/spec/plan.md" >"$T/f2/out.txt" 2>&1 || fail "nested plan draft failed: $(tail -3 "$T/f2/out.txt")"
 "$TOOL_DIR/menu.sh" plan accept >"$T/f2/out.txt" 2>&1 || fail "nested plan accept failed: $(tail -3 "$T/f2/out.txt")"
 ( . "$R/autopilot.conf"; [ "$BASE_BRANCH" = trunk ] && [ "${#LOCKED[@]}" = 1 ] && [ "${LOCKED[0]}" = docs/spec/plan.md ] && [ "$PLAN_FILE" = "$R/docs/spec/plan.md" ] && [ "$WORKDIR" = "$R-autopilot" ] ) || fail "nested plan conf wrong: $(cat "$R/autopilot.conf")"
@@ -430,7 +431,7 @@ grep -qF "Plan:        $R/docs/spec/plan.md" "$T/f2/status.txt" || fail "status 
 new_round
 sample_project "$T/f3/repo"
 git add -A && git commit -qm start || fail "second-run setup failed"
-printf "===CONFIG===\nTEST_CMD='bash check.sh'\n===TASKS===\n- [ ] 1. [x] one. Done when a test passes.\n" >"$FAKE_DIR/setup.txt"
+printf "===CONFIG===\nTEST_CMD='bash check.sh'\nDEMO_CMD='bash check.sh'\n===TASKS===\n- [ ] 1. [x] one. Done when a test passes.\n" >"$FAKE_DIR/setup.txt"
 for i in 1 2; do
     "$TOOL_DIR/menu.sh" plan "$T/f3/repo/plan.md" >"$T/f3/out.txt" 2>&1 || fail "plan run $i failed: $(tail -3 "$T/f3/out.txt")"
     "$TOOL_DIR/menu.sh" plan accept >"$T/f3/out.txt" 2>&1 || fail "accept run $i failed: $(tail -3 "$T/f3/out.txt")"
@@ -445,7 +446,7 @@ cd "$T/f3"
 new_round
 sample_project "$T/f4/repo"
 git add -A && git commit -qm start || fail "work branch error setup failed"
-printf "===CONFIG===\nTEST_CMD='bash check.sh'\n===TASKS===\n- [ ] 1. [x] one. Done when a test passes.\n" >"$FAKE_DIR/setup.txt"
+printf "===CONFIG===\nTEST_CMD='bash check.sh'\nDEMO_CMD='bash check.sh'\n===TASKS===\n- [ ] 1. [x] one. Done when a test passes.\n" >"$FAKE_DIR/setup.txt"
 "$TOOL_DIR/menu.sh" plan "$T/f4/repo/plan.md" >"$T/f4/out.txt" 2>&1 || fail "work branch error: plan failed: $(tail -3 "$T/f4/out.txt")"
 echo keep >"$T/f4/repo-autopilot"
 "$TOOL_DIR/menu.sh" plan accept >"$T/f4/out.txt" 2>&1 && fail "accept with a file at the worktree path exits 0"
@@ -558,6 +559,8 @@ echo 5 >"$FAKE_DIR/review-sleep"
 echo "VERDICT: ACCEPT" >"$FAKE_DIR/verdicts"
 SECONDS=0; AUTOPILOT_CONF="$T/rt-conf/autopilot.conf" CLAUDE_TIMEOUT=2 MAX=1 "$TOOL_DIR/autopilot.sh" >"$T/rt.txt" 2>&1
 grep -q "time limit" "$T/rt-conf/.autopilot/log/history.log" || fail "reviewer timeout: 'time limit' missing: $(cat "$T/rt.txt")"
+[ "$(grep -c "Reviewer: time limit (2), trying once more" "$T/rt-conf/.autopilot/log/history.log")" = 1 ] && grep -q "time limit (2) twice" "$T/rt-conf/.autopilot/log/history.log" ||
+    fail "reviewer timeout: not retried exactly once before rejecting: $(cat "$T/rt-conf/.autopilot/log/history.log")"
 ! grep -q "no verdict" "$T/rt-conf/.autopilot/log/history.log" || fail "reviewer timeout: reported as no verdict: $(cat "$T/rt.txt")"
 [ "$SECONDS" -lt 30 ] || fail "reviewer timeout: waited too long: $(cat "$T/rt.txt")"
 ! git log --format=%s | grep -q "^Autopilot:" || fail "reviewer timeout: a task was accepted: $(cat "$T/rt.txt")"
@@ -636,4 +639,5 @@ cd "$T" || exit 1
 . "$TOOL_DIR/test/part_e.sh"
 . "$TOOL_DIR/test/part_f.sh"
 . "$TOOL_DIR/test/part_g.sh"
+. "$TOOL_DIR/test/part_h.sh"
 echo ok

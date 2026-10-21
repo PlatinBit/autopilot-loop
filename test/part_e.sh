@@ -110,7 +110,7 @@ pe_n9() {
     grep -q pwn .git/config && fail "N9: .git/config was changed through sandbox-run"
     "$TOOL_DIR/sandbox-run" bash -c 'touch n9-inside.txt' && [ -f n9-inside.txt ] || fail "N9: sandbox-run cannot write in the work directory"
     rm -f n9-inside.txt
-    printf "===CONFIG===\nTEST_CMD='bash check.sh'\nWORKER_TOOLS=(Read Edit 'Bash(bash check.sh:*)')\n===TASKS===\n- [ ] 1. [x] one. Done when a test passes.\n" >"$FAKE_DIR/setup.txt"
+    printf "===CONFIG===\nTEST_CMD='bash check.sh'\nDEMO_CMD='bash check.sh'\nWORKER_TOOLS=(Read Edit 'Bash(bash check.sh:*)')\n===TASKS===\n- [ ] 1. [x] one. Done when a test passes.\n" >"$FAKE_DIR/setup.txt"
     "$TOOL_DIR/menu.sh" plan "$T/n9p/plan.md" >"$T/n9.txt" 2>&1 || fail "N9: plan failed: $(tail -3 "$T/n9.txt")"
     "$TOOL_DIR/menu.sh" plan accept >"$T/n9.txt" 2>&1 || fail "N9: plan accept failed: $(tail -3 "$T/n9.txt")"
     local conf=$T/n9p/autopilot.conf
@@ -143,7 +143,7 @@ EOF
 pe_n11() {
     new_round; sample_project "$T/n11p"
     git add -A && git commit -qm start || fail "N11: setup failed"
-    printf "===CONFIG===\nTEST_CMD='n11-missing-tool-xyz13 -q'\n===TASKS===\n- [ ] 1. [x] one. Done when a test passes.\n" >"$FAKE_DIR/setup.txt"
+    printf "===CONFIG===\nTEST_CMD='n11-missing-tool-xyz13 -q'\nDEMO_CMD='bash check.sh'\n===TASKS===\n- [ ] 1. [x] one. Done when a test passes.\n" >"$FAKE_DIR/setup.txt"
     "$TOOL_DIR/menu.sh" plan "$T/n11p/plan.md" >/dev/null 2>&1 || fail "N11: plan failed"
     "$TOOL_DIR/menu.sh" plan accept >"$T/n11.txt" 2>&1 || fail "N11: plan accept with a missing tool must not abort the setup: $(tail -3 "$T/n11.txt")"
     grep -qi "cannot run" "$T/n11.txt" || fail "N11: plan accept does not report the missing tool: $(cat "$T/n11.txt")"

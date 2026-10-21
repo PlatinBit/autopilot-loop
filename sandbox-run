@@ -19,5 +19,8 @@ for d in "$(git -C "$root" rev-parse --path-format=absolute --git-common-dir 2>/
          "$(git -C "$root" rev-parse --path-format=absolute --git-dir 2>/dev/null)"; do
     [ -n "$d" ] && [ -e "$d" ] && git_ro+=(--ro-bind "$d" "$d")
 done
+# Own-project case (autopilot.conf inside the work directory): the autopilot's state (approval, brakes,
+# feedback, STOP) lives in .autopilot/ and must not be writable by the command either.
+[ -d "$root/.autopilot" ] && git_ro+=(--ro-bind "$root/.autopilot" "$root/.autopilot")
 exec bwrap --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp --bind "$root" "$root" ${git_ro[@]+"${git_ro[@]}"} \
     --setenv AUTOPILOT_SANDBOXED 1 --unshare-all --new-session --die-with-parent --chdir "$root" "$@"

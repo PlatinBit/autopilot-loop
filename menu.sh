@@ -8,6 +8,7 @@
 #   autopilot trust [file]             approve a hand-written or changed autopilot.conf
 #   autopilot start <runs> [reviewer: sonnet|opus|haiku] [max-rejections] [worker: opus|sonnet|haiku] [planner: opus|sonnet]
 #   autopilot status [--short] | summary [--short] | stop | abort | continue | approve | conditions
+#   autopilot handover                 what was delivered (or not, and why), proof, how to try it, next step
 #   autopilot grades | costs | chart | notes | result | propose | suggestion [accept|discard]
 #   autopilot report [--if-new]        summary of the last 24 hours (for cron)
 #   autopilot doctor                   check everything needed: tools, versions, install commands, project
@@ -49,6 +50,10 @@ doctor() {
     echo "autopilot-loop doctor"
     printf ' ✔ %-9s %-8s %s\n' bash "${BASH_VERSION%%(*}" "runs all scripts (4.4 or newer)"
     doc_row claude "writes, plans and reviews the code" "https://claude.com/claude-code – then log in once: claude" || miss=1
+    if command -v claude >/dev/null; then
+        if claude --help 2>/dev/null | grep -q -- '--safe-mode'; then echo " ✔ claude --safe-mode supported (runs without foreign hooks and plugins)"
+        else echo " ✘ claude is too old for --safe-mode (needs Claude Code >= 2.1) – update it"; miss=1; fi
+    fi
     doc_row git "work branch, checks and commit of every run" || miss=1
     doc_row jq "reads Claude's JSON answers" || miss=1
     doc_row tmux "keeps the loop running in the background (start/stop/abort/status)" || miss=1
@@ -80,7 +85,21 @@ case "${1:-}" in
         echo "This file is executed as Bash code on every call: $(readlink -f "$k")"
         trust "$k" && echo "Marked as trusted (valid until it changes)."
         exit $? ;;
-    help|-h|--help) sed -n '2,15p' "$0" | cut -c3-; exit 0 ;;
+    help|-h|--help) sed -n '2,16p' "$0" | cut -c3-; exit 0 ;;
+    stop|abort)
+        # A configuration edited during a run is no longer trusted, but its run must still be stoppable:
+        # STOP file and lock PID live in .autopilot/ next to the configuration, no need to load it.
+        for k in "${AUTOPILOT_CONF:-}" "$PWD/autopilot.conf" "$CONF_BASE/standard.conf"; do [ -n "$k" ] && [ -f "$k" ] && break; done
+        if [ -f "$k" ] && ! is_trusted "$k"; then
+            d=$(dirname "$(readlink -f "$k")")/.autopilot; pid=''; [ -r "$d/lock/pid" ] && read -r pid <"$d/lock/pid"
+            [[ $pid =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null || { echo "The autopilot is not running ($k is not trusted either: autopilot trust)."; exit 0; }
+            if [ "$1" = stop ]; then touch "$d/STOP"; echo "Stops after the current run (configuration not trusted, only the STOP file was set)."
+            else kill -TERM "$pid"; for _ in $(seq 1 30); do kill -0 "$pid" 2>/dev/null || break; sleep 0.5; done
+                 h=$(printf '%s' "${d%/.autopilot}" | hash_only)  # the session name ends in this hash (common.sh)
+                 tmux ls -F '#S' 2>/dev/null | grep -- "-${h:0:8}$" | while read -r s; do tmux kill-session -t "=$s"; done
+                 echo "Aborted (configuration not trusted: autopilot.sh reset the work directory itself)."; fi
+            exit 0
+        fi ;;
 esac
 
 has_project() { [ -f "${AUTOPILOT_CONF:-/nonexistent}" ] || [ -f "$PWD/autopilot.conf" ] || [ -f "$CONF_BASE/standard.conf" ]; }
@@ -132,6 +151,7 @@ status() {
     echo "Status:      $(is_running && echo 'running' || echo 'off')$( [ -e "$STATE/STOP" ] && echo ' (stops after this run)')$( waiting && echo ' – WAITING for your OK (autopilot continue)')"
     [ ${#ACCEPT_FILES[@]} -gt 0 ] && echo "Acceptance:  $(is_approved && echo 'approved' || echo 'NOT approved')   $(accept_progress)"
     [ -n "$PLAN_FILE" ] && echo "Plan:        $PLAN_FILE"
+    echo "Demo:        ${DEMO_CMD:-${SMOKE_TEST_CMD:-none}}"
     if [ -f "$WORKDIR/$TASKS_FILE" ]; then
         echo "Tasks:       $(grep -c '^- \[x\]' "$WORKDIR/$TASKS_FILE") done, $(grep -c '^- \[ \]' "$WORKDIR/$TASKS_FILE") open, $(grep -c '^- \[~\]' "$WORKDIR/$TASKS_FILE") blocked"
         echo "Next:        $(grep -m1 '^- \[ \]' "$WORKDIR/$TASKS_FILE" | cut_chars 7 70)"
@@ -162,8 +182,9 @@ result() {
 costs() {
     local csv=$STATE/log/progress.csv
     [ -s "$csv" ] || { echo "No costs recorded yet."; return; }
-    awk -F';' 'NR > 1 { s += $8; t[substr($1, 1, 10)] += $8; m[$10] += $8; n[$10]++ }
-        END { printf "Runs total: %.2f USD\n\nPer day:\n", s; for (d in t) printf "  %s  %8.2f USD\n", d, t[d]
+    awk -F';' 'NR > 1 { if ($8 == "?") { u++; next } s += $8; t[substr($1, 1, 10)] += $8; m[$10] += $8; n[$10]++ }
+        END { printf "Runs total: %.2f USD\n", s; if (u) printf "(plus %d runs with unknown cost: ended at the time limit)\n", u
+              printf "\nPer day:\n"; for (d in t) printf "  %s  %8.2f USD\n", d, t[d]
               printf "\nPer worker model:\n"; for (k in m) printf "  %-8s %8.2f USD in %d runs\n", k, m[k], n[k] }' "$csv"
     [ -s "$STATE/log/costs-extra.csv" ] &&
         awk -F';' '{ s[$2] += $3 } END { printf "\nOther:\n"; for (k in s) printf "  %-8s %8.2f USD\n", k, s[k] }' "$STATE/log/costs-extra.csv"
@@ -182,7 +203,7 @@ suggestion() {
             [ -z "$(g -C "$WORKDIR" status --porcelain)" ] || { echo "Work directory not clean."; return 1; }
             cat "$STATE/suggestion.md" >>"$WORKDIR/$TASKS_FILE"
             g -C "$WORKDIR" add "$TASKS_FILE" && g -C "$WORKDIR" commit -q -m "Planner: $(wc -l <"$STATE/suggestion.md") new tasks" &&
-                { echo "$(wc -l <"$STATE/suggestion.md") tasks adopted. Start: autopilot start 5"; rm -f "$STATE/suggestion.md"; } ;;
+                { echo "$(wc -l <"$STATE/suggestion.md") tasks adopted. Start: autopilot start 5"; rm -f "$STATE/suggestion.md" "$STATE/planner-rounds"; } ;;  # adopted = new state: planner rounds start afresh
         discard) rm -f "$STATE/suggestion.md"; echo "Suggestion discarded." ;;
         *) if [ -s "$STATE/suggestion.md" ]; then echo "Planner suggestion:"; cat "$STATE/suggestion.md"
                echo; echo "Adopt: autopilot suggestion accept   Discard: autopilot suggestion discard"
@@ -190,11 +211,23 @@ suggestion() {
     esac
 }
 
+handover() { # the HANDOVER.md of the last end
+    [ -s "$STATE/HANDOVER.md" ] || { echo "No handover yet: it is written when a start ends. Start it: autopilot start 5 (or the menu)."; return 0; }
+    cat "$STATE/HANDOVER.md"
+}
+outcome() { # "delivered" | "not delivered (reason)" | "stopped (reason)" … of the last end; empty while running or before any end
+    local o='' why=''
+    is_running && return 0
+    [ -r "$STATE/outcome" ] && IFS=$'\t' read -r o why <"$STATE/outcome" || return 0
+    [ "$o" = delivered ] && why=''  # a delivery needs no reason
+    echo "${o/not-delivered/not delivered}${why:+ ($why)}"
+}
 summary() { # [--short]: end summary of the last start, from the logs alone (no Claude call)
     local h=$STATE/log/history.log csv=$STATE/log/progress.csv
-    local ln events st t0 runs cost secs t1 n_done n_open n_blocked acc ended next
+    local ln events st t0 runs cost secs t1 n_done n_open n_blocked acc ended next o
     ln=$(grep -n ' Start: ' "$h" 2>/dev/null | tail -1 | cut -d: -f1)
     [ -n "$ln" ] || { echo "Nothing has run yet. Start it: autopilot start 5 (or the menu)."; return 0; }
+    o=$(outcome)
     events=$(tail -n +"$ln" "$h")
     st=$(head -1 <<<"$events" | cut_chars 1 19)
     t0=$(sed -n 's/.* Start: \([0-9][0-9]*\) tests green.*/\1/p' <<<"$events" | head -1)
@@ -206,19 +239,16 @@ summary() { # [--short]: end summary of the last start, from the logs alone (no 
     n_open=$(grep -c '^- \[ \]' "$WORKDIR/$TASKS_FILE" 2>/dev/null)
     n_blocked=$(grep -c '^- \[~\]' "$WORKDIR/$TASKS_FILE" 2>/dev/null)
     if [ "${1:-}" = --short ]; then
-        echo "${n_done:-?} done, ${n_blocked:-?} blocked, tests ${t0:-?} -> $t1, ${cost:-0} USD"
+        echo "${o:-$(is_running && echo running || echo 'no result yet')} - ${n_done:-?} done, ${n_blocked:-?} blocked, tests ${t0:-?} -> $t1, ${cost:-0} USD"
         return 0
     fi
     if is_running; then ended='still running'
-    elif grep -q 'Goal reached' <<<"$events"; then ended='goal reached'
-    elif grep -q 'Limit of .* runs reached' <<<"$events"; then ended='run limit reached (more runs: autopilot start)'
-    elif grep -q 'Stopped via STOP' <<<"$events"; then ended='stopped by you'
-    elif grep -q 'rejections in a row, stopped' <<<"$events"; then ended='stopped after repeated rejections'
+    elif [ -n "$o" ]; then ended="$o - details: autopilot handover"
     elif grep -qi 'interrupted' <<<"$events"; then ended='aborted'
     else ended="ended early: $(tail -1 <<<"$events" | cut_chars 21 90)"; fi
     if [ "${n_open:-0}" -gt 0 ] 2>/dev/null; then next="$n_open open tasks left - continue: autopilot start $n_open"
     elif [ "${n_blocked:-0}" -gt 0 ] 2>/dev/null; then next="read BLOCKED.md ($n_blocked blocked), then view and merge: autopilot result"
-    else next='view and merge the result: autopilot result'; fi
+    else next='read the handover (autopilot handover), then view and merge the result: autopilot result'; fi
     acc=$(grep -o 'Accept [0-9]* -> [0-9]* of [0-9?]*\|Accept [0-9]* of [0-9?]*' <<<"$events" | tail -1 |
         sed 's/Accept \([0-9]*\) -> \([0-9]*\)/Accept \2/')
     echo "Last start:  $st - ${runs:-0} runs, $(( ${secs:-0} / 60 ))m $(( ${secs:-0} % 60 ))s run time, ${cost:-0} USD"
@@ -282,6 +312,7 @@ start_now() { # RUNS [REVIEWER] [REJECTIONS] [WORKER] [PLANNER]
 case "${1:-}" in
     status) status "${2:-}"; exit 0 ;;
     summary) summary "${2:-}"; exit 0 ;;
+    handover) handover; exit 0 ;;
     conditions) conditions; exit 0 ;;
     notes) notes; exit 0 ;;
     result) result; exit 0 ;;
@@ -313,7 +344,7 @@ case "${1:-}" in
         echo "Aborted, the unfinished run was discarded (git reset --hard, git clean -fd in $WORKDIR)."; exit 0 ;;
     start) shift; start_now "$@"; exit $? ;;
     "") ;;
-    *) sed -n '2,15p' "$0" | cut -c3-; exit 2 ;;
+    *) sed -n '2,16p' "$0" | cut -c3-; exit 2 ;;
 esac
 
 # --- Menu ---------------------------------------------------------------------------------------
@@ -331,7 +362,7 @@ start_menu() {
 }
 
 while true; do
-    choice=$(whiptail --title "$TITLE" --menu "$(status)" 34 110 14 \
+    choice=$(whiptail --title "$TITLE" --menu "$(status)" 35 110 15 \
         1 "Refresh status" \
         2 "Start" \
         3 "Continue (approve the supervised step)" \
@@ -345,7 +376,8 @@ while true; do
         11 "Read decisions and blocked tasks" \
         12 "View result" \
         13 "Create report now" \
-        14 "Doctor: check requirements" 3>&1 1>&2 2>&3) || exit 0
+        14 "Doctor: check requirements" \
+        15 "Handover: delivered or not, proof, how to try it" 3>&1 1>&2 2>&3) || exit 0
     case $choice in
         2) start_menu ;;
         3) show "$("$0" continue)" ;;
@@ -365,5 +397,6 @@ while true; do
         12) show "$(result)" ;;
         13) clear; echo "Creating report …"; show "$(report)" ;;
         14) show "$("$0" doctor 2>&1)" ;;
+        15) show "$(handover)" ;;
     esac
 done

@@ -8,7 +8,7 @@ pa_project() { # NAME CONF-LINES: Git project $T/pa-NAME on branch autopilot wit
 }
 pa_plan() { # NAME CONFIG-LINES: project $T/pa-NAME with a draft whose config section is CONFIG-LINES
     new_round; sample_project "$T/pa-$1"; git add -A && git commit -qm start || fail "$1: plan setup failed"
-    printf "===CONFIG===\nTEST_CMD='bash check.sh'\n%s\n===TASKS===\n- [ ] 1. [x] one. Done when a test passes.\n" "$2" >"$FAKE_DIR/setup.txt"
+    printf "===CONFIG===\nTEST_CMD='bash check.sh'\nDEMO_CMD='bash check.sh'\n%s\n===TASKS===\n- [ ] 1. [x] one. Done when a test passes.\n" "$2" >"$FAKE_DIR/setup.txt"
     "$TOOL_DIR/menu.sh" plan "$T/pa-$1/plan.md" >"$T/pa-$1.txt" 2>&1 || fail "$1: draft failed: $(tail -3 "$T/pa-$1.txt")"
 }
 
@@ -49,9 +49,9 @@ grep -q "ACCEPT_FILES is empty" "$T/pa-a1-conf/.autopilot/log/history.log" || fa
 [ ! -f "$FAKE_DIR/step-nr" ] || fail "A1: Claude ran with an unlocked acceptance test"
 pa_plan a1p "ACCEPT_CMD='bash accept.sh'
 ACCEPT_FILES=(accept.sh)"
-grep -q "discarded: ACCEPT_CMD=" "$T/pa-a1p.txt" || fail "A1: ACCEPT_CMD from the draft not discarded: $(cat "$T/pa-a1p.txt")"
+grep -q "adopted only with --with-accept" "$T/pa-a1p.txt" || fail "A1: proposed acceptance test not shown as a proposal: $(cat "$T/pa-a1p.txt")"
 "$TOOL_DIR/menu.sh" plan accept >/dev/null 2>&1 || fail "A1: plan accept failed"
-grep -q '^ACCEPT_CMD=' "$T/pa-a1p/autopilot.conf" && fail "A1: ACCEPT_CMD from the draft adopted without locked files"
+grep -q '^ACCEPT_CMD=' "$T/pa-a1p/autopilot.conf" && fail "A1: ACCEPT_CMD from the draft adopted without --with-accept"
 
 # P6: the only allowed change to the task list is the first open task ticked off or blocked
 pa_project p6 "ALLOWED='^(checks\\.txt|TASKS\\.md)\$'"

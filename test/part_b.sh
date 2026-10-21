@@ -30,27 +30,29 @@ echo "echo a >t.txt; $tick" >"$FAKE_DIR/steps/1.sh"; echo "VERDICT: ACCEPT" >"$F
 MAX=1 "$TOOL_DIR/autopilot.sh" >"$T/b2.txt" 2>&1 || fail "TEST_EMPTY_RC: run ended with an error: $(tail -3 "$T/b2.txt")"
 grep -q "Start: 0 tests green" "$T/b2-conf/.autopilot/log/history.log" && grep -q "Run 1 accepted" "$T/b2-conf/.autopilot/log/history.log" ||
     fail "TEST_EMPTY_RC=5: no start with 0 tests: $(cat "$T/b2-conf/.autopilot/log/history.log")"
-printf "===CONFIG===\nTEST_CMD='pytest -q'\nTEST_EMPTY_RC=5\nTEST_EMPTY_RC=5; touch x\n===TASKS===\n- [ ] 1. [x] one. Done when a test passes.\n" >"$FAKE_DIR/setup.txt"
+printf "===CONFIG===\nTEST_CMD='pytest -q'\nDEMO_CMD='bash check.sh'\nTEST_EMPTY_RC=5\nTEST_EMPTY_RC=5; touch x\n===TASKS===\n- [ ] 1. [x] one. Done when a test passes.\n" >"$FAKE_DIR/setup.txt"
 "$TOOL_DIR/menu.sh" plan "$T/b2/plan.md" >"$T/b2-plan.txt" 2>&1 || fail "TEST_EMPTY_RC: draft failed: $(tail -3 "$T/b2-plan.txt")"
 grep -qx 'TEST_EMPTY_RC=5' "$T/b2/.autopilot/draft/autopilot.part" || fail "TEST_EMPTY_RC=5 not adopted from the draft"
 grep -qF 'discarded: TEST_EMPTY_RC=5; touch x' "$T/b2/.autopilot/draft/discarded.txt" || fail "TEST_EMPTY_RC with a command adopted"
 grep -q 'TEST_EMPTY_RC=5' "$TOOL_DIR/templates/SETUP.md" || fail "SETUP.md does not mention TEST_EMPTY_RC for pytest"
 
-# P3: test and acceptance command end at TEST_TIMEOUT, with a clear reason
+# P3: test and acceptance command end at TEST_TIMEOUT, with a clear reason (each rejects the run)
 b_project "$T/p3" <<'EOF'
 TEST_CMD='test -e slow && sleep 30; bash check.sh'
-ACCEPT_CMD='sleep 30'
+ACCEPT_CMD='test -e slow2 && sleep 30; bash accept.sh'
 ACCEPT_FILES=(accept.sh)
 TEST_TIMEOUT=2s
-ALLOWED='^(checks\.txt|slow|TASKS\.md)$'
+ALLOWED='^(checks\.txt|slow|slow2|TASKS\.md)$'
 EOF
 "$TOOL_DIR/menu.sh" approve >/dev/null || fail "P3: approve failed"
-echo "echo check >>checks.txt; touch slow; $tick" >"$FAKE_DIR/steps/1.sh"; echo "VERDICT: ACCEPT" >"$FAKE_DIR/verdicts"
-SECONDS=0; MAX=1 "$TOOL_DIR/autopilot.sh" >"$T/p3.txt" 2>&1
-[ "$SECONDS" -lt 20 ] || fail "TEST_TIMEOUT ignored: took ${SECONDS}s"
+echo "echo check >>checks.txt; touch slow; $tick" >"$FAKE_DIR/steps/1.sh"
+echo "echo check >>checks.txt; touch slow2; $tick" >"$FAKE_DIR/steps/2.sh"; echo "VERDICT: ACCEPT" >"$FAKE_DIR/verdicts"
+SECONDS=0; MAX=2 "$TOOL_DIR/autopilot.sh" >"$T/p3.txt" 2>&1
+[ "$SECONDS" -lt 25 ] || fail "TEST_TIMEOUT ignored: took ${SECONDS}s"
 grep -qF "Run 1 rejected: tests hit the time limit (TEST_TIMEOUT=2s)" "$T/p3-conf/.autopilot/log/history.log" || fail "no time limit reason: $(cat "$T/p3-conf/.autopilot/log/history.log")"
-grep -q "time limit" "$T/p3-conf/.autopilot/log/accept-start.txt" || fail "acceptance test without time limit note"
-[ ! -e slow ] && [ -z "$(git status --porcelain)" ] || fail "time limit: work directory not reset"
+grep -qF "Run 2 rejected: acceptance test without a readable number" "$T/p3-conf/.autopilot/log/history.log" || fail "acceptance time limit not rejected: $(cat "$T/p3-conf/.autopilot/log/history.log")"
+grep -q "time limit" "$T/p3-conf/.autopilot/log/accept-2.txt" || fail "acceptance test without time limit note"
+[ ! -e slow ] && [ ! -e slow2 ] && [ -z "$(git status --porcelain)" ] || fail "time limit: work directory not reset"
 
 # N3: a second start moves the per-run logs of the first one to log/archive/<time>/ instead of overwriting them
 b_project "$T/n3" <<'EOF'

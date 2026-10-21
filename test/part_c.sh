@@ -46,7 +46,7 @@ git ls-files | grep -q 'pyc' && fail "P4: bytecode committed: $(git ls-files | g
 grep -qxF '__pycache__/' .git/info/exclude && grep -qxF '*.pyc' .git/info/exclude || fail "P4: bytecode not excluded from Git"
 git check-ignore -q autopilot.conf && ! git check-ignore -q nested/autopilot.conf || fail "exclude must cover only the root autopilot.conf, not nested files of that name"
 grep -q "Goal reached: all tasks done except 1 blocked" "$h" || fail "P15: blocked tasks not named at the end: $(tail -1 "$h")"
-tail -1 "$T/pcc/notify.log" | grep -q '^warn Goal reached' || fail "P15: end with blocked tasks not announced as warn: $(tail -1 "$T/pcc/notify.log")"
+tail -1 "$T/pcc/notify.log" | grep -q '^warn Not delivered: 1 tasks blocked' || fail "P15: end with blocked tasks not announced as 'Not delivered': $(tail -1 "$T/pcc/notify.log")"
 grep -q "CLAUDE.md and" "$TOOL_DIR/templates/PROMPT.md" && fail "P16: PROMPT.md still points to a CLAUDE.md that is never created"
 grep -q "Tests are never deleted, loosened or bypassed" "$FAKE_DIR/last-prompt" || fail "P16: rules missing in the worker prompt"
 

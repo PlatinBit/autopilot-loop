@@ -4,6 +4,8 @@
 # Controlled via $FAKE_DIR: steps/<n>.sh (worker runs), verdicts (one line per review),
 # setup.txt, planner.txt, report.txt (fixed answers), garbage (raw non-JSON output for the setup call), review-sleep (seconds the reviewer waits before answering). Every answer costs 0.01 USD.
 d=$FAKE_DIR
+# `claude --help`: the pre-flight check looks for --safe-mode; FAKE_OLD_CLAUDE=1 plays an older CLI without it
+[ "${1:-}" = --help ] && { [ -n "${FAKE_OLD_CLAUDE:-}" ] || echo "  --safe-mode   Start with all customizations disabled"; echo "  --version"; exit 0; }
 prompt=''
 for a in "$@"; do case "$a" in -p|--output-format|json) ;; --*) break ;; *) prompt=$a; break ;; esac; done
 [ -n "$prompt" ] || prompt=$(cat)

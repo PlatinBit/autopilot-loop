@@ -72,7 +72,7 @@ EOF
 pf_f5() {
     new_round; sample_project "$T/pf5p"
     git add -A && git commit -qm start || fail "F5: setup failed"
-    printf "===CONFIG===\nTEST_CMD='pf5-missing-tool-xyz -q'\n===TASKS===\n- [ ] 1. [x] one. Done when a test passes.\n" >"$FAKE_DIR/setup.txt"
+    printf "===CONFIG===\nTEST_CMD='pf5-missing-tool-xyz -q'\nDEMO_CMD='bash check.sh'\n===TASKS===\n- [ ] 1. [x] one. Done when a test passes.\n" >"$FAKE_DIR/setup.txt"
     "$TOOL_DIR/menu.sh" plan "$T/pf5p/plan.md" >/dev/null 2>&1 || fail "F5: plan failed"
     PATH="$T/pf-apt:$PATH" "$TOOL_DIR/menu.sh" plan accept >"$T/pf5.txt" 2>&1 || fail "F5: plan accept failed: $(tail -3 "$T/pf5.txt")"
     grep -qi "cannot run" "$T/pf5.txt" && grep -qF "Try: sudo apt install pf5-missing-tool-xyz" "$T/pf5.txt" ||
@@ -85,7 +85,7 @@ pf_f6() {
     local c p
     mkdir -p "$T/pf-full"
     for c in "$T/nocl"/*; do ln -sf "$(readlink -f "$c")" "$T/pf-full/$(basename "$c")"; done
-    printf '#!/bin/bash\necho "2.0.1 (stub)"\n' >"$T/pf-full/claude" && chmod +x "$T/pf-full/claude"
+    printf '#!/bin/bash\n[ "$1" = --help ] && { echo "  --safe-mode"; exit 0; }\necho "2.1.0 (stub)"\n' >"$T/pf-full/claude" && chmod +x "$T/pf-full/claude"
     printf '#!/bin/bash\necho "tmux 3.4"\n' >"$T/pf-full/tmux" && chmod +x "$T/pf-full/tmux"
     # Doctor runs outside a repo here: stub the git identity (CI runners have no global one)
     env -u AUTOPILOT_CONF GIT_COMMITTER_NAME=CI GIT_COMMITTER_EMAIL=ci@test XDG_CONFIG_HOME="$T/pf6-cfg" PATH="$T/pf-apt:$T/pf-full" \

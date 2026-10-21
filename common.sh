@@ -58,6 +58,8 @@ LICENCE_REVOKE_BELOW=90   # below this it is revoked
 STALL_WARN_AFTER=10       # warn after this many accepted runs without acceptance progress (0 = off)
 SMOKE_TEST_CMD=''         # optional: command for a real test (e.g. start a server, check its log)
 SMOKE_TEST_EVERY=0        # every n accepted runs; 0 = only when the goal is reached
+DEMO_CMD=''               # demo at the end: uses the result like the owner would, exit 0 = it works (empty: SMOKE_TEST_CMD)
+TRY_IT=''                 # short text for the handover: how the owner tries the result
 IMAGE_REVIEW_FILE=''      # optional: image produced by SMOKE_TEST_CMD; the reviewer judges it
 IMAGE_REVIEW_QUESTION='Does the result in the image look coherent and free of errors?'
 REPORT_MODEL=haiku
@@ -93,7 +95,9 @@ if exclude=$(git -C "$WORKDIR" rev-parse --git-path info/exclude 2>/dev/null); t
     done
 fi
 
-is_running() { tmux has-session -t "=$SESSION" 2>/dev/null; }
+# Running: the tmux session exists, or the lock of an autopilot.sh started by hand is held by a live process
+lock_alive() { local pid=''; [ -r "$STATE/lock/pid" ] && read -r pid <"$STATE/lock/pid"; [[ $pid =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; }
+is_running() { tmux has-session -t "=$SESSION" 2>/dev/null || lock_alive; }
 
 # Checksum of the locked acceptance files (empty if there is no acceptance test)
 accept_checksum() {
@@ -141,10 +145,16 @@ plan_section() {
     printf '\n\n## Plan being implemented (%s – read only, never change)\n%s\n' "$(basename "$PLAN_FILE")" "$(cat "$PLAN_FILE")"
 }
 
+# The project's CLAUDE.md as a section for prompts (--safe-mode does not load it by itself)
+project_rules() {
+    [ -s "$WORKDIR/CLAUDE.md" ] || return 0
+    printf '\n\n## Project rules (CLAUDE.md)\n%s\n' "$(cat "$WORKDIR/CLAUDE.md")"
+}
+
 # --- Planner: proposes new tasks, adopts them only after your OK ---------------------------------
 run_planner() {
     local prompt cost
-    prompt="$(cat "$PLANNER_FILE")$(plan_section)
+    prompt="$(cat "$PLANNER_FILE")$(plan_section)$(project_rules)
 
 ## Task list ($TASKS_FILE)
 $(cat "$WORKDIR/$TASKS_FILE")
@@ -153,10 +163,19 @@ $(cat "$WORKDIR/$TASKS_FILE")
 $(cat "$WORKDIR/BLOCKED.md" 2>/dev/null || echo –)
 
 ## Latest acceptance test
-$(tail -40 "$(ls -t "$STATE"/log/accept-*.txt 2>/dev/null | head -1)" 2>/dev/null || echo 'no acceptance test')"
+$(tail -40 "$(ls -t "$STATE"/log/accept-*.txt 2>/dev/null | head -1)" 2>/dev/null || echo 'no acceptance test')
+
+## Demo at the end (DEMO_CMD), last lines
+$(tail -40 "$STATE/demo.txt" 2>/dev/null || echo 'no demo ran')
+
+## Your previous suggestion (do not repeat it, it did not reach the goal)
+$(cat "$STATE/log/suggestion-prev.md" 2>/dev/null || echo –)"
     cost=$(cd "$WORKDIR" && claude_run "$STATE/log/planner.txt" --model "${PLANNER_MODEL:-opus}" --allowedTools Read Grep Glob <<<"$prompt")
-    grep -E '^- \[ \] .*Done when' "$STATE/log/planner.txt" >"$STATE/suggestion.md"
     echo "$(date '+%F %T');planner;$cost" >>"$STATE/log/costs-extra.csv"
+    # "NOT REACHABLE: <reason>": the goal needs the owner, not more tasks (exit 2, the reason as the text)
+    if grep -m1 '^NOT REACHABLE:' "$STATE/log/planner.txt" | cut_chars 1 200 | grep .; then rm -f "$STATE/suggestion.md"; return 2; fi
+    grep -E '^- \[ \] .*Done when' "$STATE/log/planner.txt" >"$STATE/suggestion.md"
+    cp "$STATE/suggestion.md" "$STATE/log/suggestion-prev.md"
     if [ -s "$STATE/suggestion.md" ]; then echo "$(wc -l <"$STATE/suggestion.md") tasks proposed (autopilot suggestion)."
     else echo "The planner did not deliver usable tasks, see $STATE/log/planner.txt"; return 1; fi
 }

@@ -6,8 +6,11 @@
 #   autopilot plan idea "<one to three sentences>"   write ./<slug>-plan.md from a bare idea; review it,
 #                              then: autopilot plan <that file>
 #   autopilot plan show        show the last draft
-#   autopilot plan accept      set up the last draft: work branch "autopilot" as a worktree next to the
-#                              project, autopilot.conf, task list; afterwards `autopilot` means this project
+#   autopilot plan accept [--no-demo] [--with-accept]
+#                              set up the last draft: work branch "autopilot" as a worktree next to the
+#                              project, autopilot.conf, task list; afterwards `autopilot` means this project.
+#                              --no-demo: set up without a demo command (the run can then never be reported
+#                              as delivered). --with-accept: adopt the acceptance test the draft proposes.
 set -u
 TOOL_DIR=$(dirname "$(readlink -f "$0")")
 # shellcheck source=lib.sh
@@ -28,14 +31,16 @@ exclude_state() { # REPO: state directory and configuration never in Git
 # Only these settings may be taken from the draft, in exactly this form.
 # The draft comes from Claude (and indirectly from plan and project); everything else is discarded.
 # Tools: only Read, Edit, Write, Glob, Grep and Bash for a single command without wildcards or special characters.
-# Each setting at most once (two ALLOWED lines would become one broken pattern). No ACCEPT_CMD: an acceptance
-# test needs locked ACCEPT_FILES, which you set up by hand.
+# Each setting at most once (two ALLOWED lines would become one broken pattern). An acceptance test (ACCEPT_CMD
+# with ACCEPT_FILES of existing, plain paths) is only a proposal: `plan accept` drops it unless you pass --with-accept.
 safe_conf() { # FILE → valid lines on stdout, discarded ones on stderr
     local z seen=' ' tool='(Read|Edit|Write|Glob|Grep|'"'"'Bash\((\./)?[A-Za-z0-9_][A-Za-z0-9_./ -]*:\*\)'"'"')'
+    local path='[A-Za-z0-9_][A-Za-z0-9_.-]*(/[A-Za-z0-9_][A-Za-z0-9_.-]*)*'  # no ".." segments, no leading "/"
     while IFS= read -r z; do
-        if [[ $z =~ ^(TEST_CMD|TEST_COUNT_CMD|ALLOWED|FORBIDDEN_CONTENT)=\'[^\']*\'$ ]] ||
+        if [[ $z =~ ^(TEST_CMD|TEST_COUNT_CMD|ALLOWED|FORBIDDEN_CONTENT|DEMO_CMD|TRY_IT|ACCEPT_CMD)=\'[^\']*\'$ ]] ||
            [[ $z =~ ^(TEST_COUNT_REGEX|ACCEPT_REGEX)=\'[^\']*\(\[0-9\]\+\)[^\']*\'$ ]] ||
            [[ $z =~ ^TEST_EMPTY_RC=[0-9]{1,3}$ ]] ||
+           [[ $z =~ ^ACCEPT_FILES=\($path(\ $path)*\)$ ]] ||
            [[ $z =~ ^WORKER_TOOLS=\(\ ?$tool(\ $tool)*\ ?\)$ ]]; then
             [[ $seen == *" ${z%%=*} "* ]] && { echo "discarded (duplicate): $z" >&2; continue; }
             seen+="${z%%=*} "; echo "$z"
@@ -43,16 +48,21 @@ safe_conf() { # FILE → valid lines on stdout, discarded ones on stderr
     done <"$1"
 }
 
+has_demo() { grep -q "^DEMO_CMD='[^']" "$1/autopilot.part"; } # DRAFT DIRECTORY: a non-empty demo command
+
 show() { # DRAFT DIRECTORY
     local e=$1
     echo "Draft for: $(cat "$e/plan")"
     echo
-    echo "Settings (TEST_CMD and TEST_COUNT_CMD are run as shell commands – please read carefully):"
+    echo "Settings (TEST_CMD, TEST_COUNT_CMD, DEMO_CMD and ACCEPT_CMD are run as shell commands – please read carefully):"
     sed 's/^/  /' "$e/autopilot.part"
     echo
     echo "Tasks ($(grep -c '^- \[ \]' "$e/tasks.md")):"; grep '^- \[ \]' "$e/tasks.md" | cut_chars 1 140 | sed 's/^/  /'
     [ -s "$e/discarded.txt" ] && { echo; echo "Not adopted for security reasons:"; sed 's/^/  /' "$e/discarded.txt"; }
     echo
+    has_demo "$e" || echo "No demo command (DEMO_CMD) in the draft: add one to $e/autopilot.part, or set up with --no-demo (the run can then never be reported as delivered)."
+    grep -q '^ACCEPT_CMD=' "$e/autopilot.part" &&
+        echo "The draft proposes an acceptance test (ACCEPT_CMD, ACCEPT_FILES): adopted only with --with-accept, dropped otherwise."
     echo "Read in full: $e/tasks.md   Set up: autopilot plan accept   Draft again: autopilot plan <file>"
 }
 
@@ -133,11 +143,27 @@ $(g -C "$repo" ls-files | head -300)"
     show "$e"
 }
 
-accept() {
-    local repo e file rel name base wt allowed err sr sandbox wrap z re
+accept() { # [--no-demo] [--with-accept]
+    local repo e file rel name base wt allowed err sr sandbox wrap z re f drop demo=1 with_accept=''
+    for z in "$@"; do case $z in
+        --no-demo) demo='' ;; --with-accept) with_accept=1 ;;
+        *) fail "Usage: autopilot plan accept [--no-demo] [--with-accept]" ;;
+    esac; done
     repo=$(cat "$LAST" 2>/dev/null) && [ -d "$repo/.autopilot/draft" ] || fail "No draft available (autopilot plan <file>)."
     e=$repo/.autopilot/draft
     file=$(cat "$e/plan"); rel=${file#"$repo"/}
+    [ -z "$demo" ] || has_demo "$e" || fail "The draft has no demo command (DEMO_CMD): without one the run can never be reported as delivered.
+Add DEMO_CMD='<command that starts or uses the result, exit 0 = it works>' to $e/autopilot.part,
+or set up without a demo: autopilot plan accept --no-demo"
+    # The acceptance test is only a proposal: dropped unless you confirm it, and its files must already exist
+    # (they are locked, so the worker could never create them).
+    drop='^ALLOWED='  # lines of the draft written differently (ALLOWED) or not at all
+    if [ -n "$with_accept" ]; then
+        grep -q '^ACCEPT_CMD=' "$e/autopilot.part" || fail "The draft proposes no acceptance test (--with-accept)."
+        for f in $(sed -n 's/^ACCEPT_FILES=(\(.*\))$/\1/p' "$e/autopilot.part"); do
+            [ -e "$repo/$f" ] || fail "Acceptance file $f does not exist in $repo: set it up by hand, or accept without --with-accept."
+        done
+    else drop+='|^ACCEPT_(CMD|FILES)='; fi
     allowed=$(sed -n "s/^ALLOWED='\(.*\)'$/\1/p" "$e/autopilot.part")
     allowed="(${allowed:-^$})|^(${TASKS_FILE//./\\.}|BLOCKED\\.md|DECISIONS\\.md)\$"
     err=$(ALLOWED=$allowed FORBIDDEN_CONTENT=$(sed -n "s/^FORBIDDEN_CONTENT='\(.*\)'$/\1/p" "$e/autopilot.part") bad_patterns)
@@ -181,8 +207,9 @@ Move or remove what is at $wt (or delete a stale worktree with: git -C \"$repo\"
                 WORKER_TOOLS=*) z=${z//"'Bash("/"'Bash($sr "} ;;
             esac; fi
             echo "$z"
-        done < <(grep -v '^ALLOWED=' "$e/autopilot.part")
+        done < <(grep -Ev "$drop" "$e/autopilot.part")
         echo "ALLOWED='$allowed'"
+        has_demo "$e" || printf "# no demo: the run can never be reported as delivered\nDEMO_CMD=''\n"
         if [ "$sandbox" = on ]; then
             echo "# bwrap found: the test command runs without network and devices, read-only outside the work directory"
             echo "SANDBOX=on"
@@ -197,10 +224,10 @@ Move or remove what is at $wt (or delete a stale worktree with: git -C \"$repo\"
 }
 
 case "${1:-}" in
-    "") sed -n '2,10p' "$0" | cut -c3-; exit 2 ;;
+    "") sed -n '2,13p' "$0" | cut -c3-; exit 2 ;;
     show) repo=$(cat "$LAST" 2>/dev/null) && [ -d "$repo/.autopilot/draft" ] || fail "No draft available."
           show "$repo/.autopilot/draft" ;;
-    accept) accept ;;
+    accept) shift; accept "$@" ;;
     idea) shift; need_claude && need_jq || exit 1; idea "$*" ;;
     *) need_claude || exit 1; draft "$1" ;;
 esac
