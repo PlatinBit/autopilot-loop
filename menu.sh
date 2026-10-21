@@ -1,24 +1,21 @@
 #!/usr/bin/env bash
-# autopilot-loop – menu and commands. Runs in a normal terminal, without a Claude session.
+# autopilot-loop – the `autopilot` command (in Claude Code: /autopilot-loop <command>).
 #
-#   autopilot                          menu (whiptail)
-#   autopilot plan <file>              draft a new project from a plan file (then: plan accept)
-#   autopilot plan idea "<sentences>"  write a plan file from a bare idea (review it, then: autopilot plan <file>)
-#   autopilot plan show | plan accept  show the last draft / set it up
-#   autopilot trust [file]             approve a hand-written or changed autopilot.conf
-#   autopilot start <runs> [reviewer: sonnet|opus|haiku] [max-rejections] [worker: opus|sonnet|haiku] [planner: opus|sonnet]
-#   autopilot status [--short] | summary [--short] | stop | abort | continue | approve | conditions
-#   autopilot handover                 what was delivered (or not, and why), proof, how to try it, next step
-#   autopilot grades | costs | chart | notes | result | propose | suggestion [accept|discard]
-#   autopilot report [--if-new]        summary of the last 24 hours (for cron)
-#   autopilot doctor                   check everything needed: tools, versions, install commands, project
-#   autopilot setup                    create autopilot.conf by hand in the current directory
-#   autopilot help                     this help
+#   autopilot plan <file> | plan "<idea>"   draft a project from a plan file, or from a few sentences
+#   autopilot plan [accept|discard]          show / set up or adopt / throw away the draft or the planner's suggestion
+#   autopilot start                          run the loop in the background (tmux) until done or a cap is hit
+#   autopilot status [--short]               where it stands; after the end: outcome, tasks, tests, cost, tokens
+#   autopilot stop [--now]                   stop after the current run / now (the unfinished run is discarded)
+#   autopilot handover                       the result: what was built, how to try it, the proof, what is open
+#   autopilot doctor                         check tools, versions and the project's test command
+#   autopilot trust [file]                   confirm a hand-written or changed autopilot.conf (it is Bash code)
+#   autopilot help                           this help
+# The project is ./autopilot.conf (or one in a folder above, up to the Git root), or $AUTOPILOT_CONF.
 set -u
 HERE=$(dirname "$(readlink -f "$0")")
-CONF_BASE=${XDG_CONFIG_HOME:-$HOME/.config}/autopilot-loop
 # shellcheck source=lib.sh
 . "$HERE/lib.sh"
+NO_PROJECT="No project found here (autopilot.conf in this folder or above, or AUTOPILOT_CONF). Create one: autopilot plan <file>"
 
 # --- Doctor: checklist of everything autopilot-loop needs (works without a project) ----------------
 doc_row() { # COMMAND PURPOSE [INSTALL]: ✔ with version, or ✘ with the install command (returns 1)
@@ -31,18 +28,16 @@ doc_row() { # COMMAND PURPOSE [INSTALL]: ✔ with version, or ✘ with the insta
         return 1
     fi
 }
-doc_project() { # with a trusted configuration: sandbox state and a one-shot probe of TEST_CMD
-    local k='' c
-    for c in "${AUTOPILOT_CONF:-}" "$PWD/autopilot.conf" "$CONF_BASE/standard.conf"; do
-        [ -n "$c" ] && [ -f "$c" ] && { k=$c; break; }
-    done
-    [ -n "$k" ] || { echo "Project: none set up yet (autopilot plan <file>) – only the tools above were checked."; return 0; }
+doc_project() { # with a trusted configuration: work directory, sandbox state and a one-shot probe of TEST_CMD
+    local k
+    k=$(find_conf) || { echo "Project: none here (autopilot plan <file>) – only the tools above were checked."; return 0; }
     is_trusted "$k" || { echo "Project: $k is not confirmed as trusted – test command not probed (autopilot trust)."; return 0; }
     echo "Project: $k"
-    (set +u; SANDBOX=off; . "$k" </dev/null >/dev/null 2>&1
-     if [ "$SANDBOX" != on ]; then echo "  SANDBOX=off (test commands run unsandboxed)"
-     elif "$HERE/sandbox-run" true >/dev/null 2>&1; then echo "  SANDBOX=on and bwrap works"
-     else echo "  SANDBOX=on but bwrap cannot start a sandbox here – $(install_hint bubblewrap), or set SANDBOX=off"; fi)
+    (set +u; SANDBOX=''; WORKDIR=.; cd "$(dirname "$k")" && . "$k" </dev/null >/dev/null 2>&1
+     under_claude_dir "$WORKDIR" && echo "  ✘ WORKDIR $(readlink -f "$WORKDIR") lies below ~/.claude/: Claude Code refuses every write there – move the project"
+     if [ "$SANDBOX" = off ]; then echo "  SANDBOX=off (test commands run unsandboxed)"
+     elif sandbox_works; then echo "  sandbox on (bwrap works)"
+     else echo "  no sandbox: bwrap is missing or cannot start here – $(install_hint bubblewrap), or set SANDBOX=off"; fi)
     probe_test_cmd "$k" | sed 's/^/  /'
 }
 doctor() {
@@ -56,12 +51,10 @@ doctor() {
     fi
     doc_row git "work branch, checks and commit of every run" || miss=1
     doc_row jq "reads Claude's JSON answers" || miss=1
-    doc_row tmux "keeps the loop running in the background (start/stop/abort/status)" || miss=1
-    doc_row whiptail "terminal menu (optional: every command also works directly)"
-    doc_row python3 "progress chart (optional: everything else works without it)"
+    doc_row tmux "keeps the loop running in the background (start)" || miss=1
     t=timeout; command -v timeout >/dev/null || t=gtimeout
     doc_row "$t" "time limits for runs and commands (optional, coreutils)" "$(install_hint coreutils)"
-    doc_row bwrap "sandbox for test commands (optional, Linux, used with SANDBOX=on)"
+    doc_row bwrap "sandbox for test commands (optional, Linux, used when it works)"
     if id=$(git var GIT_COMMITTER_IDENT 2>/dev/null); then echo " ✔ git identity: $(sed 's/ [0-9].*//' <<<"$id")"
     else echo " ✘ git identity not set – git config --global user.email you@example.org; git config --global user.name \"Your Name\""; miss=1; fi
     doc_project
@@ -69,334 +62,133 @@ doctor() {
     else echo "Required pieces are missing (✘ above) – install them, then check again: autopilot doctor"; return 1; fi
 }
 
-case "${1:-}" in
-    plan) shift; exec "$HERE/plan.sh" "$@" ;;
-    doctor) doctor; exit $? ;;
-    setup)
-        [ -e autopilot.conf ] && { echo "autopilot.conf already exists here."; exit 1; }
-        cp "$HERE/templates/autopilot.conf" autopilot.conf || exit 1
-        echo "autopilot.conf created: fill in TEST_CMD, ALLOWED and WORKDIR, then: autopilot trust"
-        echo "Easier: autopilot plan <plan-file>"
-        exit 0 ;;
-    trust)
-        k=${2:-}
-        [ -n "$k" ] || for k in "${AUTOPILOT_CONF:-}" "$PWD/autopilot.conf" "$CONF_BASE/standard.conf"; do [ -f "$k" ] && break; done
-        [ -f "$k" ] || { echo "No autopilot.conf found."; exit 1; }
-        echo "This file is executed as Bash code on every call: $(readlink -f "$k")"
-        trust "$k" && echo "Marked as trusted (valid until it changes)."
-        exit $? ;;
-    help|-h|--help) sed -n '2,16p' "$0" | cut -c3-; exit 0 ;;
-    stop|abort)
-        # A configuration edited during a run is no longer trusted, but its run must still be stoppable:
-        # STOP file and lock PID live in .autopilot/ next to the configuration, no need to load it.
-        for k in "${AUTOPILOT_CONF:-}" "$PWD/autopilot.conf" "$CONF_BASE/standard.conf"; do [ -n "$k" ] && [ -f "$k" ] && break; done
-        if [ -f "$k" ] && ! is_trusted "$k"; then
-            d=$(dirname "$(readlink -f "$k")")/.autopilot; pid=''; [ -r "$d/lock/pid" ] && read -r pid <"$d/lock/pid"
-            [[ $pid =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null || { echo "The autopilot is not running ($k is not trusted either: autopilot trust)."; exit 0; }
-            if [ "$1" = stop ]; then touch "$d/STOP"; echo "Stops after the current run (configuration not trusted, only the STOP file was set)."
-            else kill -TERM "$pid"; for _ in $(seq 1 30); do kill -0 "$pid" 2>/dev/null || break; sleep 0.5; done
-                 h=$(printf '%s' "${d%/.autopilot}" | hash_only)  # the session name ends in this hash (common.sh)
-                 tmux ls -F '#S' 2>/dev/null | grep -- "-${h:0:8}$" | while read -r s; do tmux kill-session -t "=$s"; done
-                 echo "Aborted (configuration not trusted: autopilot.sh reset the work directory itself)."; fi
-            exit 0
-        fi ;;
-esac
-
-has_project() { [ -f "${AUTOPILOT_CONF:-/nonexistent}" ] || [ -f "$PWD/autopilot.conf" ] || [ -f "$CONF_BASE/standard.conf" ]; }
-
-# --- Without a project: only offer "New project" ---------------------------------------------------
-new_project() { # in the menu: ask for the path, draft, show, accept
-    local file t
-    file=$(whiptail --title "Autopilot" --inputbox "Path to the plan file (e.g. ~/project/README.md):" 10 78 3>&1 1>&2 2>&3) || return
-    file=${file/#\~/$HOME}
-    t=$(mktemp) || return
-    clear; "$HERE/plan.sh" "$file" | tee "$t" || { read -rp "Press Enter to continue …" _; rm -f "$t"; return; }
-    whiptail --title "Autopilot" --scrolltext --yesno "$(cat "$t")\n\nSet it up like this?" 30 110 &&
-        whiptail --title "Autopilot" --msgbox "$("$HERE/plan.sh" accept 2>&1)" 12 90
-    rm -f "$t"
+# --- status, stop, handover: read only .autopilot/ (never autopilot.conf, which may change during a run) ---
+state_of() { local c; c=$(find_conf) && echo "$(dirname "$c")/.autopilot"; }
+info() { sed -n "s/^$2=//p" "$1/info" 2>/dev/null | head -1; }  # STATE KEY: what autopilot.sh noted at its start
+load() { # STATE: facts of the last start
+    st=$1; started=$(info "$st" STARTED); name=$(info "$st" NAME | tr -c 'A-Za-z0-9._\n-' '_')
+    tasks=$(info "$st" WORKDIR)/$(info "$st" TASKS_FILE)
+    ev=$(tail -n +"$(info "$st" HISTORY_FROM)" "$st/log/history.log" 2>/dev/null)
+    run=$(sed -n 's/^.\{20\}Run \([0-9]*\): .*/\1/p' <<<"$ev" | tail -1)
+    t0=$(sed -n 's/.* Start: \([0-9]*\) tests green.*/\1/p' <<<"$ev" | head -1)
+    t1=$(sed -n 's/.* Tests [0-9]* -> \([0-9]*\).*/\1/p' <<<"$ev" | tail -1); t1=${t1:-$t0}
+    acc=$(grep -o 'Accept [0-9]* -> [0-9]* of [0-9?]*\|Accept [0-9]* of [0-9?]*' <<<"$ev" | tail -1 | sed 's/Accept [0-9]* -> /Accept /')
+    spent=$(cost_sum "$st/costs.csv" "$(info "$st" COSTS_FROM)")
+    n_done=$(grep -c '^- \[x\]' "$tasks" 2>/dev/null); n_open=$(grep -c '^- \[ \]' "$tasks" 2>/dev/null)
+    n_blocked=$(grep -c '^- \[~\]' "$tasks" 2>/dev/null)
 }
-[ -n "${1:-}" ] || need whiptail "The interactive menu is drawn with it (every command also works directly, see: autopilot help)." || exit 1
-if [ -z "${1:-}" ] && ! has_project; then
-    whiptail --title "Autopilot" --yesno "No project set up yet.\n\nCreate a new project from a plan file?" 10 70 && new_project
-    exit 0
-fi
-
-# shellcheck source=common.sh
-. "$HERE/common.sh"
-TITLE="Autopilot – $NAME"
-
-run_progress() { # "Run 14/15" of the current run
-    local max nr
-    max=$(grep 'Start: ' "$STATE/log/history.log" 2>/dev/null | tail -1 | grep -o 'at most [0-9]*' | grep -o '[0-9]*')
-    nr=$(sed -n 's/^.* Run \([0-9]*\): .*/\1/p' "$STATE/log/history.log" 2>/dev/null | tail -1)
-    echo "Run ${nr:-0}/${max:-?}"
-}
-accept_progress() {
-    grep -o 'Accept [0-9]* -> [0-9]* of [0-9?]*\|Accept [0-9]* of [0-9?]*' "$STATE/log/history.log" 2>/dev/null | tail -1 |
-        sed 's/Accept \([0-9]*\) -> \([0-9]*\)/Accept \2/'
-}
-
-waiting() { # WAITING only counts while the run that wrote it is alive (a leftover after a crash/reboot does not)
-    local pid; [ -r "$STATE/WAITING" ] && read -r pid <"$STATE/WAITING" || return 1
-    [[ $pid =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null
-}
-
-status() {
-    if [ "${1:-}" = --short ]; then  # one line for the Claude Code status line; empty when nothing runs
-        is_running || return 0
-        if waiting; then echo "Autopilot $NAME: waiting for your OK (supervised)"
-        else echo "Autopilot $NAME: $(run_progress)$( [ -n "$ACCEPT_CMD" ] && echo " · $(accept_progress)")"; fi
-        return 0
-    fi
-    echo "Status:      $(is_running && echo 'running' || echo 'off')$( [ -e "$STATE/STOP" ] && echo ' (stops after this run)')$( waiting && echo ' – WAITING for your OK (autopilot continue)')"
-    [ ${#ACCEPT_FILES[@]} -gt 0 ] && echo "Acceptance:  $(is_approved && echo 'approved' || echo 'NOT approved')   $(accept_progress)"
-    [ -n "$PLAN_FILE" ] && echo "Plan:        $PLAN_FILE"
-    echo "Demo:        ${DEMO_CMD:-${SMOKE_TEST_CMD:-none}}"
-    if [ -f "$WORKDIR/$TASKS_FILE" ]; then
-        echo "Tasks:       $(grep -c '^- \[x\]' "$WORKDIR/$TASKS_FILE") done, $(grep -c '^- \[ \]' "$WORKDIR/$TASKS_FILE") open, $(grep -c '^- \[~\]' "$WORKDIR/$TASKS_FILE") blocked"
-        echo "Next:        $(grep -m1 '^- \[ \]' "$WORKDIR/$TASKS_FILE" | cut_chars 7 70)"
-    else echo "Tasks:       task list not found: $WORKDIR/$TASKS_FILE (check TASKS_FILE in autopilot.conf)"; fi
-    [ -s "$STATE/suggestion.md" ] && echo "Suggestion:  $(wc -l <"$STATE/suggestion.md") new tasks from the planner are waiting (autopilot suggestion)"
-    echo
-    echo "Latest events:"
-    tail -8 "$STATE/log/history.log" 2>/dev/null | cut_chars 12 110
-}
-
-conditions() {
-    if [ -n "$ACCEPT_LIST_CMD" ]; then (cd "$WORKDIR" && bash -c "$ACCEPT_LIST_CMD")
-    elif [ ${#ACCEPT_FILES[@]} -gt 0 ]; then (cd "$WORKDIR" && find "${ACCEPT_FILES[@]/#-/./-}" -type f | sort)
-    else echo "No acceptance test set up (ACCEPT_FILES is empty)."; fi
-}
-notes() {
-    echo "DECISIONS made by the autopilot ($DECISIONS_FILE):"; cat "$WORKDIR/$DECISIONS_FILE" 2>/dev/null || echo "–"
-    echo; echo "BLOCKED:"; cat "$WORKDIR/BLOCKED.md" 2>/dev/null || echo "nothing"
-}
-result() {
-    local b; b=$(g -C "$WORKDIR" branch --show-current)
-    echo "New since $BASE_BRANCH (branch $b):"
-    g -C "$WORKDIR" log --oneline "$BASE_BRANCH..HEAD" | cut_chars 1 105
-    echo
-    if [ "$b" = "$BASE_BRANCH" ]; then echo "The work is directly on $b: nothing to merge."
-    else echo "To adopt, on $BASE_BRANCH in the project:  git merge $b"; fi
-}
-costs() {
-    local csv=$STATE/log/progress.csv
-    [ -s "$csv" ] || { echo "No costs recorded yet."; return; }
-    awk -F';' 'NR > 1 { if ($8 == "?") { u++; next } s += $8; t[substr($1, 1, 10)] += $8; m[$10] += $8; n[$10]++ }
-        END { printf "Runs total: %.2f USD\n", s; if (u) printf "(plus %d runs with unknown cost: ended at the time limit)\n", u
-              printf "\nPer day:\n"; for (d in t) printf "  %s  %8.2f USD\n", d, t[d]
-              printf "\nPer worker model:\n"; for (k in m) printf "  %-8s %8.2f USD in %d runs\n", k, m[k], n[k] }' "$csv"
-    [ -s "$STATE/log/costs-extra.csv" ] &&
-        awk -F';' '{ s[$2] += $3 } END { printf "\nOther:\n"; for (k in s) printf "  %-8s %8.2f USD\n", k, s[k] }' "$STATE/log/costs-extra.csv"
-    echo; echo "(With a subscription these are notional values; billing goes through the usage limit.)"
-}
-chart() {
-    need python3 "The chart needs it (everything else works without it)." || return 1
-    python3 "$TOOL_DIR/chart.py" "$STATE" "$NAME" "$(number_from "$STATE/log/accept-start.txt" "$ACCEPT_REGEX" 2 2>/dev/null)"; }
-clean_up() { g -C "$WORKDIR" reset -q --hard && g -C "$WORKDIR" clean -qfd; }
-
-suggestion() {
-    case "${1:-}" in
-        accept)
-            [ -s "$STATE/suggestion.md" ] || { echo "No suggestion available."; return 1; }
-            is_running && { echo "Stop it first: the autopilot is running."; return 1; }
-            [ -z "$(g -C "$WORKDIR" status --porcelain)" ] || { echo "Work directory not clean."; return 1; }
-            cat "$STATE/suggestion.md" >>"$WORKDIR/$TASKS_FILE"
-            g -C "$WORKDIR" add "$TASKS_FILE" && g -C "$WORKDIR" commit -q -m "Planner: $(wc -l <"$STATE/suggestion.md") new tasks" &&
-                { echo "$(wc -l <"$STATE/suggestion.md") tasks adopted. Start: autopilot start 5"; rm -f "$STATE/suggestion.md" "$STATE/planner-rounds"; } ;;  # adopted = new state: planner rounds start afresh
-        discard) rm -f "$STATE/suggestion.md"; echo "Suggestion discarded." ;;
-        *) if [ -s "$STATE/suggestion.md" ]; then echo "Planner suggestion:"; cat "$STATE/suggestion.md"
-               echo; echo "Adopt: autopilot suggestion accept   Discard: autopilot suggestion discard"
-           else echo "No suggestion available. Create one: autopilot propose"; fi ;;
-    esac
-}
-
-handover() { # the HANDOVER.md of the last end
-    [ -s "$STATE/HANDOVER.md" ] || { echo "No handover yet: it is written when a start ends. Start it: autopilot start 5 (or the menu)."; return 0; }
-    cat "$STATE/HANDOVER.md"
-}
-outcome() { # "delivered" | "not delivered (reason)" | "stopped (reason)" … of the last end; empty while running or before any end
+outcome_text() { # STATE → "delivered" | "not delivered (reason)" | "stopped (reason)" …; empty while running or before any end
     local o='' why=''
-    is_running && return 0
-    [ -r "$STATE/outcome" ] && IFS=$'\t' read -r o why <"$STATE/outcome" || return 0
+    lock_alive "$1" && return 0
+    [ -r "$1/outcome" ] && IFS=$'\t' read -r o why <"$1/outcome" || return 0
     [ "$o" = delivered ] && why=''  # a delivery needs no reason
-    echo "${o/not-delivered/not delivered}${why:+ ($why)}"
+    echo "${o/not-delivered/not delivered}${why:+ ($(shorten 100 <<<"$why"))}"
 }
-summary() { # [--short]: end summary of the last start, from the logs alone (no Claude call)
-    local h=$STATE/log/history.log csv=$STATE/log/progress.csv
-    local ln events st t0 runs cost secs t1 n_done n_open n_blocked acc ended next o
-    ln=$(grep -n ' Start: ' "$h" 2>/dev/null | tail -1 | cut -d: -f1)
-    [ -n "$ln" ] || { echo "Nothing has run yet. Start it: autopilot start 5 (or the menu)."; return 0; }
-    o=$(outcome)
-    events=$(tail -n +"$ln" "$h")
-    st=$(head -1 <<<"$events" | cut_chars 1 19)
-    t0=$(sed -n 's/.* Start: \([0-9][0-9]*\) tests green.*/\1/p' <<<"$events" | head -1)
-    read -r runs cost secs t1 < <(awk -F';' -v s="$st" '
-        NR > 1 && substr($1, 1, 19) >= s { n++; c += $8; sec += $7; t = $5 }
-        END { printf "%d %.2f %d %s\n", n, c, sec, (t == "" ? "?" : t) }' "$csv" 2>/dev/null)
-    [ "${t1:-?}" = "?" ] && t1=${t0:-?}
-    n_done=$(grep -c '^- \[x\]' "$WORKDIR/$TASKS_FILE" 2>/dev/null)
-    n_open=$(grep -c '^- \[ \]' "$WORKDIR/$TASKS_FILE" 2>/dev/null)
-    n_blocked=$(grep -c '^- \[~\]' "$WORKDIR/$TASKS_FILE" 2>/dev/null)
-    if [ "${1:-}" = --short ]; then
-        echo "${o:-$(is_running && echo running || echo 'no result yet')} - ${n_done:-?} done, ${n_blocked:-?} blocked, tests ${t0:-?} -> $t1, ${cost:-0} USD"
-        return 0
+status_short() { # one line per project in running/ (the Claude Code status line and finish toast read these)
+    local f st o
+    for f in "$CONF_BASE"/running/*; do
+        [ -f "$f" ] || continue
+        st=$(dirname "$(head -1 "$f")")/.autopilot
+        [ -s "$st/info" ] || { rm -f "$f"; continue; }  # project gone
+        load "$st"
+        if lock_alive "$st"; then
+            echo "Autopilot $name: run ${run:-0}/$(info "$st" MAX_RUNS)${acc:+ · $acc} · $spent USD$( [ -e "$st/STOP" ] && echo ' · stops after this run')"
+        else
+            o=$(outcome_text "$st")
+            echo "Autopilot $name ended: ${o:-no result (see autopilot status)} - ${n_done:-?} done, ${n_blocked:-?} blocked, tests ${t0:-?} -> ${t1:-?}, $spent USD"
+        fi
+    done
+}
+status() {
+    local st s plan demo o next
+    if ! st=$(state_of); then
+        echo "$NO_PROJECT"; s=$(status_short); [ -n "$s" ] && printf '\nProjects that ran:\n%s\n' "$s"
+        return 3
     fi
-    if is_running; then ended='still running'
-    elif [ -n "$o" ]; then ended="$o - details: autopilot handover"
-    elif grep -qi 'interrupted' <<<"$events"; then ended='aborted'
-    else ended="ended early: $(tail -1 <<<"$events" | cut_chars 21 90)"; fi
-    if [ "${n_open:-0}" -gt 0 ] 2>/dev/null; then next="$n_open open tasks left - continue: autopilot start $n_open"
-    elif [ "${n_blocked:-0}" -gt 0 ] 2>/dev/null; then next="read BLOCKED.md ($n_blocked blocked), then view and merge: autopilot result"
-    else next='read the handover (autopilot handover), then view and merge the result: autopilot result'; fi
-    acc=$(grep -o 'Accept [0-9]* -> [0-9]* of [0-9?]*\|Accept [0-9]* of [0-9?]*' <<<"$events" | tail -1 |
-        sed 's/Accept \([0-9]*\) -> \([0-9]*\)/Accept \2/')
-    echo "Last start:  $st - ${runs:-0} runs, $(( ${secs:-0} / 60 ))m $(( ${secs:-0} % 60 ))s run time, ${cost:-0} USD"
-    echo "Tasks:       ${n_done:-?} done, ${n_open:-?} open, ${n_blocked:-?} blocked"
-    echo "Tests:       ${t0:-?} -> $t1"
+    [ -s "$st/info" ] || { echo "Status:      off – not started yet. Start it: autopilot start"; return 0; }
+    load "$st"
+    if lock_alive "$st"; then
+        echo "Status:      running – run ${run:-0} of at most $(info "$st" MAX_RUNS), $spent of at most $(info "$st" MAX_COST_USD) USD$( [ -e "$st/STOP" ] && echo ' (stops after this run)')"
+    else
+        o=$(outcome_text "$st"); echo "Status:      off"
+        echo "Outcome:     ${o:-none (the start ended early, see the events below)}"
+    fi
+    plan=$(info "$st" PLAN_FILE); [ -n "$plan" ] && echo "Plan:        $plan"
+    demo=$(info "$st" DEMO_CMD); echo "Demo:        ${demo:-none}"
+    if [ -f "$tasks" ]; then
+        echo "Tasks:       $n_done done, $n_open open, $n_blocked blocked"
+        [ "$n_open" -gt 0 ] && echo "Next task:   $(grep -m1 '^- \[ \]' "$tasks" | cut_chars 7 70)"
+    else echo "Tasks:       task list not found: $tasks (check TASKS_FILE in autopilot.conf)"; fi
+    echo "Tests:       ${t0:-?} -> ${t1:-?}"
     [ -n "$acc" ] && echo "Acceptance:  ${acc#Accept }"
-    echo "Ended:       $ended"
-    echo "Next:        $next"
-    return 0
+    echo "This start:  $started, ${run:-0} runs, $spent USD"
+    echo "Cost (all Claude calls of this project):"; cost_table "$st/costs.csv"
+    [ -s "$st/suggestion.md" ] && echo "Suggestion:  $(wc -l <"$st/suggestion.md") new tasks from the planner wait: autopilot plan, then autopilot plan accept"
+    echo; echo "Latest events:"; tail -8 <<<"$ev" | cut_chars 12 110
+    lock_alive "$st" && return 0
+    if [ "$(cut -f1 "$st/outcome" 2>/dev/null)" = delivered ]; then next='read the handover and try the result: autopilot handover'
+    elif [ "${n_open:-0}" -gt 0 ]; then next="continue: autopilot start ($n_open tasks open)"
+    elif [ -s "$st/suggestion.md" ]; then next="read the planner's suggestion: autopilot plan, then autopilot plan accept"
+    elif [ "${n_blocked:-0}" -gt 0 ]; then next="read BLOCKED.md ($n_blocked blocked) and the handover: autopilot handover"
+    else next='read the handover: autopilot handover'; fi
+    echo; echo "Next step:   $next"
+}
+stop() { # [--now]
+    local st pid c
+    st=$(state_of) || { echo "$NO_PROJECT" >&2; return 3; }
+    lock_alive "$st" || { echo "The autopilot is not running."; return 0; }
+    read -r pid <"$st/lock/pid"
+    if [ "${1:-}" != --now ]; then touch "$st/STOP"; echo "Stops after the current run (a running demo is ended)."; return 0; fi
+    kill -TERM "$pid"  # autopilot.sh ends the worker and resets the work directory itself
+    for _ in $(seq 1 10); do kill -0 "$pid" 2>/dev/null || break; sleep 0.5; done
+    # Still alive: it waits for a child in the foreground (the reviewer, say); ending the children lets it handle the signal
+    if kill -0 "$pid" 2>/dev/null; then for c in $(ps -A -o pid= -o ppid= | awk -v p="$pid" '$2 == p {print $1}'); do kill_tree "$c"; done; fi
+    for _ in $(seq 1 30); do kill -0 "$pid" 2>/dev/null || break; sleep 0.5; done
+    kill -0 "$pid" 2>/dev/null && { echo "Could not stop the autopilot (PID $pid) – check it: ps -p $pid"; return 1; }
+    echo "Stopped now: the unfinished run was discarded (work directory reset to the last commit)."
+}
+handover() {
+    local st; st=$(state_of) || { echo "$NO_PROJECT" >&2; return 3; }
+    [ -s "$st/HANDOVER.md" ] || { echo "No handover yet: it is written when a start ends. Start it: autopilot start"; return 0; }
+    cat "$st/HANDOVER.md"
 }
 
-report() { # [--if-new]
-    local since recent text k
-    since=$(date -d '1 day ago' '+%F %T' 2>/dev/null || date -v-1d '+%F %T')
-    recent=$(awk -v s="$since" 'substr($0, 1, 19) >= s' "$STATE/log/history.log" 2>/dev/null)
-    [ "${1:-}" = --if-new ] && [ -z "$recent" ] && return 0
-    text="Autopilot project: $NAME$( [ -n "$PLAN_FILE" ] && echo " (plan: $(basename "$PLAN_FILE"))")
-## Status
-$(status)
-## Events of the last 24 hours
-${recent:-none}
-## Grades
-$(grade_table)
-## Costs
-$(costs)
-## Decisions and blocked tasks
-$(notes | tail -30)"
-    k=$(printf '%s\n\nSummarise this for the project owner in at most 10 short lines: what was done, what is stuck, what they should decide or look at. No introduction.\n' "$text" |
-        claude_run "$STATE/log/report.txt" --model "$REPORT_MODEL") && [ -s "$STATE/log/report.txt" ] ||
-        { printf '%s\n' "$text" >"$STATE/log/report.txt"; k=0; }
-    echo "$(date '+%F %T');report;${k:-0}" >>"$STATE/log/costs-extra.csv"
-    notify info "Report: $(cat "$STATE/log/report.txt")" >/dev/null 2>&1 || true
-    cat "$STATE/log/report.txt"
-}
-
-start_now() { # RUNS [REVIEWER] [REJECTIONS] [WORKER] [PLANNER]
-    local n=${1:-} reviewer=${2:-sonnet} rejections=${3:-3} worker=${4:-opus} planner=${5:-opus}
-    [[ "$n" =~ ^[0-9]+$ && "$rejections" =~ ^[0-9]+$ && "$reviewer" =~ ^(sonnet|opus|haiku)$ && "$worker" =~ ^(sonnet|opus|haiku)$ &&
-       "$planner" =~ ^(sonnet|opus)$ ]] ||
-        { echo "Usage: autopilot start <runs> [reviewer: sonnet|opus|haiku] [max-rejections] [worker: opus|sonnet|haiku] [planner: opus|sonnet]"; return 2; }
+start_now() {
+    # shellcheck source=common.sh
+    . "$HERE/common.sh"
     need tmux "autopilot start runs the loop inside it in the background." || return 1
     is_running && { echo "The autopilot is already running."; return 1; }
-    is_approved || { echo "The acceptance test is NOT approved yet (autopilot approve)."; return 1; }
-    [ -n "$(g -C "$WORKDIR" status --porcelain)" ] && { clean_up; echo "Leftovers of an aborted run discarded (git reset --hard, git clean -fd in $WORKDIR)."; }
+    [ -n "$(g -C "$WORKDIR" status --porcelain)" ] &&
+        { g -C "$WORKDIR" reset -q --hard && g -C "$WORKDIR" clean -qfd; echo "Leftovers of an aborted run discarded (git reset --hard, git clean -fd in $WORKDIR)."; }
     rm -f "$STATE/STOP"
     # PATH from here (a running tmux server would otherwise pass on its own, maybe without claude);
     # the output also goes to console.txt, so that an immediate failure is not lost with the session.
     local console=$STATE/log/console.txt; : >"$console"
-    tmux new -d -s "$SESSION" -e "PATH=$PATH" -e "AUTOPILOT_CONF=$CONF" -e "MAX=$n" -e "WORKER_MODEL=$worker" -e "PLANNER_MODEL=$planner" \
-        -e "REVIEWER_MODEL=$reviewer" -e "MAX_REJECTIONS=$rejections" \
+    tmux new -d -s "$SESSION" -e "PATH=$PATH" -e "AUTOPILOT_CONF=$CONF" \
         bash -c '{ "$1" 2>&1; echo "autopilot.sh ended with exit code $?"; } | tee -a "$2"' autopilot "$HERE/autopilot.sh" "$console" ||
         { echo "Could not start the tmux session $SESSION."; return 1; }
     for _ in 1 2 3 4 5 6; do sleep 0.5; is_running || break; done
     if ! is_running && ! grep -q 'exit code 0$' "$console"; then
         echo "The autopilot ended right after the start ($console):"; tail -5 "$console"; return 1
     fi
-    echo "Started: at most $n runs, planner $planner, worker $worker, reviewer $reviewer, stop after $rejections rejections in a row."
-    [ "$planner" = "$worker" ] || echo "The planner writes a brief for every task, the worker implements it."
+    echo "Started: at most $MAX_RUNS runs or $MAX_COST_USD USD, models $MODELS (planner $PLANNER_MODEL, worker $WORKER_MODEL, reviewer $REVIEWER_MODEL)."
+    [ -n "$DEMO_CMD" ] || echo "Warning: DEMO_CMD is not set in $CONF – the run can never end as delivered."
+    echo "It keeps running when you close the terminal. Follow it: autopilot status"
 }
 
 case "${1:-}" in
-    status) status "${2:-}"; exit 0 ;;
-    summary) summary "${2:-}"; exit 0 ;;
-    handover) handover; exit 0 ;;
-    conditions) conditions; exit 0 ;;
-    notes) notes; exit 0 ;;
-    result) result; exit 0 ;;
-    grades) grade_table; exit 0 ;;
-    costs) costs; exit 0 ;;
-    chart) chart; exit $? ;;
-    propose) (cd "$WORKDIR" && run_planner); exit $? ;;
-    suggestion) suggestion "${2:-}"; exit $? ;;
-    report) report "${2:-}"; exit 0 ;;
-    approve)
-        [ ${#ACCEPT_FILES[@]} -gt 0 ] || { echo "No acceptance test set up."; exit 0; }
-        s=$(accept_checksum) || { echo "Approval refused: fix ACCEPT_FILES in $CONF."; exit 1; }
-        echo "$s" >"$STATE/APPROVAL"; echo "Acceptance test approved."; exit 0 ;;
-    continue)
-        waiting || { echo "Nothing is waiting for your OK right now."; exit 0; }
-        touch "$STATE/CONTINUE"; echo "OK given, continuing."; exit 0 ;;
-    stop)
-        is_running || { echo "The autopilot is not running."; exit 0; }
-        touch "$STATE/STOP"; echo "Stops after the current run."; exit 0 ;;
-    abort)
-        is_running || { echo "The autopilot is not running."; exit 0; }
-        # Stop autopilot.sh itself first: it ends the worker and resets (killing the session alone leaves the worker running)
-        pid=''; read -r pid <"$STATE/lock/pid" 2>/dev/null
-        if [[ $pid =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
-            kill -TERM "$pid"
-            for _ in $(seq 1 30); do kill -0 "$pid" 2>/dev/null || break; sleep 0.5; done
-        fi
-        tmux kill-session -t "=$SESSION" 2>/dev/null; clean_up; rm -f "$STATE/STOP" "$STATE/WAITING"
-        echo "Aborted, the unfinished run was discarded (git reset --hard, git clean -fd in $WORKDIR)."; exit 0 ;;
-    start) shift; start_now "$@"; exit $? ;;
-    "") ;;
-    *) sed -n '2,16p' "$0" | cut -c3-; exit 2 ;;
+    plan) shift; exec "$HERE/plan.sh" "$@" ;;
+    start)
+        [ $# -eq 1 ] || { echo "autopilot start takes no arguments: runs, cost cap and models are set in autopilot.conf (MAX_RUNS, MAX_COST_USD, MODELS)."; exit 2; }
+        start_now ;;
+    status) if [ "${2:-}" = --short ]; then status_short; else status; fi ;;
+    stop) stop "${2:-}" ;;
+    handover) handover ;;
+    doctor) doctor ;;
+    trust)
+        k=${2:-$(find_conf)} && [ -f "$k" ] || { echo "No autopilot.conf found."; exit 1; }
+        echo "This file is executed as Bash code on every call: $(readlink -f "$k")"
+        trust "$k" && echo "Marked as trusted (valid until it changes)." ;;
+    ""|help|-h|--help) sed -n '3,14p' "$0" | cut -c3- ;;
+    *) echo "Unknown command: $1"; sed -n '3,14p' "$0" | cut -c3-; exit 2 ;;
 esac
-
-# --- Menu ---------------------------------------------------------------------------------------
-show() { whiptail --title "$TITLE" --scrolltext --msgbox "$1" 26 110; }
-choose() { whiptail --title "$TITLE" --menu "$1" 14 72 4 "${@:2}" 3>&1 1>&2 2>&3; }
-
-start_menu() {
-    local n planner worker reviewer rejections
-    n=$(choose "How many runs at most? (one task per run)" 5 Recommended 10 "" 20 "" 30 "") || return
-    planner=$(choose "Which model plans? (task briefs, new tasks)" opus "Recommended, strongest model" sonnet "cheaper") || return
-    worker=$(choose "Which model builds (writes the code)?" opus "strongest, most expensive" sonnet "cheaper; gets a brief from the planner" haiku "cheapest; gets a brief, for simple tasks") || return
-    reviewer=$(choose "Which model reviews every task?" sonnet "balanced" opus "most thorough, recommended with a cheaper builder" haiku "cheap, less strict") || return
-    rejections=$(choose "Stop after how many rejections in a row?" 3 Recommended 2 "" 5 "") || return
-    show "$(start_now "$n" "$reviewer" "$rejections" "$worker" "$planner")\n\nIt keeps running even if you close the terminal."
-}
-
-while true; do
-    choice=$(whiptail --title "$TITLE" --menu "$(status)" 35 110 15 \
-        1 "Refresh status" \
-        2 "Start" \
-        3 "Continue (approve the supervised step)" \
-        4 "Stop gently (after the current run)" \
-        5 "Abort now" \
-        6 "Watch live (back with Ctrl+b, then d)" \
-        7 "New project from a plan file" \
-        8 "Planner: view, adopt or create a suggestion" \
-        9 "Approve acceptance test" \
-        10 "Grades, costs and chart" \
-        11 "Read decisions and blocked tasks" \
-        12 "View result" \
-        13 "Create report now" \
-        14 "Doctor: check requirements" \
-        15 "Handover: delivered or not, proof, how to try it" 3>&1 1>&2 2>&3) || exit 0
-    case $choice in
-        2) start_menu ;;
-        3) show "$("$0" continue)" ;;
-        4) show "$("$0" stop)" ;;
-        5) whiptail --title "$TITLE" --defaultno --yesno "Abort now? The current run is discarded." 9 70 && show "$("$0" abort)" ;;
-        6) if is_running; then tmux attach -t "=$SESSION"; else show "The autopilot is not running."; fi ;;
-        7) new_project; exec "$0" ;;
-        8) if [ -s "$STATE/suggestion.md" ]; then
-               whiptail --title "$TITLE" --scrolltext --yesno "$(suggestion)\n\nAdopt?" 26 110 && show "$(suggestion accept)"
-           elif whiptail --title "$TITLE" --yesno "No suggestion available. Let the planner propose new tasks now? (takes a few minutes)" 9 70; then
-               clear; echo "The planner is working …"; show "$("$0" propose 2>&1)"; fi ;;
-        9) if is_approved; then show "Already approved.\n\n$(conditions)"
-           elif whiptail --title "$TITLE" --scrolltext --yesno "Goal – the project must meet these conditions:\n\n$(conditions)\n\nApprove like this? Afterwards the autopilot may no longer change the test." 26 110; then
-               show "$("$0" approve)"; fi ;;
-        10) show "GRADES\n$(grade_table)\n\nCOSTS\n$(costs)\n\nCHART: $(chart)" ;;
-        11) show "$(notes)" ;;
-        12) show "$(result)" ;;
-        13) clear; echo "Creating report …"; show "$(report)" ;;
-        14) show "$("$0" doctor 2>&1)" ;;
-        15) show "$(handover)" ;;
-    esac
-done

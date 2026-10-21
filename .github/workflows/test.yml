@@ -10,6 +10,5 @@ jobs:
       - name: Syntax
         run: |
           for f in autopilot.sh menu.sh common.sh plan.sh lib.sh install.sh test/test_autopilot.sh test/fake-claude; do bash -n "$f"; done
-          python3 -m py_compile chart.py
       - name: Loop with a fake claude
         run: test/test_autopilot.sh

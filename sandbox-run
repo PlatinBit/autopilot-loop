@@ -10,6 +10,8 @@ set -u
 [ $# -ge 1 ] || { echo "usage: sandbox-run <command> [arguments …]" >&2; exit 2; }
 # Already inside the sandbox (nested call, e.g. a wrapped TEST_CMD run by run_cmd): just run it.
 [ "${AUTOPILOT_SANDBOXED:-}" = 1 ] && exec "$@"
+# A missing command exits 127 like in a shell (bwrap itself would say exit 1), so the install hint can name it.
+command -v "$1" >/dev/null || { echo "sandbox-run: $1: command not found" >&2; exit 127; }
 command -v bwrap >/dev/null ||
     { echo "sandbox-run: bwrap (bubblewrap, Linux only) not found on PATH – install it (e.g. sudo apt install bubblewrap)" >&2; exit 127; }
 root=$(pwd -P)

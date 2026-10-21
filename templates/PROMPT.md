@@ -3,7 +3,7 @@ You are the autopilot for this project. Nobody is watching, there are no follow-
 1. Read {TASKS_FILE}, and BLOCKED.md if needed. If there is feedback on the previous attempt below, fix exactly that first.
 2. Take the first open task (`- [ ]`), only this one.
 3. Implement it and write automated tests for its acceptance criterion: all stated conditions, more than one case, no test that is always true.
-4. Run `{TEST_CMD}` and fix errors until it is green. Then run `{ACCEPT_CMD}`; the number of met conditions must not drop. Its output names the conditions still open: if your task concerns one of them, make it pass.
+4. While you work, run only the tests that concern your change (if the test tool allows selecting them). At the end run `{TEST_CMD}` once in full and fix errors until it is green – the script runs it again after you anyway, so once is enough. Then run `{ACCEPT_CMD}`; the number of met conditions must not drop. Its output names the conditions still open: if your task concerns one of them, make it pass.
 5. Only if everything is right: tick off the task in {TASKS_FILE} (`- [x]`) and note open detail decisions as one line in {DECISIONS_FILE}.
 6. If you cannot manage the task after three serious attempts: revert your code changes so that the tests are green again. Describe the problem briefly in BLOCKED.md and mark the task with `- [~]`. A blocking run may change nothing but {TASKS_FILE}, BLOCKED.md and {DECISIONS_FILE}.
 7. Stop afterwards. No second task in this run.

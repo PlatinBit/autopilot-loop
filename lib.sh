@@ -5,6 +5,7 @@ if [ "${BASH_VERSINFO[0]}" -lt 4 ] || { [ "${BASH_VERSINFO[0]}" -eq 4 ] && [ "${
     echo "autopilot-loop needs Bash 4.4 or newer (macOS: brew install bash)." >&2
     exit 1
 fi
+CONF_BASE=${XDG_CONFIG_HOME:-$HOME/.config}/autopilot-loop
 
 # SHA-256 (Linux: sha256sum, macOS: shasum); hash_only prints just the hash, reading stdin without an argument.
 checksum() { if command -v sha256sum >/dev/null; then sha256sum "$@"; else shasum -a 256 "$@"; fi; }
@@ -17,6 +18,25 @@ with_timeout() { # DURATION COMMAND …
     else shift; "$@"; fi
 }
 
+# The project configuration: $AUTOPILOT_CONF, otherwise autopilot.conf in this folder or one above it (up to the Git root).
+find_conf() {
+    local d=$PWD
+    [ -n "${AUTOPILOT_CONF:-}" ] && { [ -f "$AUTOPILOT_CONF" ] && readlink -f "$AUTOPILOT_CONF"; return; }
+    while :; do
+        [ -f "$d/autopilot.conf" ] && { readlink -f "$d/autopilot.conf"; return 0; }
+        [ -e "$d/.git" ] || [ "$d" = / ] && return 1
+        d=$(dirname "$d")
+    done
+}
+
+# A loop is running when the PID in STATE/lock/pid is alive (a leftover lock after a crash does not count).
+lock_alive() { # STATE
+    local pid=''; [ -r "$1/lock/pid" ] && read -r pid <"$1/lock/pid"; [[ $pid =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null
+}
+
+# Ends a process tree, children first (POSIX ps only, for macOS)
+kill_tree() { local c; for c in $(ps -A -o pid= -o ppid= | awk -v p="$1" '$2 == p {print $1}'); do kill_tree "$c"; done; kill "$1" 2>/dev/null; }
+
 # Without the claude CLI nothing can work: say so before anything is created.
 need_claude() { command -v claude >/dev/null ||
     { echo "claude (Claude Code CLI) not found on PATH. Install it: https://claude.com/claude-code – then log in once by running: claude" >&2; return 1; }; }
@@ -24,7 +44,7 @@ need_claude() { command -v claude >/dev/null ||
 # Install hints for this system: the first package manager found wins.
 pkg_manager() { local m; for m in apt-get dnf pacman zypper apk brew; do command -v "$m" >/dev/null && { echo "$m"; return; }; done; }
 # Some packages are not named after their command.
-pkg_of() { case "$1" in bwrap) echo bubblewrap ;; whiptail) [ "$(pkg_manager)" = apt-get ] && echo whiptail || echo newt ;; *) echo "$1" ;; esac; }
+pkg_of() { case "$1" in bwrap) echo bubblewrap ;; *) echo "$1" ;; esac; }
 install_hint() { # PACKAGE → the install command for this system, ready to copy
     case "$(pkg_manager)" in
         apt-get) echo "sudo apt install $1" ;;
@@ -74,20 +94,46 @@ CLAUDE_SAFE=(--safe-mode --setting-sources user --disallowedTools
 
 # claude -p with JSON output; the prompt comes via stdin (no length limit for arguments).
 # Answer text goes to TEXTFILE, cost in USD to stdout (0 if unknown, "?" after the time limit: the
-# tokens were spent but never reported). Returns the exit code of claude.
-# Time limit via CLAUDE_TIMEOUT (default 20m).
-claude_run() { # TEXTFILE [claude arguments …] <prompt
-    local text=$1 raw=$1.json rc cost; shift
+# tokens were spent but never reported). Every call is appended to $COSTS (if set) with its kind,
+# model, cost and tokens. Returns the exit code of claude. Time limit via CLAUDE_TIMEOUT (default 20m).
+COSTS_HEADER='time;kind;model;usd;input_tokens;cache_read_tokens;output_tokens'
+claude_run() { # TEXTFILE KIND [claude arguments …] <prompt
+    local text=$1 kind=$2 raw=$1.json rc cost tokens='0;0;0' model=? a prev=''; shift 2
+    for a in "$@"; do [ "$prev" = --model ] && model=$a; prev=$a; done
     with_timeout "${CLAUDE_TIMEOUT:-20m}" claude -p --output-format json "$@" "${CLAUDE_SAFE[@]}" >"$raw" 2>&1; rc=$?
     if jq -e . "$raw" >/dev/null 2>&1; then
         jq -r '.result // ""' "$raw" >"$text"
         cost=$(jq -r '.total_cost_usd // 0' "$raw")
+        tokens=$(jq -r '[.usage.input_tokens, .usage.cache_read_input_tokens, .usage.output_tokens] | map(. // 0 | tostring) | join(";")' "$raw")
     else
         cp "$raw" "$text"; cost=0
     fi
-    [ "$rc" = 124 ] && cost='?'
+    [ "$rc" = 124 ] && { cost='?'; tokens=';;'; }
+    if [ -n "${COSTS:-}" ]; then
+        [ -s "$COSTS" ] || echo "$COSTS_HEADER" >"$COSTS"
+        echo "$(date '+%F %T');$kind;$model;$cost;$tokens" >>"$COSTS"
+    fi
     echo "$cost"
     return $rc
+}
+
+# Sum of the cost in USD from line FROM on (a start notes where its calls begin; empty = all), unknown costs ("?") left out
+cost_sum() { # CSV [FROM]
+    awk -F';' -v f="${2:-2}" 'NR > 1 && NR >= f && $4 != "?" { c += $4 } END { printf "%.2f\n", c }' "$1" 2>/dev/null || echo 0.00
+}
+# Cost and tokens per kind of Claude call (plan, draft, brief, worker, reviewer, planner) and the total
+cost_table() { # CSV
+    [ -s "$1" ] || { echo "  no Claude calls recorded yet"; return 0; }
+    awk -F';' '
+        function h(n) { return n >= 1e6 ? sprintf("%.1fM", n / 1e6) : n >= 1e4 ? sprintf("%.0fk", n / 1e3) : n + 0 }
+        NR > 1 { k = $2; seen[k] = 1; if ($4 == "?") u[k]++; else { c[k] += $4; t += $4 }
+                                         i[k] += $5; r[k] += $6; o[k] += $7 }
+        END { n = split("plan draft brief worker reviewer planner", order, " ")
+              for (k in seen) { known = 0; for (j = 1; j <= n; j++) if (order[j] == k) known = 1; if (!known) order[++n] = k }
+              for (j = 1; j <= n; j++) { k = order[j]; if (!(k in seen)) continue
+                  printf "  %-9s %8.2f USD   tokens: %s in, %s cache read, %s out%s\n", k, c[k], h(i[k]), h(r[k]), h(o[k]),
+                         u[k] ? sprintf(" (+%d calls cut off at the time limit, cost unknown)", u[k]) : "" }
+              printf "  %-9s %8.2f USD\n", "total", t }' "$1"
 }
 
 # Does the answer report a usage limit? Checks the error field or the CLI's own error message,
@@ -102,10 +148,16 @@ usage_limit() { # TEXTFILE (from claude_run)
         grep -qiE "$LIMIT_PATTERN" "$raw"
     fi
 }
+# When the usage limit resets, as far as the message says ("resets 5pm", or "…|<unix time>")
+limit_reset() { # TEXTFILE (from claude_run)
+    local r; r=$(jq -r '.result // ""' "$1.json" 2>/dev/null || cat "$1.json" 2>/dev/null)
+    if [[ $r =~ \|([0-9]{10}) ]]; then date -d "@${BASH_REMATCH[1]}" '+%F %H:%M' 2>/dev/null || date -r "${BASH_REMATCH[1]}" '+%F %H:%M'
+    elif [[ $r =~ resets\ ([^|\"]+) ]]; then echo "${BASH_REMATCH[1]% }"; fi
+}
 
 # Trust in configuration files: an autopilot.conf is loaded with `source`, so only when its checksum
 # has been confirmed (automatically after `autopilot plan accept`, otherwise with `autopilot trust`).
-TRUSTED_FILE=${XDG_CONFIG_HOME:-$HOME/.config}/autopilot-loop/trusted
+TRUSTED_FILE=$CONF_BASE/trusted
 is_trusted() { [ -f "$1" ] && grep -qxF "$(hash_only <"$1") $(readlink -f "$1")" "$TRUSTED_FILE" 2>/dev/null; }
 conf_dir_writable() { # DIR: create it; on failure name it and XDG_CONFIG_HOME
     mkdir -p "$1" 2>/dev/null && [ -w "$1" ] ||
@@ -129,25 +181,41 @@ trust() { # FILE
 cut_chars() { # FROM TO <lines
     local l; while IFS= read -r l || [ -n "$l" ]; do printf '%s\n' "${l:$1-1:$2-$1+1}"; done
 }
+# Shortens each line to at most N characters at a word boundary, with "…" when something was cut
+shorten() { # N <lines
+    local l w; while IFS= read -r l || [ -n "$l" ]; do
+        if [ "${#l}" -le "$1" ]; then printf '%s\n' "$l"
+        else l=${l:0:$1-1}; w=${l% *}; [ "${#w}" -ge $(($1 * 2 / 3)) ] && l=$w; printf '%s…\n' "$l"; fi
+    done
+}
 
 # Mark the first open task as blocked (portable, without GNU sed)
 block_first_open() { # FILE
     awk '!d && /^- \[ \]/ { sub(/^- \[ \]/, "- [~]"); d = 1 } 1' "$1" >"$1.new" && mv "$1.new" "$1"
 }
 
+# Does the bubblewrap sandbox work here? (bwrap may be installed but unable to create namespaces: AppArmor, container)
+LIB_DIR=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
+sandbox_works() { command -v bwrap >/dev/null && "$LIB_DIR/sandbox-run" true >/dev/null 2>&1; }
+
+# Claude Code refuses every write below ~/.claude/: a work directory there could never get a single change.
+under_claude_dir() { # PATH
+    local p c; p=$(readlink -f "$1" 2>/dev/null || echo "$1"); c=$(readlink -f "$HOME/.claude" 2>/dev/null || echo "$HOME/.claude")
+    case "$p/" in "$c"/*) return 0 ;; esac; return 1
+}
+
 # Run TEST_CMD from a trusted configuration once (used by `plan accept` and `autopilot doctor`):
 # a missing tool like pytest should show up now, not as a bare "tests red" at the first start.
 # A failure only warns, with an install suggestion where one can be guessed.
 probe_test_cmd() { # CONF (written and trusted)
-    local conf=$1 dir out sr
+    local conf=$1 dir out
     dir=$(dirname "$conf"); out=$dir/.autopilot/log/plan-probe.txt
-    sr=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/sandbox-run
     mkdir -p "$dir/.autopilot/log"
     (
         set +u; cd "$dir" || exit 0; . "$conf" </dev/null >/dev/null 2>&1
         [ -n "$TEST_CMD" ] || { echo "WARNING: test command not checked: TEST_CMD is not set in $conf"; exit 0; }
         cd "$WORKDIR" 2>/dev/null || { echo "WARNING: test command not checked: work directory $WORKDIR missing"; exit 0; }
-        w=(); [ "${SANDBOX:-off}" = on ] && w=("$sr")
+        w=(); [ "${SANDBOX:-}" != off ] && sandbox_works && w=("$LIB_DIR/sandbox-run")
         with_timeout "${TEST_TIMEOUT:-30m}" ${w[@]+"${w[@]}"} bash -c "$TEST_CMD" >"$out" 2>&1; rc=$?
         if [ "$rc" = 0 ]; then
             if [ -n "${TEST_COUNT_CMD:-}" ]; then n=$(bash -c "$TEST_COUNT_CMD" <"$out" | tail -1)

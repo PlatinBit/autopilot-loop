@@ -27,10 +27,10 @@ pf_f2() {
 TEST_CMD='bash check.sh'
 ALLOWED='^(checks\.txt|TASKS\.md)$'
 EOF
-    MAX=1 PATH="$T/pf-apt:$T/nojq" "$TOOL_DIR/autopilot.sh" >"$T/pf2.txt" 2>&1 && fail "F2: autopilot.sh without jq exits 0"
+    MAX_RUNS=1 PATH="$T/pf-apt:$T/nojq" "$TOOL_DIR/autopilot.sh" >"$T/pf2.txt" 2>&1 && fail "F2: autopilot.sh without jq exits 0"
     grep -q "jq not found" "$T/pf2.txt" && grep -q "Claude's answers" "$T/pf2.txt" &&
         grep -qF "sudo apt install jq" "$T/pf2.txt" || fail "F2: jq message lacks purpose or install command: $(cat "$T/pf2.txt")"
-    MAX=1 PATH="$T/pf-brew:$T/nojq" "$TOOL_DIR/autopilot.sh" >"$T/pf2b.txt" 2>&1 && fail "F2: autopilot.sh without jq exits 0 (brew)"
+    MAX_RUNS=1 PATH="$T/pf-brew:$T/nojq" "$TOOL_DIR/autopilot.sh" >"$T/pf2b.txt" 2>&1 && fail "F2: autopilot.sh without jq exits 0 (brew)"
     grep -qF "brew install jq" "$T/pf2b.txt" && ! grep -q "apt install" "$T/pf2b.txt" ||
         fail "F2: jq message not specific to the detected package manager: $(cat "$T/pf2b.txt")"
 }
@@ -41,7 +41,7 @@ pf_f3() {
 TEST_CMD='bash check.sh'
 ALLOWED='^(checks\.txt|TASKS\.md)$'
 EOF
-    PATH="$T/pf-apt:$T/nocl" "$TOOL_DIR/menu.sh" start 1 >"$T/pf3.txt" 2>&1 && fail "F3: start without tmux exits 0"
+    PATH="$T/pf-apt:$T/nocl" "$TOOL_DIR/menu.sh" start >"$T/pf3.txt" 2>&1 && fail "F3: start without tmux exits 0"
     grep -q "tmux not found" "$T/pf3.txt" && grep -q "background" "$T/pf3.txt" &&
         grep -qF "sudo apt install tmux" "$T/pf3.txt" && ! grep -q "brew install" "$T/pf3.txt" ||
         fail "F3: tmux message lacks purpose or system-specific install command: $(cat "$T/pf3.txt")"
@@ -54,7 +54,7 @@ pf_f4() {
 TEST_CMD='pf4-missing-tool-xyz -q'
 ALLOWED='^(checks\.txt|TASKS\.md)$'
 EOF
-    MAX=1 PATH="$T/pf-apt:$PATH" "$TOOL_DIR/autopilot.sh" >"$T/pf4.txt" 2>&1 && fail "F4: start with a missing test tool exits 0"
+    MAX_RUNS=1 PATH="$T/pf-apt:$PATH" "$TOOL_DIR/autopilot.sh" >"$T/pf4.txt" 2>&1 && fail "F4: start with a missing test tool exits 0"
     grep -q "Test command cannot run (missing tool?)" "$T/pf4-conf/.autopilot/log/history.log" &&
         grep -qF "Try: sudo apt install pf4-missing-tool-xyz" "$T/pf4-conf/.autopilot/log/history.log" ||
         fail "F4: rc-127 start message without install suggestion: $(cat "$T/pf4-conf/.autopilot/log/history.log")"
@@ -63,7 +63,7 @@ EOF
 TEST_CMD='echo "No module named numpy"; exit 1'
 ALLOWED='^(checks\.txt|TASKS\.md)$'
 EOF
-    MAX=1 PATH="$T/pf-apt:$PATH" "$TOOL_DIR/autopilot.sh" >"$T/pf4m.txt" 2>&1 && fail "F4: start with a missing module exits 0"
+    MAX_RUNS=1 PATH="$T/pf-apt:$PATH" "$TOOL_DIR/autopilot.sh" >"$T/pf4m.txt" 2>&1 && fail "F4: start with a missing module exits 0"
     grep -qF "Try: sudo apt install python3-numpy (or: pip install numpy)" "$T/pf4m-conf/.autopilot/log/history.log" ||
         fail "F4: missing-module start message without install suggestion: $(cat "$T/pf4m-conf/.autopilot/log/history.log")"
 }
@@ -103,11 +103,21 @@ TEST_CMD='bash check.sh'
 ALLOWED='^(checks\.txt|TASKS\.md)$'
 EOF
     PATH="$T/pf-apt:$T/pf-full" "$TOOL_DIR/menu.sh" doctor >"$T/pf6p.txt" 2>&1 || fail "F6: doctor with a trusted conf exits non-zero: $(cat "$T/pf6p.txt")"
-    grep -q "SANDBOX=off" "$T/pf6p.txt" && grep -q "green, 1 passed tests" "$T/pf6p.txt" ||
+    grep -q "no sandbox: bwrap is missing" "$T/pf6p.txt" && grep -q "green, 1 passed tests" "$T/pf6p.txt" ||
         fail "F6: doctor does not probe the trusted project's test command: $(cat "$T/pf6p.txt")"
 }
 
-for pf in ${PART_F_ONLY:-f1 f2 f3 f4 f5 f6}; do
+# F7: doctor warns when the work directory lies below ~/.claude/ (Claude Code refuses every write there)
+pf_f7() {
+    mkdir -p "$T/pf7home/.claude/jobs"
+    b_project "$T/pf7home/.claude/jobs/p" <<'EOF'
+TEST_CMD='bash check.sh'
+EOF
+    HOME=$T/pf7home "$TOOL_DIR/menu.sh" doctor >"$T/pf7.txt" 2>&1
+    grep -q "✘ WORKDIR .* lies below ~/.claude/: Claude Code refuses every write there" "$T/pf7.txt" || fail "F7: doctor does not warn about ~/.claude: $(cat "$T/pf7.txt")"
+}
+
+for pf in ${PART_F_ONLY:-f1 f2 f3 f4 f5 f6 f7}; do
     "pf_$pf"
     unset AUTOPILOT_CONF; cd "$T" || exit 1
 done
