@@ -117,18 +117,48 @@ claude_run() { # TEXTFILE KIND [claude arguments …] <prompt
     return $rc
 }
 
+# Journal (.autopilot/JOURNAL.md, written only by the script): one entry per agent run,
+# "### J<n> <time> <role> <task> <result>" plus the agent's note: only did:/problem:/hint: lines of the LAST
+# <<<NOTE … NOTE>>> block, at most 3 lines / 600 bytes, control characters removed. Without a block (or
+# answer file) the entry holds only the header. Numbers run on over restarts; the file is never shortened.
+journal_add() { # ANSWER_FILE JOURNAL ROLE TASK RESULT
+  local _ans=$1 _jf=$2 _role=$3 _res=$5 _task _n _note
+  _task=$(printf '%s' "$4" | tr -d '\000-\037\177')
+  _n=$(grep -c '^### J' "$_jf" 2>/dev/null)
+  _n=$(( ${_n:-0} + 1 ))
+  _note=$(awk '/^<<<NOTE[[:space:]]*$/ { b = ""; on = 1; next }
+               /^NOTE>>>[[:space:]]*$/ { if (on) last = b; on = 0; next }
+               on { b = b $0 "\n" }
+               END { printf "%s", last }' "$_ans" 2>/dev/null \
+    | tr -d '\000-\011\013-\037\177' \
+    | grep -E '^(did|problem|hint):' | head -n 3 | head -c 600 \
+    | { iconv -f UTF-8 -t UTF-8 -c 2>/dev/null || cat; })
+  {
+    printf '### J%s %s %s %s %s\n' "$_n" "$(date '+%Y-%m-%d %H:%M')" "$_role" "$_task" "$_res"
+    [ -n "$_note" ] && printf '%s\n' "$_note"
+    printf '\n'
+  } >> "$_jf"
+}
+# The last N entries (default 25) for the next prompt.
+journal_tail() { # JOURNAL [N]
+  awk -v k="${2:-25}" '/^### J/ { n++ } { l[NR] = $0; e[NR] = n }
+       END { for (i = 1; i <= NR; i++) if (e[i] > n - k) print l[i] }' "$1" 2>/dev/null
+}
+# An answer without its note blocks, before VERDICT:/FINAL:/task lines are read from it.
+strip_note() { awk '/^<<<NOTE[[:space:]]*$/ { on = 1 } !on { print } /^NOTE>>>[[:space:]]*$/ { on = 0 }' "$1" 2>/dev/null; }
+
 # Sum of the cost in USD from line FROM on (a start notes where its calls begin; empty = all), unknown costs ("?") left out
 cost_sum() { # CSV [FROM]
     awk -F';' -v f="${2:-2}" 'NR > 1 && NR >= f && $4 != "?" { c += $4 } END { printf "%.2f\n", c }' "$1" 2>/dev/null || echo 0.00
 }
-# Cost and tokens per kind of Claude call (plan, draft, brief, worker, reviewer, planner) and the total
+# Cost and tokens per kind of Claude call (plan, draft, brief, worker, reviewer, planner, lessons, final) and the total
 cost_table() { # CSV
     [ -s "$1" ] || { echo "  no Claude calls recorded yet"; return 0; }
     awk -F';' '
         function h(n) { return n >= 1e6 ? sprintf("%.1fM", n / 1e6) : n >= 1e4 ? sprintf("%.0fk", n / 1e3) : n + 0 }
         NR > 1 { k = $2; seen[k] = 1; if ($4 == "?") u[k]++; else { c[k] += $4; t += $4 }
                                          i[k] += $5; r[k] += $6; o[k] += $7 }
-        END { n = split("plan draft brief worker reviewer planner", order, " ")
+        END { n = split("plan draft brief worker reviewer planner lessons final", order, " ")
               for (k in seen) { known = 0; for (j = 1; j <= n; j++) if (order[j] == k) known = 1; if (!known) order[++n] = k }
               for (j = 1; j <= n; j++) { k = order[j]; if (!(k in seen)) continue
                   printf "  %-9s %8.2f USD   tokens: %s in, %s cache read, %s out%s\n", k, c[k], h(i[k]), h(r[k]), h(o[k]),

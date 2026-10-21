@@ -22,9 +22,14 @@ answer() { # a step may write $FAKE_DIR/denied (one command per line): reported 
 [ -f "$d/limit.txt" ] && { jq -n --arg r "$(cat "$d/limit.txt")" '{type: "result", is_error: true, result: $r, total_cost_usd: 0}'; exit 1; }
 
 case "$prompt" in
+    # lessons.txt: the answer of every lessons run (default: an empty list); final-<k>.txt: the k-th final review (default OK)
+    *"You are condensing the lessons"*) count lessons-nr >/dev/null; printf '%s\n' "$prompt" >"$d/lessons-prompt"
+        answer "$(cat "$d/lessons.txt" 2>/dev/null || printf '<<<LESSONS\nLESSONS>>>')" ;;
+    *"You are the final reviewer"*) k=$(count final-nr); printf '%s\n' "$prompt" >"$d/final-prompt"
+        answer "$(cat "$d/final-$k.txt" 2>/dev/null || echo 'FINAL: OK')" ;;
     *"You are the reviewer"*) [ -f "$d/review-sleep" ] && sleep "$(cat "$d/review-sleep")"; answer "Reasoning …
-$(sed -n "$(count verdict-nr)p" "$d/verdicts")" ;;
-    *"You are setting up an autopilot"*) if [ -f "$d/garbage" ]; then cat "$d/garbage"; else answer "$(cat "$d/setup.txt")"; fi ;;
+$(sed -n "$(count verdict-nr)p" "$d/verdicts")$([ -f "$d/review-note" ] && printf '\n%s' "$(cat "$d/review-note")")" ;;  # review-note: after the verdict
+    *"You are setting up an autopilot"*) printf '%s\n' "$prompt" >"$d/setup-prompt"; if [ -f "$d/garbage" ]; then cat "$d/garbage"; else answer "$(cat "$d/setup.txt")"; fi ;;
     *"You are the planner"*) printf '%s\n' "$prompt" >"$d/planner-prompt"; answer "$(cat "$d/planner.txt")" ;;
     *"You are turning a rough idea"*) printf '%s\n' "$prompt" >"$d/idea-prompt"; answer "$(cat "$d/idea.txt")" ;;
     *"You are writing the brief"*) count brief-nr >/dev/null; printf '%s\n' "$prompt" >"$d/brief-prompt"; answer "BRIEF: reuse check.sh, add one check line" ;;
@@ -34,5 +39,5 @@ $(sed -n "$(count verdict-nr)p" "$d/verdicts")" ;;
         grep -q "DECISIONS.md" <<<"$prompt" && echo "$n" >>"$d/with-decisions"
         [ -f "$d/steps/$n.sh" ] || { answer "no steps left"; exit 1; }
         bash "$d/steps/$n.sh"; [ $? = 124 ] && exit 124  # step simulates the time limit
-        answer "Step $n done" ;;
+        answer "Step $n done$([ -f "$d/notes/$n" ] && printf '\n%s' "$(cat "$d/notes/$n")")" ;;  # notes/<n>: appended to the answer
 esac

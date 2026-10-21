@@ -29,13 +29,15 @@ TRY_IT='<one or two sentences on how the owner tries the result by hand, with pa
 
 - [ ] 1. <small task>. Done when <automatically checkable criterion that a test can prove>.
 - [ ] 2. …
-- [ ] <last>. End to end: <wire the pieces together so that the deliverable works as a whole>. Done when `<DEMO_CMD>` exits 0 and prints <expected output>.
+- [ ] <last but one>. Error case: <wrong input, missing file or bad argument of the deliverable> ends with a clear message and a non-zero exit code. Done when tests show the message and the exit code for at least two wrong inputs.
+- [ ] <last>. End to end: <wire the pieces together so that the deliverable works as a whole>; the README says what it is and names the start command. Done when `<DEMO_CMD>` exits 0 and prints <expected output>.
 
 Rules for the tasks:
+- A command in backticks right after "Done when" is run by the script after the task, and the task only counts if it exits 0 (the test count then need not rise). Use it only for a command that exits 0 on success.
 - One task per sensible, checkable step: every task can be implemented in at most 30 minutes and proven by new automated tests. As a guide, 1 to 3 tasks per milestone of the plan.
 - The order builds up step by step; if needed, the first tasks create the test scaffolding so that the test command delivers a number at all.
 - Every task ends with "Done when …" and names measurable conditions (inputs, expected results, limits), no feelings.
-- The last task is always the end-to-end one above: the demo command, run like the owner would, exits 0 with the expected output. Wiring the parts together (entry point, start-up, integration) is checkable and belongs in the list: a list of unit-tested parts that nobody ever starts as a whole is not finished.
+- The last but one task is always the error case above, the last one always the end-to-end one: the demo command, run like the owner would, exits 0 with the expected output. Wiring the parts together (entry point, start-up, integration) is checkable and belongs in the list: a list of unit-tested parts that nobody ever starts as a whole is not finished.
 - Only look, feel and usability, which no program can check, stay out of the list; mention them in one sentence under the rules as "Checked by a human".
 - The plan file itself is never changed (it is locked).
 - If there are no tests and no test command yet, choose the usual test tool of the language and let task 1 set it up; TEST_CMD must already run before task 1 (it may report 0 tests then).

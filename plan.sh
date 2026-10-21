@@ -120,7 +120,13 @@ draft() { # PLANFILE
     [ -s "$CONF_BASE/idea-costs.csv" ] && { { [ -s "$c" ] && tail -n +2 "$CONF_BASE/idea-costs.csv" || cat "$CONF_BASE/idea-costs.csv"; } >>"$c"; rm -f "$CONF_BASE/idea-costs.csv"; }
     echo "$file" >"$e/plan"
     echo "Claude reads $rel and the project and drafts the tasks (takes a few minutes) …"
-    prompt="$(cat "$TOOL_DIR/templates/SETUP.md")
+    prompt="$(cat "$TOOL_DIR/templates/SETUP.md")"
+    # A plan with "## Milestone N" sections: only the first milestone now, the loop drafts the others itself
+    grep -qE '^##[[:space:]]+Milestone[[:space:]]+[0-9]+' "$file" && prompt+="
+
+## Milestones
+The plan is split into \"## Milestone N\" sections. Draft the tasks of the first milestone only; the autopilot drafts the next milestone itself when one is done. Its last task proves that milestone's criterion; the error-case and the end-to-end task belong to the last milestone only, unless the plan has just one."
+    prompt+="
 
 ## Plan file: $rel
 $(cat "$file")

@@ -4,6 +4,6 @@ The document, in Markdown:
 - Title and goal: what should be built, in two or three sentences.
 - Deliverable (required): what the owner holds in their hands at the end (the files, commands or behaviour they can see and try), how they try it out by hand in one or two sentences, and the one command that proves it works: it starts or uses the finished result the way the owner would and exits 0 only if it works (e.g. `python app.py --help`, `./bin/tool example.md`, `npm start -- --check`). Write it as `Demo: <command>`. This command later becomes DEMO_CMD, and the run counts as delivered only when it passes.
 - Constraints: language and tools (pick common, boring ones if the idea does not say), what is out of scope.
-- Milestones: 5 to 15, numbered, small and building on each other, each with a verifiable criterion ("works when ...") that an automated test can prove. The last milestone is always end to end: the demo command exits 0 and prints the expected output.
+- Milestones: 5 to 15, small and building on each other, each its own section with exactly this heading: `## Milestone <n>: <title>` (n = 1, 2, 3 …), and in it a verifiable criterion ("works when ...") that an automated test can prove. The autopilot drafts and works through one milestone at a time. The last milestone is always end to end: the demo command exits 0 and prints the expected output.
 
 Keep it to about one page, concrete and measurable, no feelings. Output only the document, nothing before or after it.

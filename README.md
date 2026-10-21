@@ -20,7 +20,9 @@ Let Claude run all night and in the morning it says "Done!" – and nothing work
 - **A shell script** checks the result with hard rules: tests green, test count never drops, only allowed paths touched, the goal untouched.
 - **The reviewer** (a second Claude, read-only tools) reads the diff and the test output and rejects weak tests and fakes.
 - **Only the script commits.** Anything that fails is reset, and the reason (with the rejected patch) goes into the next attempt.
-- **At the end the script runs the demo** (`DEMO_CMD`: use the result the way you would) and writes a handover. Without a passing demo the outcome is "not delivered", however many tasks are ticked off.
+- **At the end the script runs the demo** (`DEMO_CMD`: use the result the way you would), a final review of the whole change and the tests and demo once more in a fresh checkout, then merges and writes a handover. Without all of that the outcome is "not delivered", however many tasks are ticked off.
+- **It learns from its own runs.** Every agent leaves a short note in a journal; the planner condenses it into at most 15 lessons that go into every following prompt.
+- **Large plans go milestone by milestone.** The loop drafts the tasks of the next milestone itself when one is done.
 
 ```mermaid
 flowchart TD
@@ -37,9 +39,12 @@ flowchart TD
     G -- more tasks --> W
     G -- list empty, goal open --> PL[Planner proposes<br/>new tasks]
     PL -- your OK --> T
-    G -- yes --> M{Demo: DEMO_CMD<br/>exits 0?}
-    M -- yes --> E([Delivered + handover])
-    M -- no --> N([Not delivered + handover])
+    G -- milestone done --> MS[Planner drafts the<br/>next milestone]
+    MS --> T
+    G -- yes --> M{Demo, final review,<br/>fresh checkout}
+    M -- final review: fixes --> T
+    M -- all green --> E([Merged, delivered + handover])
+    M -- red --> N([Not delivered + handover])
 
     classDef plan fill:#dbeafe,stroke:#3b82f6,color:#1e3a8a
     classDef worker fill:#ede9fe,stroke:#8b5cf6,color:#4c1d95
@@ -54,7 +59,7 @@ flowchart TD
     class V reviewer
     class C,E commit
     class R,N reject
-    class PL planner
+    class PL,MS planner
 ```
 
 Blue is your input (approved by you), purple the worker, orange plain shell checks, teal the reviewer, green what passed, red what was reset or not delivered, yellow the planner.
@@ -92,7 +97,7 @@ autopilot status                        # while it runs, and afterwards: outcome
 autopilot handover                      # what was built, how to try it, the proof
 ```
 
-- **Plan file inside a Git project:** work happens in a separate worktree `<project>-autopilot` on branch `autopilot`; your working copy stays untouched. Adopt the result with `git merge autopilot`.
+- **Plan file inside a Git project:** work happens in a separate worktree `<project>-autopilot` on branch `autopilot`; your working copy stays untouched until the result is delivered, then `main` is fast-forwarded (see [The end](#the-end-final-review-fresh-checkout-merge)).
 - **Plan file anywhere else, or an idea:** a project folder `<name>-autopilot/` is created next to it with its own Git repository and a copy of the plan. Nothing else on your system is changed.
 - **The better the plan, the further it gets.** Describe what should work in the end, with examples and limits, and add a "Deliverable" section: what you hold in your hands, how you try it, and the one command that proves it (this becomes `DEMO_CMD`).
 
@@ -134,10 +139,43 @@ Everything else has a default; [`templates/autopilot.conf`](templates/autopilot.
 | 8 | `ACCEPT_CMD` | empty | optional overall goal printing `ACCEPT: k of n`; may be red, `k` must never drop |
 | 9 | `SANDBOX` | on when bwrap works | `off` switches it off |
 | 10 | `TRY_IT` | empty | how you try the result by hand, for the handover |
+| 11 | `MERGE` | `ff` | delivered: fast-forward `BASE_BRANCH` in the project folder when that is safe; `off` = you merge yourself |
+| 12 | `FRESH_CHECK` | `on` | run tests and demo once more in a fresh checkout before "delivered"; `off` for a demo bound to a fixed place |
+| 13 | `FORBIDDEN_CONTENT` | empty | regex of lines that must never be added; a check for secrets (AWS keys, private key blocks, long `password`/`secret`/`token`/`api_key` literals) always runs in addition |
 
 ## What you get at the end
 
-Every loop ends with `.autopilot/outcome` (`delivered`, `not-delivered`, `stopped`, `limit` or `error`, tab, reason), `.autopilot/HANDOVER.md` and `.autopilot/demo.txt`. **"Delivered" means: all tasks done, the acceptance test (if any) met, and `DEMO_CMD` exited 0.** The handover names the work directory to try it in (while it is not merged), shows command, exit code and last lines of the demo and the tests, the blocked tasks, the cost and tokens per kind of Claude call (plan, draft, brief, worker, reviewer, planner – all of them are logged in `.autopilot/costs.csv`), and the next step. Merge advice only comes with a delivered result.
+Every loop ends with `.autopilot/outcome` (`delivered`, `not-delivered`, `stopped`, `limit` or `error`, tab, reason), `.autopilot/HANDOVER.md` and `.autopilot/demo.txt`. **"Delivered" means: all tasks (of all milestones) done, the acceptance test (if any) met, `DEMO_CMD` exited 0, the final review found nothing, and tests and demo passed in a fresh checkout.** The handover says "Merged into main" or "Not merged: reason" with the command to do it, names the folder to try it in, shows command, exit code and last lines of the demo and the tests, the blocked tasks, new dependencies (lines added to `package.json`, `requirements*.txt`, `pyproject.toml`, `build.gradle*`, `Cargo.toml`, `go.mod`, `pom.xml`, `Gemfile`, `composer.json`), the cost and tokens per kind of Claude call (plan, draft, brief, worker, reviewer, planner, lessons, final – all in `.autopilot/costs.csv`), the lessons, the last 10 journal entries and the next step.
+
+## The end: final review, fresh checkout, merge
+
+When the task list (of the last milestone) is done and the demo is green:
+
+1. **Final review.** A planner-model Claude reads the plan, the whole `git diff <BASE_BRANCH>...HEAD`, the journal and the lessons ([`templates/FINAL.md`](templates/FINAL.md)): goals missing, leftovers, unhandled failures, security, a README with the start command. A diff over 1500 lines is cut to `--stat` plus its first 1500 lines. `FINAL: OK` goes on; otherwise its (at most 5) fix tasks are appended and the loop works them off. If the second round still finds issues, the end is "not delivered: final review still finds issues" with the points in the handover. Two rounds per milestone (`.autopilot/final-rounds`).
+2. **Fresh checkout.** `git worktree add --detach` of HEAD in a temporary folder, `TEST_CMD` and `DEMO_CMD` there, then the folder is removed. Red means "not delivered: works only in the work directory" (e.g. it needs an ignored file). `FRESH_CHECK=off` for a demo bound to a fixed place.
+3. **Merge.** With `MERGE=ff` (default) `BASE_BRANCH` is fast-forwarded in the project's main worktree – only if that worktree is on `BASE_BRANCH`, has no uncommitted or untracked changes (ignored files do not count) and a pure fast-forward is possible. Otherwise nothing changes and the handover gives the reason and the command. `MERGE=off` never merges.
+
+## Large projects: milestones
+
+A plan with sections `## Milestone 1: …`, `## Milestone 2: …` (what `autopilot plan "<idea>"` writes) is worked through one milestone at a time: `plan` drafts only the tasks of the first one. When a milestone is done (all tasks `[x]`, final review OK), the planner drafts the tasks of the next one from the locked plan and the loop appends them and goes on without asking; the journal notes it. The current milestone is in `.autopilot/milestone`. The demo, the fresh checkout and "delivered" come only after the last milestone. A plan without such headings works as one list.
+
+## Check command per task
+
+A task line ``- [ ] 4. Export. Done when `./bin/tool export x.md` exits 0 …`` names its own check: after the run the script runs the command in backticks in the work directory (sandbox and time limit like `TEST_CMD`); a non-zero exit rejects the run with its output. Such a task does not need to raise the test count. Without a command in backticks the old rule holds: every ticked-off task adds tests.
+
+## Journal and lessons
+
+Every agent (worker, reviewer, planner, brief, final review) ends its answer with a short note block (`did`, `problem`, `hint`). The script cuts it out and appends it, with time, role, task and result, as entry `J<n>` to `.autopilot/JOURNAL.md`. Only the script writes this file, it is never shortened and the numbers run on over restarts; read it any time to see what happened and why a run failed. Only `did:`/`problem:`/`hint:` lines of the last block pass (at most 3 lines, 600 bytes), so no agent can plant headers or free text into later prompts. The rejection reason itself still goes to the next attempt as feedback, with the rejected patch.
+
+From the journal a planner run condenses `.autopilot/LESSONS.md`: at most 15 one-line rules, each pointing to the journal entries it is based on, for example `- Run the build twice after a dependency change. (J12, J17)`. The lessons are condensed again after every rejection, every timeout and every 5 accepted tasks; outdated lessons are dropped, and an invalid answer keeps the old file.
+
+Lessons are hints, never rules: every prompt marks journal and lessons as notes that cannot override the plan, CLAUDE.md, locked files, the acceptance test or the prompt rules, and they never cover decisions that belong to you.
+
+To remove a lesson, edit its line in `LESSONS.md` so it starts with `- [removed by owner]`, e.g.
+`- [removed by owner] Skip the slow integration test. (J8)`
+It stays removed and is not brought back, not even reworded. Delete the whole file to start over.
+
+Token cost: every prompt gets the last 25 journal entries (about 25 x 150 tokens, roughly 4k) and all lessons (under 1k). Condensing the lessons costs one extra planner run each time (kind `lessons` in `costs.csv`).
 
 In Claude Code the status line shows each running project; when one ends, a toast leads with the outcome: "Autopilot shop: Delivered - 5 done, 1 blocked, tests 114 -> 131, 4.20 USD - /autopilot-loop handover". Desktop notifications use `notify-send` where it exists; a `notify()` in `autopilot.conf` replaces it.
 
@@ -153,6 +191,9 @@ In Claude Code the status line shows each running project; when one ends, a toas
 | 6 | **Brakes**: `ATTEMPTS` per task (counted in `.autopilot/attempts`, survives a restart), `MAX_BLOCKED`, `NO_PROGRESS`, `MAX_RUNS`, `MAX_COST_USD`, waiting at the usage limit | endless loops that only burn quota |
 | 7 | **Planner** proposes tasks only with your OK, says "NOT REACHABLE" instead of inventing work; a blocked task may not come with code | standstill, invented tasks, half-built work slipping in as "blocked" |
 | 8 | **Demo and handover** | "done" that nobody can start |
+| 9 | **Final review and fresh checkout** before "delivered" | leftovers no single task review sees, a result that works only in the work directory |
+| 10 | **Journal and lessons**, only did/problem/hint lines, marked as hints | the same mistake in run after run; notes smuggling in instructions |
+| 11 | **Secrets check** on every added line, besides `FORBIDDEN_CONTENT` | keys and passwords in the commit |
 
 ## Limits
 
@@ -162,6 +203,7 @@ In Claude Code the status line shows each running project; when one ends, a toas
 | 2 | The reviewer can be wrong (both ways) | at most `ATTEMPTS` tries per task, then it lands with you in `BLOCKED.md` |
 | 3 | Cost | caps per start; with a subscription the loop pauses at the usage limit; `status` shows cost and tokens per kind |
 | 4 | Claude Code refuses every write below `~/.claude/` | keep projects elsewhere; `plan accept` refuses such a work directory, `doctor` warns |
+| 5 | Tasks of the next milestone and of the final review are added without your OK, and their check commands run like `TEST_CMD` | they come from the locked plan; read the journal and `git log`; the run caps still apply |
 
 ## Upgrading from 0.8
 
@@ -188,6 +230,12 @@ Existing configurations may break; this table says what to change. After editing
 | 17 | `plan accept --no-demo` / `--with-accept` | gone | without a demo only a warning; an acceptance test of the draft is adopted when its files exist |
 | 18 | `NAME`, `BASE_BRANCH` | `NAME` = folder name, `BASE_BRANCH` read from the worktree when empty | may stay |
 | 19 | `.autopilot/log/progress.csv`, `costs-extra.csv`, `grades.csv` | `.autopilot/costs.csv` (every Claude call with tokens) | old files are ignored; delete them when you like |
+| 20 | `.autopilot/feedback.txt` only | plus `.autopilot/JOURNAL.md` and `LESSONS.md` in every prompt | nothing; a custom `PROMPT_FILE`/`REVIEWER_FILE` gets journal, lessons and the note instruction appended by the script |
+| 21 | "delivered" = tasks done + demo green | + final review OK + tests and demo green in a fresh checkout | a demo bound to a fixed place (a test server, absolute paths): `FRESH_CHECK=off` |
+| 22 | "delivered" left the merge to you | `MERGE=ff`: `BASE_BRANCH` is fast-forwarded when safe | to keep merging yourself: `MERGE=off` |
+| 23 | `FORBIDDEN_CONTENT` was the only content check | a secrets check always runs in addition | a test that needs a long fake token: build it at runtime instead of writing it as a literal |
+| 24 | "Done when …" was text only | a command in backticks after "Done when" is run and must exit 0 | check your task lines: a backtick command that is meant to fail needs `!` in front |
+| 25 | the whole plan as one task list | `## Milestone N` sections are worked off one by one | a plan without such headings behaves as before |
 
 ## Security
 
@@ -206,7 +254,7 @@ For plans or repos from others, run it in a container or VM without access to ke
 ## Self-test
 
 ```bash
-test/test_autopilot.sh                              # fake `claude`: loop, plan, security, brakes, demo, handover, costs → "ok"
+test/test_autopilot.sh                              # fake `claude`: loop, plan, security, brakes, demo, handover, costs, journal, lessons, milestones, final review, merge → "ok"
 claude plugin validate . && claude plugin test .    # the Claude Code plugin: menu, status line, finish toast
 ```
 

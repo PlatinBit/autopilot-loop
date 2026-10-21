@@ -98,7 +98,8 @@ c=$T/pa/.autopilot/costs.csv
     fail "costs.csv: worker and reviewer calls with tokens not recorded: $(cat "$c")"
 "$TOOL_DIR/menu.sh" status >"$T/st.txt" || fail "status failed"
 grep -q "4 done, 0 open, 1 blocked" "$T/st.txt" || fail "status wrong: $(cat "$T/st.txt")"
-grep -qE '^  worker +0\.15 USD +tokens: 1500 in, 15k cache read, 150 out$' "$T/st.txt" && grep -qE '^  total +0\.21 USD$' "$T/st.txt" ||
+grep -qE '^  worker +0\.15 USD +tokens: 1500 in, 15k cache read, 150 out$' "$T/st.txt" && grep -qE '^  lessons +0\.11 USD' "$T/st.txt" &&
+    grep -qE '^  total +0\.32 USD$' "$T/st.txt" ||
     fail "status: cost and tokens per kind wrong: $(cat "$T/st.txt")"
 grep -q "Autopilot: \[x\] 5. five" "$T/pa/.autopilot/HANDOVER.md" || fail "handover does not list the commits"
 grep -qx "User file" secret.txt || fail "foreign file lost through a rename"
@@ -183,7 +184,7 @@ grep -q "It should count" "$FAKE_DIR/brief-prompt" || fail "plan missing in the 
 grep -q "## Plan being implemented" "$FAKE_DIR/last-prompt" && fail "worker got the whole plan although a brief ran"
 grep -q "models balanced (planner opus, worker sonnet, reviewer sonnet)" "$T/p2/.autopilot/log/history.log" || fail "models not shown at the start"
 grep -q ';brief;opus;' "$T/p2/.autopilot/costs.csv" && grep -q ';worker;sonnet;' "$T/p2/.autopilot/costs.csv" || fail "costs.csv: brief or worker model wrong"
-"$TOOL_DIR/menu.sh" status --short | grep -qx "Autopilot p2 ended: delivered - 1 done, 0 blocked, tests 1 -> 2, 0.03 USD" ||
+"$TOOL_DIR/menu.sh" status --short | grep -qx "Autopilot p2 ended: delivered - 1 done, 0 blocked, tests 1 -> 2, 0.04 USD" ||
     fail "status --short after the end: $("$TOOL_DIR/menu.sh" status --short)"
 # Planner suggestion: shown by `plan`, adopted by `plan accept`, thrown away by `plan discard` (honest when there is none)
 printf -- '- [ ] 2. two. Done when two more tests pass.\n' >"$T/p2/.autopilot/suggestion.md"
@@ -605,4 +606,5 @@ cd "$T" || exit 1
 . "$TOOL_DIR/test/part_f.sh"
 . "$TOOL_DIR/test/part_g.sh"
 . "$TOOL_DIR/test/part_h.sh"
+. "$TOOL_DIR/test/part_i.sh"
 echo ok

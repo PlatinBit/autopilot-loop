@@ -43,6 +43,8 @@ ATTEMPTS=${ATTEMPTS:-3}
 MAX_BLOCKED=${MAX_BLOCKED:-3}
 NO_PROGRESS=${NO_PROGRESS:-10}
 PLANNER=on
+MERGE=ff
+FRESH_CHECK=on
 PLAN_FILE=''
 PROMPT_FILE=''
 REVIEWER_FILE=''
@@ -64,6 +66,7 @@ case $MODELS in
     cheap)    WORKER_MODEL=haiku;  REVIEWER_MODEL=sonnet; PLANNER_MODEL=sonnet ;;
     *) echo "MODELS=$MODELS in $CONF: use balanced, max or cheap." >&2; exit 1 ;;
 esac
+case $MERGE in ff|off) ;; *) echo "MERGE=$MERGE in $CONF: use ff or off." >&2; exit 1 ;; esac
 abs_path() { case "$1" in /*) echo "$1" ;; *) echo "$CONF_DIR/$1" ;; esac; }
 WORKDIR=$(abs_path "$WORKDIR")
 PROMPT_FILE=$(abs_path "${PROMPT_FILE:-$TOOL_DIR/templates/PROMPT.md}")
