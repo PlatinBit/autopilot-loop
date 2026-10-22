@@ -3,7 +3,7 @@
 # The prompt comes as an argument or via stdin (claude_run always uses stdin).
 # Controlled via $FAKE_DIR: steps/<n>.sh (worker runs), verdicts (one line per review: "VERDICT: ACCEPT",
 # "VERDICT: REJECT: <reason>" or the structured answer itself as JSON), review-note (note of every review),
-# setup.txt, planner.txt, idea.txt, final-<k>.txt (fixed answers; reviewer, planner and final review answers are turned
+# setup.txt, planner.txt, idea.txt, spec.txt, size-<k>.txt, final-<k>.txt (fixed answers; reviewer, planner and final review answers are turned
 # into the structured answer of --json-schema: task lines, "NOT REACHABLE: …", "FINAL: OK", did:/problem:/hint: lines),
 # garbage (raw non-JSON output for the setup call), review-sleep (seconds the reviewer
 # waits before answering), limit.txt (every call answers with this usage-limit error), budget/<n> (worker run n
@@ -60,11 +60,15 @@ case "$prompt" in
     *"You are the final reviewer"*) role=final; k=$(count final-nr); printf '%s\n' "$prompt" >"$d/final-prompt"; cp "$d/final-prompt" "$d/final-prompt-$k"
         t=$(cat "$d/final-$k.txt" 2>/dev/null || echo 'FINAL: OK'); answer "$t" "$(structured final "$t")" ;;
     *"You are the reviewer"*) role=reviewer; [ -f "$d/review-sleep" ] && sleep "$(cat "$d/review-sleep")"
-        v=$(sed -n "$(count verdict-nr)p" "$d/verdicts")
+        v=$(sed -n "$(count verdict-nr)p" "$d/verdicts" 2>/dev/null)  # no verdicts file: an answer without a verdict
         case $v in '{'*) s=$v ;; *) s=$(structured reviewer "$v" "$(cat "$d/review-note" 2>/dev/null)") ;; esac
         answer "Reasoning … $v" "$s" ;;
     *"You are setting up an autopilot"*) role=draft; printf '%s\n' "$prompt" >"$d/setup-prompt"; if [ -f "$d/garbage" ]; then cat "$d/garbage"; else answer "$(cat "$d/setup.txt")"; fi ;;
     *"You are the planner"*) role=planner; printf '%s\n' "$prompt" >"$d/planner-prompt"; t=$(cat "$d/planner.txt"); answer "$t" "$(structured planner "$t")" ;;
+    # size-<k>.txt: task lines of the k-th size check = does not fit, split into them (default: fits)
+    *"You are sizing a task"*) role=size; k=$(count size-nr); printf '%s\n' "$prompt" >"$d/size-prompt"; t=$(cat "$d/size-$k.txt" 2>/dev/null)
+        answer "$t" "$(jq -n --arg t "$t" '[$t | splits("\n") | select(test("^- \\[ \\] "))] | {fits: (length == 0), split: .}')" ;;
+    *"You are writing a specification"*) role=spec; printf '%s\n' "$prompt" >"$d/spec-prompt"; answer "$(cat "$d/spec.txt")" ;;
     *"You are turning a rough idea"*) role=plan; printf '%s\n' "$prompt" >"$d/idea-prompt"; answer "$(cat "$d/idea.txt")" ;;
     *"You are writing the brief"*) role=brief; count brief-nr >/dev/null; printf '%s\n' "$prompt" >"$d/brief-prompt"; answer "BRIEF: reuse check.sh, add one check line" ;;
     *)  n=$(count step-nr); printf '%s\n' "$prompt" >"$d/last-prompt"

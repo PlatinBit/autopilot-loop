@@ -4,6 +4,8 @@
 #
 #   autopilot plan <file>      create and show a draft (read only, changes nothing in the project)
 #   autopilot plan "<idea>"    write ./<slug>-plan.md from one to three sentences, then draft from it
+#   autopilot plan --spec "<idea>"  write ./SPEC.md (requirements, acceptance examples, non-goals) and stop
+#   autopilot plan SPEC.md     write <slug>-plan.md from the (edited) spec, then draft; accept commits and locks both
 #   autopilot plan             show the draft, or the planner's suggestion for the project here
 #   autopilot plan accept      set up the draft (work branch "autopilot" as a worktree next to the project,
 #                              autopilot.conf, task list), or add the planner's suggestion to the task list
@@ -69,13 +71,13 @@ show_draft() { # DRAFT DIRECTORY
 
 # A plan file outside any Git project gets its own project folder next to it (<name>-autopilot/) with its own
 # Git repository and a copy of the plan. Nothing else on the system is changed – no `git init` in your folders.
-new_workspace() { # PLANFILE → path of the project folder on stdout
+new_workspace() { # PLANFILE [SPECFILE] → path of the project folder on stdout
     local file=$1 name dir
     name=$(basename "$file"); name=${name%.*}; name=$(printf %s "$name" | tr -c 'A-Za-z0-9._-' '-')
     dir=$(dirname "$file")/${name:-plan}-autopilot
     if [ -d "$dir/.git" ]; then echo "$dir"; return; fi
     [ -e "$dir" ] && { echo "$dir exists and is not a Git project – please move it or use another plan file." >&2; return 1; }
-    mkdir -p "$dir" && cp "$file" "$dir/" || return 1
+    mkdir -p "$dir" && cp "$file" "${@:2}" "$dir/" || return 1
     g -C "$dir" init -q -b main || return 1
     # No Git identity on this machine? Set one for this folder only (your global settings stay untouched).
     [ -n "$(g -C "$dir" config user.email)" ] || { g -C "$dir" config user.name autopilot-loop; g -C "$dir" config user.email autopilot-loop@localhost; }
@@ -85,31 +87,50 @@ new_workspace() { # PLANFILE → path of the project folder on stdout
     echo "$dir"
 }
 
-idea() { # IDEA TEXT: write ./<slug>-plan.md, then draft from it
-    local text=$1 slug out a
+idea() { # IDEA TEXT [SPECFILE]: write ./<slug>-plan.md (from a spec: next to it, implementing it), then draft from it
+    local text=$1 spec=${2:-} slug out a extra='' dir=$PWD
     slug=$(printf %s "$text" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-')
     slug=${slug:0:40}; slug=${slug#-}; slug=${slug%-}
-    out=$PWD/${slug:-idea}-plan.md
+    if [ -n "$spec" ]; then
+        dir=$(dirname "$spec")
+        extra=$'\n\n'"## Specification ($(basename "$spec"), approved by the owner)"$'\n'"The plan implements exactly this specification: its requirements, its non-goals out of scope, its acceptance examples as the criteria of the milestones and its demo command."$'\n\n'"$(cat "$spec")"
+    fi
+    out=$dir/${slug:-idea}-plan.md
     [ -e "$out" ] && fail "$out already exists – draft from it (autopilot plan $out), move it aside or word the idea differently."
-    a=$CONF_BASE/idea-answer.txt; rm -f "$CONF_BASE/idea-costs.csv"
-    echo "Claude turns the idea into a plan file (takes a few minutes) …"
+    a=$CONF_BASE/idea-answer.txt; [ -n "$spec" ] || rm -f "$CONF_BASE/idea-costs.csv"  # the spec's cost stays in it
+    echo "Claude turns the $([ -n "$spec" ] && echo specification || echo idea) into a plan file (takes a few minutes) …"
     COSTS=$CONF_BASE/idea-costs.csv claude_run "$a" plan --model opus --allowedTools Read Grep Glob \
-        <<<"$(cat "$TOOL_DIR/templates/IDEA.md")"$'\n\n## Idea\n'"$text" >/dev/null || claude_failed "$a"
+        <<<"$(cat "$TOOL_DIR/templates/IDEA.md")"$'\n\n## Idea\n'"$text$extra" >/dev/null || claude_failed "$a"
     jq -e . "$a.json" >/dev/null 2>&1 && [ -s "$a" ] ||
         fail "Claude gave no usable answer (invalid JSON or empty output), see $a – run autopilot plan \"<idea>\" again."
     cp "$a" "$out" || fail "Could not write $out"
     echo "Plan file written: $out"
     echo; head -25 "$out" | sed 's/^/  /'; [ "$(wc -l <"$out")" -gt 25 ] && echo "  …"
     echo
-    from_idea=1 draft "$out"
+    from_idea=1 spec_file=$spec draft "$out"
+}
+# autopilot plan --spec "<idea>": write ./SPEC.md (requirements with acceptance examples, non-goals), show it and stop;
+# the owner edits it, then `autopilot plan SPEC.md` writes the plan from it and drafts
+spec() { # IDEA TEXT
+    local out=$PWD/SPEC.md a=$CONF_BASE/spec-answer.txt
+    [ -n "$1" ] || fail 'An idea is needed: autopilot plan --spec "<idea>"'
+    [ -e "$out" ] && fail "$out already exists – read or edit it, then: autopilot plan $out (or move it aside for a new one)"
+    rm -f "$CONF_BASE/idea-costs.csv"
+    echo "Claude writes the specification (takes a few minutes) …"
+    COSTS=$CONF_BASE/idea-costs.csv claude_run "$a" spec --model opus --allowedTools Read Grep Glob \
+        <<<"$(cat "$TOOL_DIR/templates/SPEC.md")"$'\n\n## Idea\n'"$1" >/dev/null || claude_failed "$a"
+    jq -e . "$a.json" >/dev/null 2>&1 && [ -s "$a" ] || fail "Claude gave no usable answer (invalid JSON or empty output), see $a – run it again."
+    cp "$a" "$out" || fail "Could not write $out"
+    echo "Specification written: $out"; echo; sed 's/^/  /' "$out"; echo
+    echo "Read it and correct it (requirements, acceptance examples, non-goals). Then the plan and the draft: autopilot plan $out"
 }
 
 draft() { # PLANFILE
     local file repo rel e prompt cost c
     file=$(readlink -f "${1/#\~/$HOME}") && [ -f "$file" ] || fail "File not found: $1"  # ~ also without a shell (plugin)
     if ! repo=$(g -C "$(dirname "$file")" rev-parse --show-toplevel 2>/dev/null); then
-        repo=$(new_workspace "$file") || fail "Could not create a project folder for $file."
-        file=$repo/$(basename "$file")
+        repo=$(new_workspace "$file" ${spec_file:+"$spec_file"}) || fail "Could not create a project folder for $file."
+        file=$repo/$(basename "$file"); [ -n "${spec_file:-}" ] && spec_file=$repo/$(basename "$spec_file")
     fi
     g -C "$repo" rev-parse -q --verify HEAD >/dev/null || fail "The Git project has no commit yet (git add -A && git commit -m Start)."
     rel=${file#"$repo"/}
@@ -121,6 +142,7 @@ draft() { # PLANFILE
     [ -s "$CONF_BASE/idea-costs.csv" ] && { { [ -s "$c" ] && tail -n +2 "$CONF_BASE/idea-costs.csv" || cat "$CONF_BASE/idea-costs.csv"; } >>"$c"; rm -f "$CONF_BASE/idea-costs.csv"; }
     echo "$file" >"$e/plan"
     [ -n "${from_idea:-}" ] && touch "$e/idea"  # plan accept commits this plan file in the base branch
+    [ -n "${spec_file:-}" ] && echo "$spec_file" >"$e/spec"  # and the spec it implements, locked like the plan
     echo "Claude reads $rel and the project and drafts the tasks (takes a few minutes) …"
     prompt="$(cat "$TOOL_DIR/templates/SETUP.md")"
     # A plan with "## Milestone N" sections: only the first milestone now, the loop drafts the others itself
@@ -150,9 +172,10 @@ $(g -C "$repo" ls-files | head -300)"
 }
 
 accept_draft() { # DRAFT DIRECTORY
-    local e=$1 repo file rel base wt err sr wrap='' z re f locked note='' title c t tools=() had_tools=''
+    local e=$1 repo file rel base wt err sr wrap='' z re f locked note='' title c t tools=() had_tools='' spec srel new=()
     repo=${e%/.autopilot/draft}
     file=$(cat "$e/plan"); rel=${file#"$repo"/}
+    spec=$(cat "$e/spec" 2>/dev/null); srel=${spec#"$repo"/}
     err=$(ALLOWED=$(sed -n "s/^ALLOWED='\(.*\)'$/\1/p" "$e/autopilot.part") FORBIDDEN_CONTENT=$(sed -n "s/^FORBIDDEN_CONTENT='\(.*\)'$/\1/p" "$e/autopilot.part") bad_patterns)
     [ -z "$err" ] || fail "The draft's $(echo $err) is not a valid regular expression (grep -E). Draft again: autopilot plan <file>"
     base=$(g -C "$repo" branch --show-current); base=${base:-$(g -C "$repo" rev-parse HEAD)}  # detached HEAD: the commit
@@ -160,7 +183,7 @@ accept_draft() { # DRAFT DIRECTORY
     [ -f "$repo/.autopilot/own-workspace" ] && wt=$repo  # own project folder (plan outside Git): work in it on branch autopilot
     under_claude_dir "$wt" && fail "The work directory $wt would lie below ~/.claude/, where Claude Code refuses every write. Move the project (or the plan file) elsewhere, then: autopilot plan <file>"
     # The acceptance test of the draft is adopted when its files exist (they are locked, so the worker could never create them).
-    locked=$(printf '%q' "$rel")
+    locked=$(printf '%q' "$rel"); [ -n "$spec" ] && locked+=" $(printf '%q' "$srel")"
     if grep -q '^ACCEPT_CMD=' "$e/autopilot.part"; then
         for f in $(sed -n 's/^ACCEPT_FILES=(\(.*\))$/\1/p' "$e/autopilot.part"); do
             [ -e "$repo/$f" ] || { note="The draft's acceptance test was dropped: $f does not exist."; break; }
@@ -170,12 +193,16 @@ accept_draft() { # DRAFT DIRECTORY
     fi
     # A plan written from an idea inside a Git project is not committed yet: commit it (and only it) in the base
     # branch, so the work branch has it (LOCKED covers it) and the main worktree stays clean for the merge
-    if [ -f "$e/idea" ] && [ "$wt" != "$repo" ] && ! g -C "$repo" ls-files --error-unmatch -- "$rel" >/dev/null 2>&1; then
-        [ -n "$(g -C "$repo" status --porcelain -- . ":(exclude)$rel")" ] &&
+    # (with its spec, if it was written from one)
+    if [ -f "$e/idea" ] && [ "$wt" != "$repo" ]; then
+        for f in "$rel" ${spec:+"$srel"}; do g -C "$repo" ls-files --error-unmatch -- "$f" >/dev/null 2>&1 || new+=("$f"); done
+    fi
+    if [ ${#new[@]} -gt 0 ]; then
+        [ -n "$(g -C "$repo" status --porcelain -- . "${new[@]/#/:(exclude)}")" ] &&
             echo "Warning: $repo has other uncommitted changes – with MERGE=ff the result is only merged once they are committed or removed."
         title=$(sed -n 's/^# *//p' "$file" | head -1)
-        g -C "$repo" add -- "$rel" && g -C "$repo" commit -q --no-verify -m "Plan: ${title:-$rel}" -m "Co-Authored-By: Claude <noreply@anthropic.com>" -- "$rel" ||
-            fail "Could not commit the plan $rel in $repo – commit it yourself, then run again: autopilot plan accept (the draft is kept)."
+        g -C "$repo" add -- "${new[@]}" && g -C "$repo" commit -q --no-verify -m "Plan: ${title:-$rel}" -m "Co-Authored-By: Claude <noreply@anthropic.com>" -- "${new[@]}" ||
+            fail "Could not commit $(echo "${new[@]}") in $repo – commit it yourself, then run again: autopilot plan accept (the draft is kept)."
     fi
     if [ "$wt" = "$repo" ]; then
         base=main  # new_workspace created main with the plan
@@ -207,6 +234,7 @@ Move or remove what is at $wt (or delete a stale worktree with: git -C \"$repo\"
     {
         printf '# Project from %s, set up %s with autopilot plan\n' "$(printf %q "$rel")" "$(date '+%F %T')"
         printf 'WORKDIR=%q\nBASE_BRANCH=%q\nTASKS_FILE=%q\nPLAN_FILE=%q\nLOCKED=(%s)\n' "$wt" "$base" "$TASKS_FILE" "$file" "$locked"
+        [ -n "$spec" ] && printf 'SPEC_FILE=%q\n' "$spec"
         while IFS= read -r z; do
             [ -n "$note" ] && [[ $z == ACCEPT_* ]] && continue
             [[ $z == ACCEPT_FILES=* ]] && continue  # locked above
@@ -271,9 +299,12 @@ case "${1:-}" in
             discard:draft) rm -rf "$path"; rm -f "$LAST"; echo "Draft thrown away." ;;
             discard:suggestion) rm -f "$path" "$(dirname "$path")/gate"; echo "Planner suggestion thrown away." ;;
         esac ;;
-    -h|--help|help) sed -n '2,11p' "$0" | cut -c3- ;;
+    -h|--help|help) sed -n '2,13p' "$0" | cut -c3- ;;
+    --spec) shift; need_claude && need_jq || exit 1; spec "$*" ;;
     *) need_claude && need_jq || exit 1
-       if [ -f "${1/#\~/$HOME}" ]; then draft "$1"
+       f=${1/#\~/$HOME}
+       if [ -f "$f" ] && [ "$(basename "$f")" = SPEC.md ]; then f=$(readlink -f "$f"); idea "$(sed -n 's/^# *//p' "$f" | head -1)" "$f"
+       elif [ -f "$f" ]; then draft "$1"
        elif [[ $* == *' '* && $* != *.md && $* != *.txt ]]; then idea "$*"
        else fail "File not found: $1 (an idea needs a few words in quotes: autopilot plan \"<idea>\")"; fi ;;
 esac

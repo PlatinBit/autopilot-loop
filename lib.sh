@@ -133,10 +133,11 @@ over_budget() { jq -e '.subtype == "error_max_budget_usd"' "$1.json" >/dev/null 
 # Fixed answer formats (--json-schema) of reviewer, final review and planner; the CLI puts the answer into
 # .structured_output. The note goes to the journal (journal_add).
 NOTE_SCHEMA='{"type":"object","additionalProperties":false,"required":["did","problem","hint"],"description":"your note for the shared journal of the next agents: one line each, about 300 characters in total, no secrets","properties":{"did":{"type":"string","description":"what you did"},"problem":{"type":"string","description":"what went wrong or cost time, or none"},"hint":{"type":"string","description":"one tip for the next agent, or none"}}}'
-TASKS_SCHEMA='{"type":"array","maxItems":10,"items":{"type":"string","description":"- [ ] <number>. <task>. Done when <automatically checkable criterion>."}}'
+TASKS_SCHEMA='{"type":"array","maxItems":10,"items":{"type":"string","description":"- [ ] <number>. <task>. Done when <automatically checkable criterion>. Dependencies right after the number: - [ ] <number>. (after <numbers>) <task>. …"}}'
 REVIEWER_SCHEMA='{"type":"object","additionalProperties":false,"required":["verdict","reasons","note"],"properties":{"verdict":{"enum":["accept","reject"]},"reasons":{"type":"array","items":{"type":"string"},"description":"for reject: what exactly is missing or wrong, one or two sentences"},"note":'$NOTE_SCHEMA'}}'
 FINAL_SCHEMA='{"type":"object","additionalProperties":false,"required":["ok","tasks","note"],"properties":{"ok":{"type":"boolean","description":"true only if there is no real defect"},"tasks":'$TASKS_SCHEMA',"note":'$NOTE_SCHEMA'}}'
 PLANNER_SCHEMA='{"type":"object","additionalProperties":false,"required":["tasks","note"],"properties":{"tasks":'$TASKS_SCHEMA',"not_reachable":{"type":"string","description":"only when the goal needs the owner, not tasks: what the owner has to do or decide"},"note":'$NOTE_SCHEMA'}}'
+SIZE_SCHEMA='{"type":"object","additionalProperties":false,"required":["fits","split"],"properties":{"fits":{"type":"boolean","description":"true if the worker can finish the task in one run"},"split":{"type":"array","maxItems":5,"items":{"type":"string","description":"- [ ] <task>. Done when <automatically checkable criterion>."},"description":"only when fits is false: 2 to 5 smaller tasks that together do exactly this task"}}}'
 # Values of the structured answer, one per line: newlines and other control characters inside a value become spaces
 answer_lines() { jq -r ".structured_output | $2 | tostring | gsub(\"[[:cntrl:]]\"; \" \")" "$1.json" 2>/dev/null; }  # TEXTFILE JQ-PATH
 
@@ -192,14 +193,14 @@ SECRETS='AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----|((^|[^A-Za-z0-9])([
 cost_sum() { # CSV [FROM]
     awk -F';' -v f="${2:-2}" 'NR > 1 && NR >= f && $4 != "?" { c += $4 } END { printf "%.2f\n", c }' "$1" 2>/dev/null || echo 0.00
 }
-# Cost and tokens per kind of Claude call (plan, draft, brief, worker, reviewer, planner, lessons, final) and the total
+# Cost and tokens per kind of Claude call (plan, spec, draft, size, brief, worker, reviewer, planner, lessons, final) and the total
 cost_table() { # CSV
     [ -s "$1" ] || { echo "  no Claude calls recorded yet"; return 0; }
     awk -F';' '
         function h(n) { return n >= 1e6 ? sprintf("%.1fM", n / 1e6) : n >= 1e4 ? sprintf("%.0fk", n / 1e3) : n + 0 }
         NR > 1 { k = $2; seen[k] = 1; if ($4 == "?") u[k]++; else { c[k] += $4; t += $4 }
                                          i[k] += $5; r[k] += $6; o[k] += $7 }
-        END { n = split("plan draft brief worker reviewer planner lessons final", order, " ")
+        END { n = split("plan spec draft size brief worker reviewer planner lessons final", order, " ")
               for (k in seen) { known = 0; for (j = 1; j <= n; j++) if (order[j] == k) known = 1; if (!known) order[++n] = k }
               for (j = 1; j <= n; j++) { k = order[j]; if (!(k in seen)) continue
                   printf "  %-9s %8.2f USD   tokens: %s in, %s cache read, %s out%s\n", k, c[k], h(i[k]), h(r[k]), h(o[k]),
@@ -268,10 +269,27 @@ shorten() { # N <lines
     done
 }
 
-# Mark the first open task as blocked (portable, without GNU sed)
-block_first_open() { # FILE
-    awk '!d && /^- \[ \]/ { sub(/^- \[ \]/, "- [~]"); d = 1 } 1' "$1" >"$1.new" && mv "$1.new" "$1"
+# Dependencies: "- [ ] 4. (after 2, 3) …" right after the number waits until tasks 2 and 3 are ticked off [x];
+# "after 3" also covers the parts 3.1, 3.2 … of a split task 3, a number that no task has counts as done.
+# next: line number of the next task, the first open one whose dependencies are all [x] (empty: none can start).
+# waiting: every open task that cannot start, with the blocked [~] (or else open) task it waits on.
+tasks_awk() { # next|waiting FILE
+    awk -v mode="$1" '
+        function state(d,   j, s) { s = "x"; for (j = 1; j <= NR; j++) if (num[j] == d || index(num[j], d ".") == 1) { if (st[j] == "~") return "~"; if (st[j] != "x") s = " " }; return s }
+        { line[NR] = $0 }
+        /^- \[[ x~]\]/ { st[NR] = substr($0, 4, 1) }
+        match($0, /^- \[.\] [0-9]+(\.[0-9]+)*\./) { num[NR] = substr($0, 7, RLENGTH - 7) }
+        match($0, /^- \[.\] [0-9]+(\.[0-9]+)*\. \(after [0-9][0-9., ]*\)/) { dep[NR] = substr($0, 1, RLENGTH - 1); sub(/.*\(after /, "", dep[NR]) }
+        END { for (i = 1; i <= NR; i++) { if (st[i] != " ") continue
+                  n = split(dep[i], a, /[ ,]+/); why = ""
+                  for (k = 1; k <= n; k++) { d = a[k]; sub(/\.$/, "", d); if (d == "") continue; s = state(d)
+                      if (s == "~") { why = "blocked task " d; break }; if (s == " " && why == "") why = "task " d }
+                  if (mode == "next" && why == "") { print i; exit }
+                  if (mode == "waiting" && why != "") print line[i] " – waiting on " why } }' "$2"
 }
+next_task() { tasks_awk next "$1"; }  # FILE
+# The task list with the open task in line LINE marked [MARK] (portable, without GNU sed)
+mark_line() { awk -v l="$1" -v m="$2" 'NR == l { sub(/^- \[ \]/, "- [" m "]") } 1'; }  # LINE MARK <task list
 
 # Does the bubblewrap sandbox work here? (bwrap may be installed but unable to create namespaces: AppArmor, container)
 LIB_DIR=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")

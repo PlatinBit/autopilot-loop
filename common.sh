@@ -48,9 +48,12 @@ EFFORT_WORKER=${EFFORT_WORKER:-}; EFFORT_REVIEWER=${EFFORT_REVIEWER:-}; EFFORT_P
 MILESTONE_GATE=auto
 PLANNER=on
 MERGE=ff
+PR_WAIT=off
+SIZE_CHECK=''           # empty: on, off with MODELS=cheap
 FRESH_CHECK=on
 SECRETS_CHECK=on
 PLAN_FILE=''
+SPEC_FILE=''
 PROMPT_FILE=''
 REVIEWER_FILE=''
 PLANNER_FILE=''
@@ -73,7 +76,8 @@ case $MODELS in  # models, then effort: worker reviewer planner lessons (the pla
 esac
 EFFORT_WORKER=${EFFORT_WORKER:-${e[0]}}; EFFORT_REVIEWER=${EFFORT_REVIEWER:-${e[1]}}
 EFFORT_PLANNER=${EFFORT_PLANNER:-${e[2]}}; EFFORT_LESSONS=${EFFORT_LESSONS:-${e[3]}}
-case $MERGE in ff|off) ;; *) echo "MERGE=$MERGE in $CONF: use ff or off." >&2; exit 1 ;; esac
+[ -n "$SIZE_CHECK" ] || { [ "$MODELS" = cheap ] && SIZE_CHECK=off || SIZE_CHECK=on; }
+case $MERGE in ff|off|pr) ;; *) echo "MERGE=$MERGE in $CONF: use ff, off or pr." >&2; exit 1 ;; esac
 abs_path() { case "$1" in /*) echo "$1" ;; *) echo "$CONF_DIR/$1" ;; esac; }
 WORKDIR=$(abs_path "$WORKDIR")
 PROMPT_FILE=$(abs_path "${PROMPT_FILE:-$TOOL_DIR/templates/PROMPT.md}")
@@ -81,6 +85,7 @@ REVIEWER_FILE=$(abs_path "${REVIEWER_FILE:-$TOOL_DIR/templates/REVIEWER.md}")
 PLANNER_FILE=$(abs_path "${PLANNER_FILE:-$TOOL_DIR/templates/PLANNER.md}")
 BRIEF_FILE=$(abs_path "${BRIEF_FILE:-$TOOL_DIR/templates/BRIEF.md}")
 [ -n "$PLAN_FILE" ] && PLAN_FILE=$(abs_path "$PLAN_FILE")
+[ -n "$SPEC_FILE" ] && SPEC_FILE=$(abs_path "$SPEC_FILE")
 if [ -z "$BASE_BRANCH" ]; then  # the main worktree's branch; if that is the work branch itself: main, else master
     BASE_BRANCH=$(g -C "$WORKDIR" worktree list --porcelain 2>/dev/null | sed -n 's|^branch refs/heads/||p' | head -1)
     [ "$BASE_BRANCH" = "$(g -C "$WORKDIR" branch --show-current 2>/dev/null)" ] &&

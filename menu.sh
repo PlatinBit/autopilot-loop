@@ -2,6 +2,7 @@
 # autopilot-loop – the `autopilot` command (in Claude Code: /autopilot-loop <command>).
 #
 #   autopilot plan <file> | plan "<idea>"   draft a project from a plan file, or from a few sentences
+#   autopilot plan --spec "<idea>"           write SPEC.md (requirements, examples) for you to edit, then: plan SPEC.md
 #   autopilot plan [accept|discard]          show / set up or adopt / throw away the draft or the planner's suggestion
 #   autopilot start                          run the loop in the background (tmux) until done or a cap is hit
 #   autopilot status [--short|--watch]       where it stands; after the end: outcome, tasks, tests, cost, tokens
@@ -41,7 +42,13 @@ doc_project() { # with a trusted configuration: work directory, sandbox state an
      else echo "  no sandbox: bwrap is missing or cannot start here – $(install_hint bubblewrap), or set SANDBOX=off"; fi
      main=$(g -C "$WORKDIR" worktree list --porcelain 2>/dev/null | sed -n '1s/^worktree //p')
      [ "${MERGE:-ff}" = ff ] && [ -n "$main" ] && [ -n "$(g -C "$main" status --porcelain 2>/dev/null)" ] &&
-         echo "  ✘ MERGE=ff: $main has uncommitted or untracked files – a delivered result is not merged until they are committed or removed")
+         echo "  ✘ MERGE=ff: $main has uncommitted or untracked files – a delivered result is not merged until they are committed or removed"
+     if [ "${MERGE:-ff}" = pr ]; then  # the start refuses on each of these
+         if ! command -v gh >/dev/null; then echo "  ✘ MERGE=pr: gh (GitHub CLI) not found – $(install_hint gh), then gh auth login"
+         elif ! gh auth status >/dev/null 2>&1; then echo "  ✘ MERGE=pr: gh is not logged in – gh auth login"
+         elif ! o=$(g -C "$WORKDIR" remote get-url origin 2>/dev/null); then echo "  ✘ MERGE=pr: no remote origin in $WORKDIR – git remote add origin <url>"
+         else echo "  MERGE=pr: pushes to $o and opens a pull request when delivered"; fi
+     fi)
     probe_test_cmd "$k" | sed 's/^/  /'
 }
 doctor() {
@@ -87,7 +94,7 @@ outcome_text() { # STATE → "delivered" | "not delivered (reason)" | "stopped (
     lock_alive "$1" && return 0
     [ -r "$1/outcome" ] && IFS=$'\t' read -r o why <"$1/outcome" || return 0
     if [ "$o" = delivered ]; then  # a delivery names only its merge state
-        case $why in "merged into"*) echo "delivered, $why" ;; "not merged"*) echo "delivered ($(shorten 100 <<<"$why"))" ;; *) echo delivered ;; esac
+        case $why in "merged into"*|"PR opened"*) echo "delivered, $why" ;; "not merged"*) echo "delivered ($(shorten 100 <<<"$why"))" ;; *) echo delivered ;; esac
         return 0
     fi
     echo "${o/not-delivered/not delivered}${why:+ ($(shorten 100 <<<"$why"))}"
@@ -108,7 +115,7 @@ status_short() { # one line per project in running/ (the Claude Code status line
     done
 }
 status() {
-    local st s plan demo o next
+    local st s plan demo o next l
     if ! st=$(state_of); then
         echo "$NO_PROJECT"; s=$(status_short); [ -n "$s" ] && printf '\nProjects that ran:\n%s\n' "$s"
         return 3
@@ -125,7 +132,8 @@ status() {
     demo=$(info "$st" DEMO_CMD); echo "Demo:        ${demo:-none}"
     if [ -f "$tasks" ]; then
         echo "Tasks:       $n_done done, $n_open open, $n_blocked blocked"
-        [ "$n_open" -gt 0 ] && echo "Next task:   $(grep -m1 '^- \[ \]' "$tasks" | cut_chars 7 70)"
+        l=$(next_task "$tasks")
+        [ "$n_open" -gt 0 ] && echo "Next task:   $(if [ -n "$l" ]; then sed -n "${l}p" "$tasks" | cut_chars 7 70; else echo 'none – the open tasks wait on blocked tasks'; fi)"
     else echo "Tasks:       task list not found: $tasks (check TASKS_FILE in autopilot.conf)"; fi
     echo "Tests:       ${t0:-?} -> ${t1:-?}"
     [ -n "$acc" ] && echo "Acceptance:  ${acc#Accept }"
@@ -218,6 +226,6 @@ case "${1:-}" in
         k=${2:-$(find_conf)} && [ -f "$k" ] || { echo "No autopilot.conf found."; exit 1; }
         echo "This file is executed as Bash code on every call: $(readlink -f "$k")"
         trust "$k" && echo "Marked as trusted (valid until it changes)." ;;
-    ""|help|-h|--help) sed -n '3,14p' "$0" | cut -c3- ;;
-    *) echo "Unknown command: $1"; sed -n '3,14p' "$0" | cut -c3-; exit 2 ;;
+    ""|help|-h|--help) sed -n '3,15p' "$0" | cut -c3- ;;
+    *) echo "Unknown command: $1"; sed -n '3,15p' "$0" | cut -c3-; exit 2 ;;
 esac

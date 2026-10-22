@@ -36,6 +36,7 @@ Rules for the tasks:
 - A command in backticks right after "Done when" is run by the script after the task, and the task only counts if it exits 0 (the test count then need not rise). Use it only for a command that exits 0 on success.
 - One task per sensible, checkable step: every task can be implemented in at most 30 minutes and proven by new automated tests. As a guide, 1 to 3 tasks per milestone of the plan.
 - The order builds up step by step; if needed, the first tasks create the test scaffolding so that the test command delivers a number at all.
+- A task that needs other tasks done first names them right after its number: `- [ ] 5. (after 2, 4) <task>. Done when …`. The next task is always the first open one whose dependencies are ticked off, so a task that depends on a blocked one is skipped. Without "(after …)" the list is worked from top to bottom.
 - Every task ends with "Done when …" and names measurable conditions (inputs, expected results, limits), no feelings.
 - The last but one task is always the error case above, the last one always the end-to-end one: the demo command, run like the owner would, exits 0 with the expected output. Wiring the parts together (entry point, start-up, integration) is checkable and belongs in the list: a list of unit-tested parts that nobody ever starts as a whole is not finished.
 - Only look, feel and usability, which no program can check, stay out of the list; mention them in one sentence under the rules as "Checked by a human".

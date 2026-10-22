@@ -46,7 +46,7 @@ echo $$ >"$lock/pid"; trap 'rm -rf "$lock"' EXIT  # replaced by finish() below o
 [ -s "$STATE/gate" ] && [ -s "$STATE/suggestion.md" ] &&
     { echo "Milestone $(cat "$STATE/gate") waits for your OK: read it with autopilot plan, adopt it with autopilot plan accept (or throw it away: autopilot plan discard), then autopilot start" >&2; exit 1; }
 t_start=$(date '+%F %T')
-rm -f "$STATE/outcome" "$STATE/HANDOVER.md" "$STATE/demo.txt" "$STATE/final-rounds"
+rm -f "$STATE/outcome" "$STATE/HANDOVER.md" "$STATE/demo.txt" "$STATE/final-rounds" "$STATE/ci.txt"
 # What `status`, `status --short` and `handover` read: they never load autopilot.conf, which may change during a run.
 { for k in NAME WORKDIR TASKS_FILE PLAN_FILE TEST_CMD DEMO_CMD ACCEPT_CMD MAX_RUNS MAX_COST_USD; do
       v=${!k}; printf '%s=%s\n' "$k" "${v//$'\n'/ }"; done
@@ -59,7 +59,7 @@ costs_from=$(sed -n 's/^COSTS_FROM=//p' "$STATE/info")
 # The Claude Code status line shows every project listed here (the entry stays after the end for the outcome)
 mkdir -p "$CONF_BASE/running" 2>/dev/null && echo "$CONF" >"$CONF_BASE/running/$SESSION"
 # Per-run logs of the previous start go to log/archive/<time>/, otherwise run-1.txt etc. would be overwritten
-shopt -s nullglob; old_logs=("$LOGS"/{run,brief,review,tests,accept,rejected,check}-* "$LOGS"/start.txt*); shopt -u nullglob
+shopt -s nullglob; old_logs=("$LOGS"/{run,brief,review,tests,accept,rejected,check,size}-* "$LOGS"/start.txt*); shopt -u nullglob
 if [ ${#old_logs[@]} -gt 0 ]; then
     archive=$LOGS/archive/$(date +%F-%H%M%S)-$$; mkdir -p "$archive" && mv "${old_logs[@]}" "$archive/"
 fi
@@ -81,10 +81,11 @@ number_from() { # FILE PATTERN [GROUP]
     while IFS= read -r line; do [[ $line =~ $2 ]] && hit=${BASH_REMATCH[${3:-1}]}; done <"$1"
     echo "$hit"
 }
-# The plan as a section for prompts (empty if there is none)
+# The plan and the specification as sections for prompts (empty if there is none)
 plan_section() {
-    [ -n "$PLAN_FILE" ] || return 0
-    printf '\n\n## Plan being implemented (%s – read only, never change)\n%s\n' "$(basename "$PLAN_FILE")" "$(cat "$PLAN_FILE")"
+    [ -n "$PLAN_FILE" ] && printf '\n\n## Plan being implemented (%s – read only, never change)\n%s\n' "$(basename "$PLAN_FILE")" "$(cat "$PLAN_FILE")"
+    [ -n "$SPEC_FILE" ] && printf '\n\n## Specification (%s – read only, never change; the plan implements it, every acceptance example must hold)\n%s\n' "$(basename "$SPEC_FILE")" "$(cat "$SPEC_FILE")"
+    return 0
 }
 # The project's CLAUDE.md as a section for prompts (--safe-mode does not load it by itself)
 project_rules() {
@@ -208,8 +209,10 @@ interrupted() { # EXITCODE: Ctrl+C, kill or `autopilot stop --now` during a run
     exit "$1"
 }
 
-# Per-task brake that survives a restart: hash of the first open task line and its failed attempts.
-task_hash() { grep -m1 '^- \[ \]' "$TASKS_FILE" | hash_only | cut -c1-16; }
+# The next task's line (the first open one whose dependencies are done, see next_task); empty if none can start
+next_line() { local l; l=$(next_task "$TASKS_FILE"); [ -n "$l" ] && sed -n "${l}p" "$TASKS_FILE"; }
+# Per-task brake that survives a restart: hash of the next task line and its failed attempts.
+task_hash() { next_line | hash_only | cut -c1-16; }
 save_attempts() { echo "$(task_hash) $fails" >"$STATE/attempts"; }
 last_reason() { sed -n '1s/^The last attempt at this task was rejected. Reason: //p' "$FEEDBACK" 2>/dev/null; }
 
@@ -226,14 +229,10 @@ reject() { # BEFORE REASON [LOGFILE]: every rejection counts as a failed attempt
     case $2 in "aborted after"*) journal_run timeout; condense_lessons ;; "hit the per-call budget"*) journal_run "over budget"; condense_lessons ;; *) journal_run "rejected: $(shorten 120 <<<"$2")" ;; esac
 }
 
-first_open_as() { # MARK <task list: the list with the first open task marked [MARK]
-    awk -v m="$1" '!d && /^- \[ \]/ { sub(/^- \[ \]/, "- [" m "]"); d = 1 } 1'
-}
-
-block_task() { # REASON: mark the first open task as [~] so the loop can move on
-    local open_before line; open_before=$(open_tasks); line=$(grep -m1 '^- \[ \]' "$TASKS_FILE")
+block_task() { # REASON: mark the picked task (line $pick) as [~] so the loop can move on
+    local open_before line; open_before=$(open_tasks); line=$(sed -n "${pick}p" "$TASKS_FILE")
     echo "- $(date +%F), $(shorten 60 <<<"${line:6}"): $1" >>BLOCKED.md
-    block_first_open "$TASKS_FILE"
+    mark_line "$pick" '~' <"$TASKS_FILE" >"$TASKS_FILE.new" && mv "$TASKS_FILE.new" "$TASKS_FILE"
     [ "$(open_tasks)" -lt "$open_before" ] || { announce crit "Task could not be marked as blocked, stopped"; exit 1; }
     g add -A && g commit -q -m "Autopilot: blocked – $(shorten 100 <<<"$1")"
     note "Task blocked: $1"
@@ -241,6 +240,40 @@ block_task() { # REASON: mark the first open task as [~] so the loop can move on
     rm -f "$FEEDBACK"; fails=0; condense_lessons
 }
 
+# Size check (SIZE_CHECK=on), once per task line before its first attempt (.autopilot/sized holds the hashes): the
+# planner judges whether the picked task fits one run. If not, the script puts its parts in its place as N.1, N.2 …,
+# each with the task's "(after …)", and commits that; the parts are never checked again. Parts that drop the task's
+# check command, or a task without a number, stay as they are. → 0 split, 1 the task stays
+size_check() {
+    local line h a=$LOGS/size-$((i + 1)).txt num deps cmd parts n k=0 p re='Done when `([^`]+)`'
+    line=$(sed -n "${pick}p" "$TASKS_FILE"); h=$(hash_only <<<"$line" | cut -c1-16)
+    grep -qxF "$h" "$STATE/sized" 2>/dev/null && return 1
+    echo "$h" >>"$STATE/sized"
+    claude_run "$a" size --model "$PLANNER_MODEL" --allowedTools Read Grep Glob --json-schema "$SIZE_SCHEMA" <<<"$(cat "$TOOL_DIR/templates/SIZE.md")$(plan_section)$(project_rules)
+
+## Task list ($TASKS_FILE)
+$(cat "$TASKS_FILE")
+
+## The task to judge
+$line" >/dev/null
+    [ "$(answer_lines "$a" .fits)" = false ] || return 1
+    num=$(sed -nE 's/^- \[ \] ([0-9]+(\.[0-9]+)*)\..*/\1/p' <<<"$line")
+    deps=$(sed -nE 's/^- \[ \] [0-9.]+\. (\(after [0-9][0-9., ]*\)).*/\1/p' <<<"$line")
+    parts=$(answer_lines "$a" '.split[]?' | grep -E '^- \[ \] .*Done when' | head -5); n=$(grep -c . <<<"$parts")
+    [[ $line =~ $re ]] && cmd=${BASH_REMATCH[1]} || cmd=''
+    if [ -z "$num" ] || [ "$n" -lt 2 ]; then note "Size check: task ${num:-without a number} does not fit one run, but cannot be split (see $a) – it stays"; return 1; fi
+    if [ -n "$cmd" ] && [[ $(tail -1 <<<"$parts") != *"Done when \`$cmd\`"* ]]; then
+        note "Size check: task $num does not fit one run, but the parts drop its check command – it stays"; return 1; fi
+    while IFS= read -r p; do k=$((k + 1))  # the planner's own number and dependencies give way to N.k and the task's
+        p=$(sed -E 's/^- \[ \] ([0-9][0-9.]*\.[[:space:]]*)?(\(after [^)]*\)[[:space:]]*)?//' <<<"$p")
+        printf -- '- [ ] %s.%s. %s%s\n' "$num" "$k" "${deps:+$deps }" "$p"
+    done <<<"$parts" >"$a.parts"
+    while IFS= read -r p; do hash_only <<<"$p" | cut -c1-16; done <"$a.parts" >>"$STATE/sized"
+    awk -v l="$pick" -v f="$a.parts" 'NR == l { while ((getline x < f) > 0) print x; next } 1' "$TASKS_FILE" >"$TASKS_FILE.new" && mv "$TASKS_FILE.new" "$TASKS_FILE"
+    g add -- "$TASKS_FILE" && g commit -q --no-verify -m "Autopilot: split task $num" || { announce crit "Could not commit the split of task $num"; exit 1; }
+    note "Size check: task $num split into $n parts ($num.1 to $num.$n), no attempt used"
+    journal_add /dev/null "$JOURNAL" script "$(shorten 50 <<<"${line:6}")" "split into $n parts"
+}
 # The verdict of the reviewer's structured answer: "VERDICT: ACCEPT" or "VERDICT: REJECT: <reasons>" (empty without one)
 verdict_line() { # FILE
     case $(answer_lines "$1" '.verdict // empty') in
@@ -301,7 +334,7 @@ handover() { # OUTCOME REASON; OUTCOME is delivered|not-delivered|stopped|limit|
     { [ "$b" = "$BASE_BRANCH" ] || g merge-base --is-ancestor HEAD "$BASE_BRANCH" 2>/dev/null; } && merged=1
     [ -n "$merged" ] && [ "$b" != "$BASE_BRANCH" ] && where=$(main_worktree)  # merged: try it in the project folder
     built=$(g log --oneline "$BASE_BRANCH..HEAD" 2>/dev/null | cut_chars 1 100); [ -n "$built" ] || built=$(grep '^- \[x\]' "$TASKS_FILE")
-    case $2 in "merged into"*) head+=", $2" ;; "not merged"*) head+=" ($2)" ;; esac  # delivered: REASON is the merge state
+    case $2 in "merged into"*|"PR opened"*) head+=", $2" ;; "not merged"*) head+=" ($2)" ;; esac  # delivered: REASON is the merge state
     case $1 in
         delivered) if [ -n "$merged" ]; then next="try it (see above): the work is on $BASE_BRANCH"
                    else next="try it (see above), then adopt it: ${merge_cmd:-cd $(printf %q "$(main_worktree)") && git switch $(printf %q "$BASE_BRANCH") && git merge $(printf %q "$b")}"; fi ;;
@@ -332,8 +365,10 @@ handover() { # OUTCOME REASON; OUTCOME is delivered|not-delivered|stopped|limit|
         else echo "Demo: none (DEMO_CMD is not set in autopilot.conf)"; fi
         echo -n "Tests: $count0 -> $count passed, "; proof "$TEST_CMD" "$last_tests_rc" "$last_tests" 5
         [ -n "$ACCEPT_CMD" ] && echo "Acceptance: $acc0 -> $acc of ${target:-?}"
+        [ -n "$ci_red" ] && { echo; echo "## GitHub checks of the pull request (all of it: $STATE/ci.txt), last lines"; tail -20 "$STATE/ci.txt" | no_ansi; }
         echo; echo "## Open"
         grep '^- \[~\]' "$TASKS_FILE" || echo "no blocked tasks"
+        tasks_awk waiting "$TASKS_FILE"
         [ -s BLOCKED.md ] && { echo "Reasons (BLOCKED.md):"; tail -10 BLOCKED.md; }
         echo "Rejected runs this start: $rejected_n$( [ "$rejected_n" -gt 0 ] && echo " (diffs: $LOGS/rejected-*.patch)")"
         echo; echo "## Cost (all Claude calls of this project)"; cost_table "$COSTS"
@@ -342,6 +377,7 @@ handover() { # OUTCOME REASON; OUTCOME is delivered|not-delivered|stopped|limit|
         [ -s "$JOURNAL" ] && { echo; echo "## Log (last 10 entries, all of them: $JOURNAL)"; journal_tail "$JOURNAL" 10; }
         echo; echo "## Next step for you"; echo "$next"
     } >"$STATE/HANDOVER.md"
+    [ -n "${quiet:-}" ] && return 0  # only the text (the body of a pull request), no notification
     case $1 in delivered) notify ok "$head" ;; waiting) notify info "Waiting: $2" ;; *) notify warn "Not delivered: $2" ;; esac >/dev/null 2>&1 || true
 }
 finish() { # EXIT trap: an end that wrote no outcome itself (crit stop) is an error with the last history line
@@ -429,6 +465,7 @@ merge_into_base() {
     main=$(main_worktree); b=$(g branch --show-current)
     [ -n "$b" ] && [ "$b" != "$BASE_BRANCH" ] || return 0
     merge_cmd="cd $(printf %q "$main") && git switch $(printf %q "$BASE_BRANCH") && git merge $(printf %q "$b")"
+    [ "$MERGE" = pr ] && { open_pr "$b"; return 0; }
     if [ "$MERGE" = off ]; then why="MERGE=off"
     elif [ "$(g -C "$main" branch --show-current)" != "$BASE_BRANCH" ]; then why="$main is not on $BASE_BRANCH"
     elif [ -n "$(g -C "$main" status --porcelain)" ]; then why="$main has uncommitted changes"
@@ -440,6 +477,31 @@ merge_into_base() {
     elif ! out=$(g -C "$main" merge -q --ff-only "$b" 2>&1); then why="git merge --ff-only failed: $(tail -1 <<<"$out")"; fi
     if [ -z "$why" ]; then merge_note="Merged into $BASE_BRANCH (fast-forward) in $main."; note "$merge_note"; merge_state="merged into $BASE_BRANCH"
     else merge_note="Not merged: $why. Adopt it yourself: $merge_cmd"; [ "$MERGE" = off ] || merge_state="not merged: $(shorten 80 <<<"$why")"; fi
+}
+# MERGE=pr: push the work branch to origin and open a pull request against BASE_BRANCH (an open one is reused),
+# title from the plan's first heading, body the start of the handover. PR_WAIT=on waits up to 30 minutes for
+# its GitHub checks (output in $STATE/ci.txt); red sets $ci_red.
+open_pr() { # BRANCH
+    local out url rc title body=$STATE/pr-body.md
+    if ! out=$(g push -q origin "HEAD:refs/heads/$1" 2>&1); then
+        merge_note="Not pushed: git push origin $1 failed: $(tail -1 <<<"$out")"; merge_state="not merged: git push failed: $(tail -1 <<<"$out" | shorten 60)"; note "$merge_note"; return
+    fi
+    if ! url=$(gh pr view "$1" --json url -q .url 2>/dev/null) || [ -z "$url" ]; then
+        title=$(sed -n 's/^# *//p' "$PLAN_FILE" 2>/dev/null | head -1); title=${title:-Autopilot: $NAME}
+        merge_cmd='review and merge this pull request'; quiet=1 handover delivered "PR"; head -80 "$STATE/HANDOVER.md" >"$body"
+        if ! url=$(gh pr create --base "$BASE_BRANCH" --head "$1" --title "$title" --body-file "$body" 2>"$STATE/gh.txt"); then
+            merge_note="Pushed $1, but no pull request: gh pr create failed: $(tail -1 "$STATE/gh.txt")"; merge_state="not merged: gh pr create failed: $(tail -1 "$STATE/gh.txt" | shorten 60)"; note "$merge_note"; return
+        fi
+        url=$(tail -1 <<<"$url")
+    fi
+    merge_cmd="gh pr merge $url"; merge_state="PR opened: $url"
+    merge_note="Pushed $1 to origin, pull request against $BASE_BRANCH: $url"; note "$merge_note"
+    [ "$PR_WAIT" = on ] || return 0
+    note "Waiting for the GitHub checks of $url (at most 30 min) …"
+    with_timeout 30m gh pr checks "$url" --watch >"$STATE/ci.txt" 2>&1 & cmd=$!
+    wait "$cmd"; rc=$?; cmd=''
+    if [ "$rc" = 0 ] || grep -q 'no checks reported' "$STATE/ci.txt"; then note "GitHub checks green (or none)"; return 0; fi
+    ci_red="CI red: $url"; [ "$rc" = 124 ] && ci_red="CI checks not done after 30 minutes: $url"
 }
 # Milestones: "## Milestone N" headings of the plan; the current one and the commit it started at are in
 # .autopilot/milestone ("<n> <commit>", default: the first, started at BASE_BRANCH)
@@ -484,7 +546,10 @@ $(cat BLOCKED.md 2>/dev/null || echo –)
 $(tail -40 "$(ls -t "$LOGS"/accept-*.txt 2>/dev/null | head -1)" 2>/dev/null | no_ansi | grep . || echo 'no acceptance test')
 
 ## Demo at the end (DEMO_CMD)
-$(if [ -n "$demo_rc" ]; then proof "$DEMO_CMD" "$demo_rc" "$STATE/demo.txt" 40; else echo 'no demo ran'; fi)
+$(if [ -n "$demo_rc" ]; then proof "$DEMO_CMD" "$demo_rc" "$STATE/demo.txt" 40; else echo 'no demo ran'; fi)${ci_red:+
+
+## GitHub checks of the pull request ($ci_red), last lines
+$(tail -40 "$STATE/ci.txt" | no_ansi)}
 
 ## Your previous suggestion (do not repeat it, it did not reach the goal)
 $(cat "$LOGS/suggestion-prev.md" 2>/dev/null || echo –)${1:+
@@ -581,6 +646,13 @@ one_of FRESH_CHECK 'on|off' 'on or off'; one_of SECRETS_CHECK 'on|off' 'on or of
 for k in EFFORT_WORKER EFFORT_REVIEWER EFFORT_PLANNER EFFORT_LESSONS; do one_of "$k" 'low|medium|high|xhigh|max' 'low, medium, high, xhigh or max'; done
 one_of MAX_COST_PER_CALL_USD '[0-9]+(\.[0-9]+)?' 'a number, e.g. 2 or 0.5'
 one_of COOLDOWN '[0-9]+[smh]?' 'a duration like 10m, 600 or 1s'; one_of MILESTONE_GATE 'auto|ask' 'auto or ask'
+one_of SIZE_CHECK 'on|off' 'on or off'; one_of PR_WAIT 'on|off' 'on or off'
+# MERGE=pr pushes and opens a pull request at the end: find out now, not after all the runs, that it cannot
+if [ "$MERGE" = pr ]; then
+    command -v gh >/dev/null || { announce crit "MERGE=pr needs the GitHub CLI gh: $(install_hint gh), then gh auth login"; exit 1; }
+    gh auth status >/dev/null 2>&1 || { announce crit "MERGE=pr: gh is not logged in – run gh auth login"; exit 1; }
+    g remote get-url origin >/dev/null 2>&1 || { announce crit "MERGE=pr: no remote origin in $WORKDIR to push to – git remote add origin <url>"; exit 1; }
+fi
 bad=$(bad_patterns); [ -z "$bad" ] || { announce crit "$(echo $bad) in $CONF is not a valid regular expression (grep -E)"; exit 1; }
 f=$(missing_flags); [ -z "$f" ] || { announce crit "claude is too old for $f (needs Claude Code >= 2.1 with --safe-mode, --effort, --max-budget-usd and --json-schema): update it"; exit 1; }
 tools_cover_test_cmd || { announce crit "No Bash entry in WORKER_TOOLS covers the test command \"${TEST_CMD%% *} …\" in $CONF: the worker could never run it (e.g. 'Bash(${TEST_CMD%% *}:*)')"; exit 1; }
@@ -594,7 +666,7 @@ fi
 g var GIT_COMMITTER_IDENT >/dev/null 2>&1 || { announce crit "Git cannot commit in $WORKDIR: no identity. Set one: git config --global user.email you@example.org; git config --global user.name \"Your Name\""; exit 1; }
 
 i=0; acc=0; cost=0; worker=''; cmd=''; reason=''; rejected_n=0; demo_rc=''; verdict=''; jtask=''; api_waits=0
-merge_note=''; merge_cmd=''; merge_state=''; fresh_line=''; final_issues=''; fresh=''; fresh_out=''
+merge_note=''; merge_cmd=''; merge_state=''; fresh_line=''; final_issues=''; fresh=''; fresh_out=''; ci_red=''; pick=''
 ms_all=$([ -n "$PLAN_FILE" ] && milestones "$PLAN_FILE"); ms=''; ms_from=''; last_ms=1
 if [ -n "$ms_all" ]; then  # the current milestone: from .autopilot/milestone if it is one of the plan's, else the first
     read -r ms ms_from 2>/dev/null <"$STATE/milestone"
@@ -636,11 +708,11 @@ if [ "$FRESH_CHECK" != off ]; then
 fi
 announce info "Start: $count tests green${ACCEPT_CMD:+, Accept $acc of ${target:-?}}, at most $MAX_RUNS runs or $MAX_COST_USD USD, models $MODELS (planner $PLANNER_MODEL, worker $WORKER_MODEL, reviewer $REVIEWER_MODEL), sandbox ${sandbox:+on}${sandbox:-off}"
 
-# Brake of the first open task from the last start (same task: counter and feedback kept)
+# Brake of the next task from the last start (same task: counter and feedback kept)
 fails=0; last=''
 h=''; f=''; [ -r "$STATE/attempts" ] && read -r h f <"$STATE/attempts"
 if [ -n "$h" ] && [ "$h" = "$(task_hash)" ] && is_number "$f" && [ "$f" -gt 0 ]; then
-    fails=$f; last=$(grep -m1 '^- \[ \]' "$TASKS_FILE")
+    fails=$f; last=$(next_line)
     note "Same task as last time: $fails failed attempts so far – counter and feedback kept"
 else rm -f "$FEEDBACK"; fi
 waits=0; last_denied=''; loop_started=1
@@ -679,11 +751,23 @@ while :; do
             fi
             note "Fresh checkout: $fresh_line"
             merge_into_base; rm -f "$STATE/final-rounds"
+            if [ -n "$ci_red" ]; then  # PR_WAIT=on: red GitHub checks are handled like a red demo
+                note "$ci_red (see $STATE/ci.txt)"
+                [ "$PLANNER" = on ] && plan_more "$ci_red"
+                handover not-delivered "$ci_red"; exit 1
+            fi
             note "Goal reached: all tasks done${ACCEPT_CMD:+, Accept $acc of $target}, demo green${merge_state:+, $merge_state}."
             handover delivered "$merge_state"
         elif [ "$PLANNER" = on ]; then plan_more "No open tasks, Accept only $acc of ${target:-?}"
         else note "No open tasks left, Accept only $acc of ${target:-?}: new tasks needed"; handover not-delivered "Accept $acc of ${target:-?}, new tasks needed"; fi
         exit 0
+    fi
+    # The next task: the first open one whose dependencies ("(after N)") are done; none: they all wait on blocked ones
+    pick=$(next_task "$TASKS_FILE")
+    if [ -z "$pick" ]; then
+        w=$(tasks_awk waiting "$TASKS_FILE"); reason="$(open_tasks) open tasks wait on blocked tasks"
+        grep -q 'waiting on blocked task' <<<"$w" || reason="$(open_tasks) open tasks wait on each other (check their \"(after …)\")"
+        note "No task can start: $reason"; handover not-delivered "$reason"; exit 0
     fi
     [ "$fails" -ge "$ATTEMPTS" ] && { block_task "$fails failed attempts, last: $(last_reason | shorten 120)"; continue; }
     [ "$(grep -c '^- \[~\]' "$TASKS_FILE")" -ge "$MAX_BLOCKED" ] &&
@@ -692,9 +776,10 @@ while :; do
     spent=$(cost_sum "$COSTS" "$costs_from")
     awk -v s="$spent" -v m="$MAX_COST_USD" 'BEGIN { exit !(s >= m) }' &&
         { note "Cost cap reached: $spent USD"; handover limit "cost cap MAX_COST_USD=$MAX_COST_USD reached ($spent USD), $(open_tasks) tasks still open"; exit 0; }
+    [ "$SIZE_CHECK" = on ] && [ "$fails" = 0 ] && size_check && continue  # split: the loop picks its first part
 
     i=$((i + 1)); before=$(g rev-parse HEAD); cost=0; verdict=''
-    open_task=$(grep -m1 '^- \[ \]' "$TASKS_FILE"); jtask=$(shorten 50 <<<"${open_task:6}")
+    open_task=$(sed -n "${pick}p" "$TASKS_FILE"); jtask=$(shorten 50 <<<"${open_task:6}")
     # "Done when `<command>` …": the script runs that command after the run; it replaces "tests must rise"
     task_check=''; re='Done when `([^`]+)`'; [[ $open_task =~ $re ]] && task_check=${BASH_REMATCH[1]}
     [ "$open_task" != "$last" ] && { last=$open_task; fails=0; rm -f "$FEEDBACK"; }
@@ -706,7 +791,8 @@ while :; do
     prompt=${prompt//\{DECISIONS_FILE\}/"$DECISIONS_FILE"}
     prompt=${prompt//\{TEST_CMD\}/"$TEST_CMD"}
     prompt=${prompt//\{ACCEPT_CMD\}/"${ACCEPT_CMD:-(no acceptance test)}"}
-    prompt+=$'\n\n## This run\n'"Time budget: $WORKER_TIMEOUT, then the run is aborted and reset. Attempt $((fails + 1)) of at most $ATTEMPTS for this task (then it is blocked)."
+    prompt+=$'\n\n## This run\n'"Your task (the script picked it, line $pick of $TASKS_FILE): $open_task"
+    prompt+=$'\n'"Time budget: $WORKER_TIMEOUT, then the run is aborted and reset. Attempt $((fails + 1)) of at most $ATTEMPTS for this task (then it is blocked)."
     [ -n "$DEMO_CMD" ] && prompt+=$'\n'"Demo command (it must exit 0 once all tasks are done): $(run_hint "$DEMO_CMD" "demo command")"
     [ -n "$task_check" ] && prompt+=$'\n'"Check command of this task (it must exit 0): $(run_hint "$task_check" "check command")"
     prompt+=$(project_rules)
@@ -779,10 +865,10 @@ while :; do
     if [ -z "$task" ]; then
         reject "$before" "no task ticked off or blocked (rc $rc)${denied:+; denied tool calls: $denied}" "$LOGS/run-$i.txt"; continue
     fi
-    # The only allowed change to the task list: the first open task ticked off [x] or blocked [~]
+    # The only allowed change to the task list: the task picked for this run (line $pick) ticked off [x] or blocked [~]
     old_tasks=$(g show "$before:$TASKS_FILE"); now_tasks=$(cat "$TASKS_FILE")
-    if [ "$now_tasks" != "$(first_open_as x <<<"$old_tasks")" ] && [ "$now_tasks" != "$(first_open_as '~' <<<"$old_tasks")" ]; then
-        reject "$before" "task list changed beyond ticking off or blocking the first open task (only [ ] -> [x] or [~] of that line is allowed)"; continue
+    if [ "$now_tasks" != "$(mark_line "$pick" x <<<"$old_tasks")" ] && [ "$now_tasks" != "$(mark_line "$pick" '~' <<<"$old_tasks")" ]; then
+        reject "$before" "task list changed beyond ticking off or blocking the task picked for this run (only [ ] -> [x] or [~] of line $pick is allowed)"; continue
     fi
     # Blocking means giving up: nothing but the task list, BLOCKED.md and the decisions may change
     if [[ $task == '[~]'* ]] && extra=$(changed | grep -vxF -e "$TASKS_FILE" -e BLOCKED.md -e "$DECISIONS_FILE") && [ -n "$extra" ]; then

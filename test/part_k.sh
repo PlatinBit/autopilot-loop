@@ -137,6 +137,7 @@ EOF
 pk_k5() {
     b_project "$T/pk5" <<'EOF'
 TEST_CMD='bash check.sh'
+SIZE_CHECK=off
 EOF
     printf -- '- [ ] 3. three\n' >>TASKS.md && git commit -qam three || fail "K5: setup failed"
     echo 2 >"$FAKE_DIR/api-errors"   # worker run 1 twice, then the reviewer of run 1 once
