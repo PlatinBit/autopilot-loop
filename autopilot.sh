@@ -993,7 +993,7 @@ wave() {
 # Other 0.8 settings: refused where the owner relied on them for a check or for control (ignoring them would
 # silently drop it), only a warning where nothing is lost (the brake has a default, the acceptance output is read directly)
 gone=$(compgen -v | grep -E '^(SUPERVISED|SMOKE_TEST_CMD|SMOKE_TEST_EVERY|IMAGE_REVIEW_[A-Z_]*|LICENCE_[A-Z_]*|REPORT_MODEL)$')
-[ -z "$gone" ] || { announce crit "$(echo $gone) in $CONF: gone since 0.9 – put a real run (smoke test, image review) into DEMO_CMD and delete the rest (README: Upgrading from 0.8), then: autopilot trust"; exit 1; }
+[ -z "$gone" ] || { announce crit "$(echo $gone) in $CONF: gone since 0.9 – put a real run (smoke test, image review) into DEMO_CMD and delete the rest (docs/REFERENCE.md: Upgrading from 0.8), then: autopilot trust"; exit 1; }
 [ -n "${STALL_WARN_AFTER+x}" ] && announce warn "STALL_WARN_AFTER in $CONF is ignored since 0.9: rename it to NO_PROGRESS (default 10)"
 [ -n "${ACCEPT_LIST_CMD+x}" ] && announce warn "ACCEPT_LIST_CMD in $CONF is ignored since 0.9: worker and reviewer read the acceptance output itself; delete it"
 # Settings with a fixed form: a typo must not become an endless loop, a silent off or a crash in the middle of the loop
