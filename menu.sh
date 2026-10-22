@@ -107,7 +107,7 @@ status_short() { # one line per project in running/ (the Claude Code status line
         [ -s "$st/info" ] || { rm -f "$f"; continue; }  # project gone
         load "$st"
         if lock_alive "$st"; then
-            echo "Autopilot $name: run ${run:-0}/$(info "$st" MAX_RUNS)${acc:+ · $acc} · $spent USD$( [ -e "$st/STOP" ] && echo ' · stops after this run')"
+            echo "Autopilot $name: run ${run:-0}/$(info "$st" MAX_RUNS)$( [ -s "$st/wave" ] && echo " · wave of $(grep -c . "$st/wave")")${acc:+ · $acc} · $spent USD$( [ -e "$st/STOP" ] && echo ' · stops after this run')"
         else
             o=$(outcome_text "$st")
             echo "Autopilot $name ended: ${o:-no result (see autopilot status)} - ${n_done:-?} done, ${n_blocked:-?} blocked, tests ${t0:-?} -> ${t1:-?}, $spent USD"
@@ -124,6 +124,7 @@ status() {
     load "$st"
     if lock_alive "$st"; then
         echo "Status:      running – run ${run:-0} of at most $(info "$st" MAX_RUNS), $spent of at most $(info "$st" MAX_COST_USD) USD$( [ -e "$st/STOP" ] && echo ' (stops after this run)')"
+        [ -s "$st/wave" ] && { echo "Wave:        $(grep -c . "$st/wave") workers at the same time (PARALLEL)"; cut_chars 1 90 <"$st/wave" | sed 's/^/             /'; }
     else
         o=$(outcome_text "$st"); echo "Status:      off"
         echo "Outcome:     ${o:-none (the start ended early, see the events below)}"

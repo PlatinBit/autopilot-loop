@@ -12,7 +12,7 @@ ln -s "$TOOL_DIR/test/fake-claude" "$T/bin/claude"
 # notify-send stub: the default notify() must never pop real desktop notifications during the test;
 # it appends its arguments to $NOTIFY_LOG (part_g reads that).
 printf '#!/bin/bash\necho "$*" >>"${NOTIFY_LOG:-/dev/null}"\n' >"$T/bin/notify-send" && chmod +x "$T/bin/notify-send"
-unset AUTOPILOT_CONF MAX_RUNS MAX_COST_USD ATTEMPTS MAX_BLOCKED NO_PROGRESS MAX_COST_PER_CALL_USD COOLDOWN EFFORT_WORKER EFFORT_REVIEWER EFFORT_PLANNER EFFORT_LESSONS  # e.g. inherited from a running autopilot
+unset AUTOPILOT_CONF MAX_RUNS MAX_COST_USD ATTEMPTS MAX_BLOCKED NO_PROGRESS MAX_COST_PER_CALL_USD COOLDOWN EFFORT_WORKER EFFORT_REVIEWER EFFORT_PLANNER EFFORT_LESSONS PARALLEL  # e.g. inherited from a running autopilot
 # SANDBOX=off unless a test asks for the sandbox (SANDBOX= in its conf): the results must not depend on bwrap
 export PATH="$T/bin:$PATH" XDG_CONFIG_HOME="$T/config" FAKE_DIR="$T/fake" AUTOPILOT_LIMIT_WAIT=0 SANDBOX=off
 new_round() { rm -rf "$FAKE_DIR"; mkdir -p "$FAKE_DIR/steps"; }
@@ -609,4 +609,5 @@ cd "$T" || exit 1
 . "$TOOL_DIR/test/part_j.sh"
 . "$TOOL_DIR/test/part_k.sh"
 . "$TOOL_DIR/test/part_l.sh"
+. "$TOOL_DIR/test/part_m.sh"
 echo ok

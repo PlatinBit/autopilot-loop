@@ -126,7 +126,7 @@ The project is `./autopilot.conf` (or one in a folder above, up to the Git root)
 | 1 | `TEST_CMD` | builds and runs all tests, exit 0 = green; its output has a count line (`TEST_COUNT_REGEX`, default `^TESTS: ([0-9]+)`) that must never drop and must rise with every task that names no [check command](#check-command-per-task) of its own |
 | 2 | `DEMO_CMD` | uses the finished result like you would, exit 0 = it works. Without it the start only warns, and the end is always "not delivered: no demo". One plain command without `&&`, `|`, `;` or redirections, so `plan accept` can let the worker run it; several steps go into a script in the repo, e.g. `bash demo.sh`. The worker prompt offers the demo and a task's check command only when a `WORKER_TOOLS` entry covers exactly that command |
 
-Everything else has a default; [`templates/autopilot.conf`](templates/autopilot.conf) documents each one, [`examples/gradle.conf`](examples/gradle.conf) shows a Gradle project. The start refuses a value of the wrong form (`MAX_RUNS`, `ATTEMPTS`, `MAX_BLOCKED`, `NO_PROGRESS` a whole number, `MAX_COST_USD` a number, `FRESH_CHECK`/`SECRETS_CHECK`/`SIZE_CHECK`/`PR_WAIT` `on` or `off`, `MERGE` `ff`, `off` or `pr`, `SANDBOX` empty, `on` or `off`, `EFFORT_*` `low`, `medium`, `high`, `xhigh` or `max`, `MAX_COST_PER_CALL_USD` a number, `COOLDOWN` a duration like `10m`, `MILESTONE_GATE` `auto` or `ask`). The most useful ones:
+Everything else has a default; [`templates/autopilot.conf`](templates/autopilot.conf) documents each one, [`examples/gradle.conf`](examples/gradle.conf) shows a Gradle project. The start refuses a value of the wrong form (`MAX_RUNS`, `ATTEMPTS`, `MAX_BLOCKED`, `NO_PROGRESS` a whole number, `MAX_COST_USD` a number, `FRESH_CHECK`/`SECRETS_CHECK`/`SIZE_CHECK`/`PR_WAIT` `on` or `off`, `MERGE` `ff`, `off` or `pr`, `SANDBOX` empty, `on` or `off`, `EFFORT_*` `low`, `medium`, `high`, `xhigh` or `max`, `MAX_COST_PER_CALL_USD` a number, `COOLDOWN` a duration like `10m`, `MILESTONE_GATE` `auto` or `ask`, `PARALLEL` 1 to 4). The most useful ones:
 
 | No. | Setting | Default | Meaning |
 |---|---|---|---|
@@ -150,6 +150,7 @@ Everything else has a default; [`templates/autopilot.conf`](templates/autopilot.
 | 18 | `MILESTONE_GATE` | `auto` | `ask`: after a milestone the next one's tasks wait as a suggestion, the outcome is `waiting`; `autopilot plan accept`, then `autopilot start` goes on |
 | 19 | `SIZE_CHECK` | `on` (`off` with `MODELS=cheap`) | before a task's first attempt a short planner call (kind `size`) judges whether it fits one run; if not, the script puts 2–5 parts in its place, see [Size check](#size-check) |
 | 20 | `PR_WAIT` | `off` | with `MERGE=pr`: wait up to 30 minutes for the GitHub checks of the pull request; red = not delivered |
+| 21 | `PARALLEL` | 1 | up to 4 workers at the same time on independent tasks, each in its own worktree; cost about ×N, see [Parallel workers](#parallel-workers) |
 
 ## What you get at the end
 
@@ -182,6 +183,18 @@ With `SIZE_CHECK=on` (default, except `MODELS=cheap`) a short planner call ([`te
 ## Pull request mode
 
 **`MERGE=pr` pushes your code to a remote: an action outside this machine.** When the result is delivered, the script pushes the work branch to `origin` (`git push origin HEAD:refs/heads/<branch>`, no force) and opens a pull request against `BASE_BRANCH` with `gh pr create` (title: the plan's first heading, body: the first 80 lines of the handover), or reuses the one already open for the branch. The outcome reads "delivered, PR opened: <url>", the handover names `gh pr merge <url>`. With `PR_WAIT=on` it then waits up to 30 minutes for the checks (`gh pr checks --watch`): red (or not done in time) is "not delivered: CI red: <url>" with the output in the handover (`.autopilot/ci.txt`), and with `PLANNER=on` the planner gets that output like a red demo. The start refuses `MERGE=pr` unless `gh` is installed and logged in (`gh auth status`) and the work directory has a remote `origin`; `doctor` shows the same. Default stays `MERGE=ff`, which never leaves the machine.
+
+## Parallel workers
+
+**`PARALLEL=N` (2 to 4) runs up to N workers at the same time: the cost per wave is about N times a run, and tasks that touch the same lines conflict.** Use it only for tasks that are really independent, with their dependencies written in the plan (`(after …)`); the default `PARALLEL=1` is the serial loop, unchanged.
+
+A wave takes up to N tasks that can start now (open, dependencies done; so none of them waits on another) and that were not rejected before. Size check and brief run first, one task after the other. Each worker then works in its own temporary worktree of HEAD (`git worktree add --detach`, its working directory: relative `WORKER_TOOLS` entries like `Bash(./gradlew:*)` and `sandbox-run` act there, `.git` stays read-only in the sandbox) with its own prompt and its own entry in the journal. When all are done, the script merges them strictly one by one in task order: the worker's diff against the wave's start is applied to the current HEAD (`git apply --3way`), then the whole check chain runs on the merged state – allowed paths, locked files, task list, tests and the task's check command, acceptance test, secrets, reviewer (with this task's diff and the test output after the merge) – and only then the commit. A rejection resets only that change; the others stay.
+
+- The task list never comes from a worker: its own line ticked off (`[x]`) or blocked (`[~]`) in its copy is required as before, any other change to the list is rejected; the script then sets that mark itself. Lines a worker only appends to the decisions file or `BLOCKED.md` are appended to the current file, so workers that each note a decision do not conflict.
+- A conflict is no failed attempt: the task gets "conflict with parallel task N, retry on the new base" with its diff as feedback, and is tried again in a later wave or alone; after 2 conflicts only alone. A task rejected in a wave goes on alone with its attempt counted and its feedback (`.autopilot/pending/`, survives a restart).
+- `MAX_RUNS` counts every worker; before a wave the script checks that N more workers at the mean worker cost so far fit into what is left of `MAX_COST_USD`, otherwise the wave is smaller ("Cost cap: … wave of k"); a wave of 1 is the serial run. A usage limit or API error of a worker counts no attempt; the wave is merged, then the loop waits.
+- `status` (and `--watch`) shows the running wave, `status --short` "wave of N"; `stop --now` ends all workers and removes all temporary worktrees, the handover names the discarded wave. Lessons are condensed once after the wave.
+- Workers start from a fresh checkout without ignored files (`node_modules/`, build caches), like the fresh check; their test calls are slower or need those tools elsewhere.
 
 ## Check command per task
 
@@ -228,6 +241,7 @@ In Claude Code the status line shows each running project; when one ends, a toas
 | 3 | Cost | caps per start; with a subscription the loop pauses at the usage limit; `status` shows cost and tokens per kind |
 | 4 | Claude Code refuses every write below `~/.claude/` | keep projects elsewhere; `plan accept` refuses such a work directory, `doctor` warns |
 | 5 | Tasks of the next milestone, of the final review and the parts of a split task are added without your OK, and their check commands run like `TEST_CMD` | milestone tasks are drafted from the locked plan, final-review tasks from the final reviewer's reading of the change (at most 5, two rounds), parts must keep the split task's check command; read the journal and `git log`; the run caps still apply; `SIZE_CHECK=off` turns splitting off |
+| 6 | `PARALLEL` > 1: workers in a wave do not see each other's changes | only independent tasks with dependencies in the plan; conflicts are retried on the new base, at most twice, then alone |
 
 ## Upgrading from 0.9
 

@@ -50,6 +50,7 @@ PLANNER=on
 MERGE=ff
 PR_WAIT=off
 SIZE_CHECK=''           # empty: on, off with MODELS=cheap
+PARALLEL=${PARALLEL:-1}
 FRESH_CHECK=on
 SECRETS_CHECK=on
 PLAN_FILE=''

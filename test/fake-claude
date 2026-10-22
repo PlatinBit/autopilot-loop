@@ -7,7 +7,7 @@
 # into the structured answer of --json-schema: task lines, "NOT REACHABLE: …", "FINAL: OK", did:/problem:/hint: lines),
 # garbage (raw non-JSON output for the setup call), review-sleep (seconds the reviewer
 # waits before answering), limit.txt (every call answers with this usage-limit error), budget/<n> (worker run n
-# stops at the per-call budget), api-errors (the next N calls end with an overloaded API error).
+# stops at the per-call budget), api-errors (the next N calls end with an overloaded API error), steps/t<N>.sh (task N, see below).
 # Every call appends "<role> env=<CLAUDE_CODE_EFFORT_LEVEL or unset> <arguments>" to args.
 # Every answer costs 0.01 USD and 100/1000/10 tokens.
 d=$FAKE_DIR
@@ -71,7 +71,13 @@ case "$prompt" in
     *"You are writing a specification"*) role=spec; printf '%s\n' "$prompt" >"$d/spec-prompt"; answer "$(cat "$d/spec.txt")" ;;
     *"You are turning a rough idea"*) role=plan; printf '%s\n' "$prompt" >"$d/idea-prompt"; answer "$(cat "$d/idea.txt")" ;;
     *"You are writing the brief"*) role=brief; count brief-nr >/dev/null; printf '%s\n' "$prompt" >"$d/brief-prompt"; answer "BRIEF: reuse check.sh, add one check line" ;;
-    *)  n=$(count step-nr); printf '%s\n' "$prompt" >"$d/last-prompt"
+    # steps/t<N>-<k>.sh: the k-th run of task N, steps/t<N>.sh: every run of it (parallel workers, whatever their order);
+    # otherwise steps/<n>.sh for the n-th worker run. prompt-t<N>: the last prompt for task N.
+    *)  t=$(sed -nE 's/^Your task \(the script picked it, line [0-9]+ of .*\): - \[ \] ([0-9][0-9.]*)\..*/\1/p' <<<"$prompt" | head -1)
+        if [ -n "$t" ] && compgen -G "$d/steps/t$t[-.]*" >/dev/null; then
+            k=$(count "task-$t-nr"); n=t$t-$k; [ -f "$d/steps/$n.sh" ] || [ ! -f "$d/steps/t$t.sh" ] || cp "$d/steps/t$t.sh" "$d/steps/$n.sh"; printf '%s\n' "$prompt" >"$d/prompt-t$t"
+        else n=$(count step-nr); fi
+        printf '%s\n' "$prompt" >"$d/last-prompt"
         grep -q "## Feedback on the previous attempt" <<<"$prompt" && echo "$n" >>"$d/with-feedback"
         grep -q "## Plan being implemented" <<<"$prompt" && echo "$n" >>"$d/with-plan"
         grep -q "DECISIONS.md" <<<"$prompt" && echo "$n" >>"$d/with-decisions"

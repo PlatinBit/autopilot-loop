@@ -117,6 +117,7 @@ journal_run() { # RESULT: the worker's entry for this run, then the reviewer's i
 # 15 rules) keeps the old file; lines "- [removed by owner] …" always stay, taken from the old file.
 condense_lessons() {
     local a=$LOGS/lessons.txt removed new
+    [ -n "$in_wave" ] && { lessons_due=1; return 0; }  # a wave condenses once after its last merge
     removed=$(grep '^- \[removed by owner\]' "$LESSONS" 2>/dev/null)
     claude_run "$a" lessons --model "$PLANNER_MODEL" --allowedTools Read Grep Glob <<<"$(cat "$TOOL_DIR/templates/LESSONS.md")
 
@@ -200,6 +201,7 @@ interrupted() { # EXITCODE: Ctrl+C, kill or `autopilot stop --now` during a run
     trap '' INT TERM HUP
     cd "$ROOT" || exit 1  # the fresh checkout may be the current directory
     [ -n "${worker:-}" ] && kill_tree "$worker"
+    for p in ${wave_pids[@]+"${wave_pids[@]}"}; do kill_tree "$p"; done  # the workers of a wave
     [ -n "${cmd:-}" ] && kill_tree "$cmd"  # a running test, acceptance or demo command
     wait 2>/dev/null
     restore HEAD  # not "$before": a commit made in this run (e.g. block_task) must survive
@@ -213,7 +215,7 @@ interrupted() { # EXITCODE: Ctrl+C, kill or `autopilot stop --now` during a run
 next_line() { local l; l=$(next_task "$TASKS_FILE"); [ -n "$l" ] && sed -n "${l}p" "$TASKS_FILE"; }
 # Per-task brake that survives a restart: hash of the next task line and its failed attempts.
 task_hash() { next_line | hash_only | cut -c1-16; }
-save_attempts() { echo "$(task_hash) $fails" >"$STATE/attempts"; }
+save_attempts() { [ -n "$in_wave" ] || echo "$(task_hash) $fails" >"$STATE/attempts"; }  # a wave keeps its own in pending/
 last_reason() { sed -n '1s/^The last attempt at this task was rejected. Reason: //p' "$FEEDBACK" 2>/dev/null; }
 
 reject() { # BEFORE REASON [LOGFILE]: every rejection counts as a failed attempt of the task
@@ -370,6 +372,7 @@ handover() { # OUTCOME REASON; OUTCOME is delivered|not-delivered|stopped|limit|
         grep '^- \[~\]' "$TASKS_FILE" || echo "no blocked tasks"
         tasks_awk waiting "$TASKS_FILE"
         [ -s BLOCKED.md ] && { echo "Reasons (BLOCKED.md):"; tail -10 BLOCKED.md; }
+        [ -s "$STATE/wave" ] && { echo "Wave running at the end (discarded, PARALLEL=$PARALLEL):"; cat "$STATE/wave"; }
         echo "Rejected runs this start: $rejected_n$( [ "$rejected_n" -gt 0 ] && echo " (diffs: $LOGS/rejected-*.patch)")"
         echo; echo "## Cost (all Claude calls of this project)"; cost_table "$COSTS"
         [ -s "$LESSONS" ] && { echo; echo "## Lessons learned ($LESSONS)"; cat "$LESSONS"; }
@@ -386,6 +389,7 @@ finish() { # EXIT trap: an end that wrote no outcome itself (crit stop) is an er
         save_attempts
     fi
     [ -n "${fresh:-}" ] && { g -C "$ROOT" worktree remove --force "$fresh/w" >/dev/null 2>&1; rm -rf "$fresh"; g -C "$ROOT" worktree prune; }
+    wave_end
     rm -f "$STATE/STOP"; rm -rf "$lock"
 }
 trap 'finish' EXIT  # handover for an end not handled explicitly, attempts saved, STOP and lock removed
@@ -628,6 +632,276 @@ changed_submodules() {
         awk -F'\t' '$1 ~ /^:(160000 [0-7]+|[0-7]+ 160000) / {print $2}'
 }
 
+# --- One worker run: its prompt and the script checks after it (the serial loop and every worker of a wave) ---
+# The prompt for the task $open_task (line $pick) in $prompt
+worker_prompt() {
+    prompt=$(cat "$PROMPT_FILE")
+    # Quoted replacements: taken literally (no & from bash 5.2 patsub_replacement, no backslash handling)
+    prompt=${prompt//\{TASKS_FILE\}/"$TASKS_FILE"}
+    prompt=${prompt//\{DECISIONS_FILE\}/"$DECISIONS_FILE"}
+    prompt=${prompt//\{TEST_CMD\}/"$TEST_CMD"}
+    prompt=${prompt//\{ACCEPT_CMD\}/"${ACCEPT_CMD:-(no acceptance test)}"}
+    prompt+=$'\n\n## This run\n'"Your task (the script picked it, line $pick of $TASKS_FILE): $open_task"
+    prompt+=$'\n'"Time budget: $WORKER_TIMEOUT, then the run is aborted and reset. Attempt $((fails + 1)) of at most $ATTEMPTS for this task (then it is blocked)."
+    [ -n "$DEMO_CMD" ] && prompt+=$'\n'"Demo command (it must exit 0 once all tasks are done): $(run_hint "$DEMO_CMD" "demo command")"
+    [ -n "$task_check" ] && prompt+=$'\n'"Check command of this task (it must exit 0): $(run_hint "$task_check" "check command")"
+    prompt+=$(project_rules)
+    [ -s "$FEEDBACK" ] && prompt+=$'\n\n## Feedback on the previous attempt\n'"$(cat "$FEEDBACK")"
+    # Brief (MODELS=cheap only): the planner plans the task with the whole plan, the haiku worker implements it.
+    # Otherwise the worker gets the plan itself and reads the code on its own (a brief costs more than it saves).
+    brief_ok=''
+    if [ "$MODELS" = cheap ]; then
+        brief=$(cat "$BRIEF_FILE"; plan_section; project_rules; printf '\n\n## Task\n%s\n' "$open_task"
+                [ -s "$FEEDBACK" ] && { printf '\n## Feedback on the previous attempt\n'; cat "$FEEDBACK"; }; memory brief)
+        if claude_run "$LOGS/brief-$i.txt" brief --model "$PLANNER_MODEL" --allowedTools Read Grep Glob <<<"$brief" >/dev/null &&
+           [ -s "$LOGS/brief-$i.txt" ]; then
+            brief_ok=1; prompt+=$'\n\n## Brief from the planner\n'"$(strip_note "$LOGS/brief-$i.txt")"
+        else note "Run $i: no brief from the planner ($PLANNER_MODEL), the worker gets the plan instead"; fi
+        journal_add "$LOGS/brief-$i.txt" "$JOURNAL" brief "$jtask" "$([ -n "$brief_ok" ] && echo written || echo failed)"
+    fi
+    [ -n "$brief_ok" ] || prompt+=$(plan_section)
+    prompt+=$(memory worker)
+}
+# Tool calls Claude Code refused in run $i: name them per tool, otherwise a run without e.g. the build command only
+# ends in a time-out with no visible reason.
+denied_check() {
+    denied=$(jq -r '[.permission_denials[]? |
+        if .tool_name == "Bash" then "Bash `\(.tool_input.command // "?")` (not covered by WORKER_TOOLS)"
+        elif (.tool_name | test("^(Edit|Write|MultiEdit|NotebookEdit)$")) then
+            "\(.tool_name) \(.tool_input.file_path // .tool_input.notebook_path // "?") (Claude Code refused the write: outside the work directory, below ~/.claude or a protected path)"
+        else "\(.tool_name) (not in WORKER_TOOLS)" end] | unique | .[:3] | join(" | ")' \
+        "$LOGS/run-$i.txt.json" 2>/dev/null | tr '\n' ' ' | sed 's/ *$//' | shorten 400)
+    [ -n "$denied" ] && { last_denied=$denied; note "Run $i: tool calls denied: $denied"; }
+}
+# The checks of the staged change of run $i against $before, then the reviewer and the commit. → 0 committed,
+# 1 rejected (reject: reset to $before, feedback, the attempt counts)
+check_run() {
+    # Script checks: only green, not weakened work in allowed paths counts.
+    g add -A
+    task=$(g diff --cached --no-ext-diff -U0 -- "$TASKS_FILE" | grep -m1 '^+- \[[x~]\]' | cut -c4- | shorten 90)
+    if [ "$rc" -eq 124 ]; then
+        # Time limit: say so, with what was refused (this run has no readable answer, so the last one that had)
+        reject "$before" "aborted after $WORKER_TIMEOUT (time limit): work smaller, or block early with [~]${last_denied:+; denied tool calls from the last readable run: $last_denied}" "$LOGS/run-$i.txt"
+        return 1
+    fi
+    if [ "$rc" -ne 0 ] && over_budget "$LOGS/run-$i.txt"; then
+        reject "$before" "hit the per-call budget (MAX_COST_PER_CALL_USD=$MAX_COST_PER_CALL_USD): work smaller, or block early with [~]" "$LOGS/run-$i.txt"; return 1
+    fi
+    if [ -z "$task" ]; then
+        reject "$before" "no task ticked off or blocked (rc $rc)${denied:+; denied tool calls: $denied}" "$LOGS/run-$i.txt"; return 1
+    fi
+    # The only allowed change to the task list: the task picked for this run (line $pick) ticked off [x] or blocked [~]
+    old_tasks=$(g show "$before:$TASKS_FILE"); now_tasks=$(cat "$TASKS_FILE")
+    if [ "$now_tasks" != "$(mark_line "$pick" x <<<"$old_tasks")" ] && [ "$now_tasks" != "$(mark_line "$pick" '~' <<<"$old_tasks")" ]; then
+        reject "$before" "task list changed beyond ticking off or blocking the task picked for this run (only [ ] -> [x] or [~] of line $pick is allowed)"; return 1
+    fi
+    # Blocking means giving up: nothing but the task list, BLOCKED.md and the decisions may change
+    if [[ $task == '[~]'* ]] && extra=$(changed | grep -vxF -e "$TASKS_FILE" -e BLOCKED.md -e "$DECISIONS_FILE") && [ -n "$extra" ]; then
+        reject "$before" "code changed while blocking the task: revert your code changes before blocking ($(echo $extra | shorten 120))"; return 1
+    fi
+    subs=$(changed_submodules)
+    if [ -n "$subs" ]; then reject "$before" "change inside a submodule: $(echo $subs)"; return 1; fi
+    # Task list, BLOCKED.md and the decisions are always allowed; ALLOWED (if set) is the rest, otherwise
+    # everything except the files that control the test command.
+    if [ -n "$ALLOWED" ]; then
+        foreign=$(changed | grep -vxF -e "$TASKS_FILE" -e BLOCKED.md -e "$DECISIONS_FILE" | grep -Ev -- "$ALLOWED")
+        [ $? -le 1 ] || { reject "$before" "ALLOWED check failed (invalid pattern?)"; return 1; }
+        if [ -n "$foreign" ]; then reject "$before" "change outside allowed paths: $(echo $foreign)"; return 1; fi
+    else
+        foreign=$( { changed | grep -E -- "$TEST_CONTROL"; [ ${#cmd_files[@]} = 0 ] || changed | grep -xF "${cmd_files[@]/#/-e}"; } | sort -u)
+        if [ -n "$foreign" ]; then reject "$before" "change to a file that controls the test command: $(echo $foreign) (allow it through ALLOWED in autopilot.conf)"; return 1; fi
+    fi
+    locked=$( { changed | grep -E "$ALWAYS_LOCKED"
+                for p in ${LOCKED[@]+"${LOCKED[@]}"}; do changed "$p"; done; } | sort -u)
+    if [ -n "$locked" ]; then reject "$before" "locked file changed: $(echo $locked)"; return 1; fi
+    links=$(outside_links)
+    if [ -n "$links" ]; then reject "$before" "symlink pointing outside the work directory: $(echo $links)"; return 1; fi
+    added=$(g diff --cached --no-ext-diff --no-renames -U0 -- . ":(exclude)$TASKS_FILE" ":(exclude)BLOCKED.md" ":(exclude)$DECISIONS_FILE" |
+        grep '^+' | grep -v '^+++' | sed 's/^+//')
+    if [ "$SECRETS_CHECK" != off ] && grep -qE -- "$SECRETS" <<<"$added"; then
+        reject "$before" "added line looks like a secret (AWS key, private key or a long password/secret/token/api_key literal): keep secrets out of the code (a false alarm: SECRETS_CHECK=off)"; return 1
+    fi
+    if [ -n "$FORBIDDEN_CONTENT" ]; then
+        grep -qE -- "$FORBIDDEN_CONTENT" <<<"$added"; r=$?  # 1 = no hit; 0 = hit, 2 = check failed: both reject
+        [ "$r" = 1 ] || { reject "$before" "forbidden content added or check failed (pattern: $FORBIDDEN_CONTENT)"; return 1; }
+    fi
+    # New code that prints the count line itself could fake the check (pattern without ^/$, because in code
+    # the line sits in the middle of a print/echo). Documentation is not run, so it may quote the line.
+    fake_t=${TEST_COUNT_REGEX#^}; fake_t=${fake_t%\$}; fake_a=${ACCEPT_REGEX#^}; fake_a=${fake_a%\$}
+    code=$(g diff --cached --no-ext-diff --no-renames -U0 -- . ":(exclude)$TASKS_FILE" ":(exclude)BLOCKED.md" ":(exclude)$DECISIONS_FILE" \
+        ":(exclude)*.md" ":(exclude)*.rst" | grep '^+' | grep -v '^+++' | sed 's/^+//')
+    hit=$( { [ -z "$TEST_COUNT_CMD" ] && grep -m1 -E "$fake_t" <<<"$code"; } || { [ -n "$ACCEPT_CMD" ] && grep -m1 -E "$fake_a" <<<"$code"; } )
+    if [ -n "$hit" ]; then
+        reject "$before" "new code contains the count line of the test command or acceptance test (could fake the result): $hit"; return 1
+    fi
+    run_tests "$LOGS/tests-$i.txt" || { reject "$before" "tests hit the time limit (TEST_TIMEOUT=$TEST_TIMEOUT)" "$LOGS/tests-$i.txt"; return 1; }
+    new=$tests_n
+    if [ -z "$new" ]; then reject "$before" "tests red or without a readable number" "$LOGS/tests-$i.txt"; return 1; fi
+    if [ "$new" -lt "$count" ]; then reject "$before" "tests dropped from $count to $new"; return 1; fi
+    ticked=$(( $(grep -c '^- \[x\]' "$TASKS_FILE") - $(g show "$before:$TASKS_FILE" | grep -c '^- \[x\]') ))
+    if [ "$ticked" -gt 0 ] && [ -n "$task_check" ]; then
+        run_cmd "$task_check" >"$LOGS/check-$i.txt" 2>&1; crc=$?
+        [ "$crc" = 0 ] || { reject "$before" "the task's check \`$task_check\` failed (exit code $crc)" "$LOGS/check-$i.txt"; return 1; }
+    elif [ "$ticked" -gt 0 ] && [ "$new" -le "$count" ]; then reject "$before" "task ticked off without a new test"; return 1; fi
+    run_accept "$LOGS/accept-$i.txt"; acc_new=$accept_n
+    if [ -z "$acc_new" ]; then reject "$before" "acceptance test without a readable number (crashed or time limit?)" "$LOGS/accept-$i.txt"; return 1; fi
+    if [ "$acc_new" -lt "$acc" ]; then reject "$before" "Accept dropped from $acc to $acc_new" "$LOGS/accept-$i.txt"; return 1; fi
+    # Files the test or acceptance command wrote were never checked above, so nothing may be staged
+    # after the checks: the commit takes exactly the index staged before those commands ran.
+    # Ignored files (caches like __pycache__/) do not show up here and stay allowed.
+    drift=$(g -c core.quotePath=false status --porcelain --untracked-files=all | grep -v '^[MADRCT] ')
+    if [ -n "$drift" ]; then reject "$before" "test command changed files: $(echo $drift | shorten 200)"; return 1; fi
+
+    # Reviewer: only for completed tasks
+    if [ "$ticked" -gt 0 ]; then
+        verdict=$(review)
+        if [ "${verdict:-}" != "VERDICT: ACCEPT" ]; then
+            reason=${verdict#VERDICT: REJECT: }; [ -n "$reason" ] || reason="no verdict, see log/review-$i.txt"
+            reject "$before" "Reviewer: $reason"; return 1
+        fi
+    fi
+
+    g commit -q --no-verify -m "Autopilot: $task" -m "Tests $count -> $new${ACCEPT_CMD:+, Accept $acc -> $acc_new of ${target:-?}}" ||
+        { reject "$before" "commit failed"; return 1; }
+    note "Run $i accepted: $task | Tests $count -> $new${ACCEPT_CMD:+, Accept $acc -> $acc_new of ${target:-?}} | worker $cost USD"
+    progress=1; [ -n "$ACCEPT_CMD" ] && [ "$acc_new" -le "$acc" ] && [ "$acc_new" != "${target:-x}" ] && progress=''
+    count=$new; acc=$acc_new; last_tests=$LOGS/tests-$i.txt; last_tests_rc=$tests_rc; fails=0; rm -f "$FEEDBACK"
+    if [ "$ticked" -gt 0 ]; then journal_run accepted
+        # every 5 accepted tasks the lessons are condensed again (counted from the script's own history lines)
+        [ $(( $(grep -cE '^[0-9-]{10} [0-9:]{8} Run [0-9]+ accepted: \[x\]' "$LOGS/history.log") % 5 )) = 0 ] && condense_lessons
+    else journal_run blocked; condense_lessons; fi
+    # Accepted runs without acceptance progress: the tasks miss the goal, more of them would not help
+    if [ -z "$progress" ]; then
+        np_add 1
+        [ "$(np_count)" -ge "$NO_PROGRESS" ] && {
+            note "No progress: Accept has not risen for $NO_PROGRESS accepted runs (stays at $acc of ${target:-?}) – stopped, the tasks do not lead to the goal"
+            handover not-delivered "no progress: Accept $acc of ${target:-?} unchanged for $NO_PROGRESS accepted runs"; exit 1; }
+    fi
+    return 0
+}
+
+# --- Parallel workers (PARALLEL > 1) ----------------------------------------------------------------
+# State of a task between waves: .autopilot/pending/<hash of its line> = "<failed attempts> <conflicts>", then its feedback
+pending_file() { echo "$STATE/pending/$(hash_only <<<"$1" | cut -c1-16)"; }
+load_pending() { # LINE: failed attempts into $fails, feedback into $FEEDBACK; the file is used up
+    local p c; p=$(pending_file "$1"); read -r fails c <"$p"; is_number "$fails" || fails=0
+    tail -n +2 "$p" >"$FEEDBACK"; [ -s "$FEEDBACK" ] || rm -f "$FEEDBACK"; rm -f "$p"
+}
+save_pending() { # LINE CONFLICTS: after a rejection or a conflict in a wave
+    mkdir -p "$STATE/pending"; { echo "$fails $2"; cat "$FEEDBACK" 2>/dev/null; } >"$(pending_file "$1")"
+}
+# Git on worker k's worktree with the project's own Git directory and a separate index: the worker's .git file is not read
+wave_git() { GIT_INDEX_FILE=$wave_dir/index-$k g --git-dir="$git_dir" --work-tree="$wave_dir/w$k" "$@"; }
+wave_end() { # the workers' worktrees and the wave file removed (also at every end)
+    [ -n "${wave_dir:-}" ] || return 0
+    local w; for w in "$wave_dir"/w*; do g -C "$ROOT" worktree remove --force "$w" >/dev/null 2>&1; done
+    rm -rf "$wave_dir"; g -C "$ROOT" worktree prune; wave_dir=''; rm -f "$STATE/wave"
+}
+# A wave: up to PARALLEL tasks that can start now (none waits on another, none was rejected before, at most 1
+# conflict each), each worker in its own temporary worktree at HEAD, all at the same time. Then the script merges
+# them one by one in task order onto the current HEAD and runs the whole check chain (check_run) on each merged
+# state: a rejection resets only that change. A conflict is no attempt: feedback, retry on the new base.
+# The task list never comes from a worker: only its own line ticked off or blocked counts, the script sets that mark.
+# → 0 the wave ran, 1 no wave (fewer than 2 tasks for it: the serial run goes on), 2 a size check split a task
+wave() {
+    local lines=() l p f c=0 k n avg base m add x merged='' limit_at='' api_at='' rcs=() runs=() texts=() t
+    while IFS= read -r l; do
+        p=$(pending_file "$(sed -n "${l}p" "$TASKS_FILE")")
+        if [ -s "$p" ]; then read -r f c <"$p"; [ "$f" = 0 ] && [ "${c:-0}" -lt 2 ] || continue; fi
+        lines+=("$l")
+    done < <(tasks_awk ready "$TASKS_FILE")
+    n=$PARALLEL; [ $((MAX_RUNS - i)) -lt "$n" ] && n=$((MAX_RUNS - i)); [ "${#lines[@]}" -lt "$n" ] && n=${#lines[@]}
+    [ "$n" -ge 2 ] || return 1
+    # Cost cap: n more workers at the mean cost of the workers so far must fit into what is left of MAX_COST_USD
+    avg=$(awk -F';' 'NR > 1 && $2 == "worker" && $4 != "?" { c += $4; k++ } END { if (k) printf "%.4f", c / k }' "$COSTS" 2>/dev/null)
+    if [ -n "$avg" ]; then
+        k=$(awk -v m="$MAX_COST_USD" -v s="$(cost_sum "$COSTS" "$costs_from")" -v a="$avg" 'BEGIN { print (a > 0) ? int((m - s) / a) : 99 }')
+        [ "$k" -lt "$n" ] && { note "Cost cap: $n workers at about $avg USD each would exceed MAX_COST_USD=$MAX_COST_USD, wave of $k"; n=$k; }
+        [ "$n" -ge 2 ] || return 1
+    fi
+    lines=("${lines[@]:0:n}")
+    for pick in "${lines[@]}"; do [ "$SIZE_CHECK" = on ] && size_check && return 2; done
+    wave_dir=$(mktemp -d) || { announce crit "No temporary directory for the wave"; exit 1; }
+    base=$(g rev-parse HEAD); in_wave=1; : >"$STATE/wave"
+    [ -s "$COSTS" ] || echo "$COSTS_HEADER" >"$COSTS"  # the workers append at the same time: the header first
+    for k in "${!lines[@]}"; do
+        pick=${lines[$k]}; i=$((i + 1)); runs[k]=$i; verdict=''
+        open_task=$(sed -n "${pick}p" "$TASKS_FILE"); texts[k]=$open_task; jtask=$(shorten 50 <<<"${open_task:6}")
+        task_check=''; re='Done when `([^`]+)`'; [[ $open_task =~ $re ]] && task_check=${BASH_REMATCH[1]}
+        FEEDBACK=$wave_dir/feedback-$k; fails=0; p=$(pending_file "$open_task"); [ -s "$p" ] && tail -n +2 "$p" >"$FEEDBACK"
+        note "Run $i: $(shorten 80 <<<"${open_task:6}") (wave of $n)"
+        worker_prompt
+        prompt+=$'\n\n'"Other workers work on other tasks of the list at the same time, each in its own copy; the script merges your change after theirs. Change only what your task needs."
+        g worktree add -q --detach "$wave_dir/w$k" "$base" >"$wave_dir/add-$k.txt" 2>&1 ||
+            { announce crit "Could not create a worktree for the wave: $(tail -1 "$wave_dir/add-$k.txt")"; exit 1; }
+        # Each worker in its worktree (cwd: relative Bash entries of WORKER_TOOLS and sandbox-run work there)
+        ( cd "$wave_dir/w$k" && CLAUDE_TIMEOUT=$WORKER_TIMEOUT claude_run "$LOGS/run-$i.txt" worker --model "$WORKER_MODEL" --permission-mode acceptEdits \
+            --add-dir "$LOGS" --allowedTools "${WORKER_TOOLS[@]}" <<<"$prompt" >"$wave_dir/cost-$k" ) & wave_pids[k]=$!
+        echo "Run $i: ${open_task:6}" >>"$STATE/wave"
+    done
+    for k in "${!lines[@]}"; do wait "${wave_pids[$k]}"; rcs[k]=$?; done; wave_pids=()
+    [ "$(git_fingerprint)" = "$fingerprint" ] || { announce crit "A worker of the wave changed .git (config, info or hooks) – stopped. Please inspect before starting again."; exit 1; }
+
+    restore HEAD  # the work directory is the workers' merge target: nothing a worker might have left there counts
+    for k in "${!lines[@]}"; do  # merge, check and commit one by one, in task order
+        i=${runs[$k]}; rc=${rcs[$k]}; open_task=${texts[$k]}; jtask=$(shorten 50 <<<"${open_task:6}"); verdict=''
+        task_check=''; re='Done when `([^`]+)`'; [[ $open_task =~ $re ]] && task_check=${BASH_REMATCH[1]}
+        cost=$(cat "$wave_dir/cost-$k" 2>/dev/null); cost=${cost:-0}; FEEDBACK=$wave_dir/feedback-$k; fails=0
+        p=$(pending_file "$open_task"); c=0; [ -s "$p" ] && read -r f c <"$p"
+        pick=$(grep -nxF -- "$open_task" "$TASKS_FILE" | head -1 | cut -d: -f1)
+        # Usage limit or an API error: the wave waits after the merges, this task counts no attempt
+        if [ "$rc" -ne 0 ] && usage_limit "$LOGS/run-$i.txt"; then limit_at=$LOGS/run-$i.txt; note "Run $i: usage limit, no attempt counted"; continue; fi
+        if [ "$rc" -ne 0 ] && [ "$rc" != 124 ] && api_error "$LOGS/run-$i.txt"; then api_at=$LOGS/run-$i.txt; note "Run $i: Claude API or network error, no attempt counted"; continue; fi
+        if [ "$rc" -ne 0 ] && ! over_budget "$LOGS/run-$i.txt" && err=$(jq -er 'select(.is_error == true) | .result // "unknown error"' "$LOGS/run-$i.txt.json" 2>/dev/null); then
+            journal_add /dev/null "$JOURNAL" worker "$jtask" error
+            announce crit "Run $i: Claude reported an error: $(head -1 <<<"$err" | shorten 200) – fix it (e.g. claude /login, check the network), then start again"; exit 1
+        fi
+        denied_check
+        before=$(g rev-parse HEAD)
+        # The worker's change against the wave's start. Notes only appended to the decisions or BLOCKED.md are
+        # appended to the current file (no conflict between workers that each add a line); the task list is left out.
+        wave_git read-tree "$base" && wave_git add -A || { announce crit "Could not read the change of run $i in its worktree"; exit 1; }
+        x=(":(exclude)$TASKS_FILE"); add=()
+        for f in "$DECISIONS_FILE" BLOCKED.md; do
+            [ -f "$wave_dir/w$k/$f" ] && [ ! -L "$wave_dir/w$k/$f" ] || continue
+            case $(readlink -f "$wave_dir/w$k/$f") in "$(readlink -f "$wave_dir/w$k")"/*) ;; *) continue ;; esac  # no symlinked folder
+            g show "$base:$f" >"$wave_dir/old" 2>/dev/null || : >"$wave_dir/old"; t=$(wc -c <"$wave_dir/old")
+            [ "$(wc -c <"$wave_dir/w$k/$f")" -gt "$t" ] && cmp -s -n "$t" "$wave_dir/old" "$wave_dir/w$k/$f" || continue
+            tail -c +$((t + 1)) "$wave_dir/w$k/$f" >"$wave_dir/append-$k-${#add[@]}"; add+=("$f"); x+=(":(exclude)$f")
+        done
+        wave_git diff --cached --binary --no-ext-diff --no-textconv --no-renames "$base" -- . "${x[@]}" >"$wave_dir/patch-$k"
+        # Its task list: unchanged, or only its own line ticked off or blocked (as in a serial run)
+        l=$(g show "$base:$TASKS_FILE"); t=$(cat "$wave_dir/w$k/$TASKS_FILE" 2>/dev/null); m=''
+        [ "$t" = "$(mark_line "${lines[$k]}" x <<<"$l")" ] && m=x; [ "$t" = "$(mark_line "${lines[$k]}" '~' <<<"$l")" ] && m='~'
+        if [ -z "$m" ] && [ "$t" != "$l" ]; then
+            reject "$before" "task list changed beyond ticking off or blocking the task picked for this run (only [ ] -> [x] or [~] of line ${lines[$k]} is allowed)"
+            save_pending "$open_task" "$c"; continue
+        fi
+        if [ -s "$wave_dir/patch-$k" ] && ! g apply --3way --whitespace=nowarn "$wave_dir/patch-$k" >"$wave_dir/apply-$k.txt" 2>&1; then
+            restore "$before"; c=$((c + 1)); cp "$wave_dir/patch-$k" "$LOGS/rejected-$i.patch"
+            note "Run $i: conflict with parallel task ${merged:-?} – no attempt counted, retry on the new base (conflict $c of 2)"
+            { echo "The last attempt at this task was not merged: conflict with parallel task ${merged:-?}, retry on the new base."
+              echo "Diff of your last attempt (read it with the Read tool, the base has changed since): $LOGS/rejected-$i.patch"; } >"$FEEDBACK"
+            journal_add "$LOGS/run-$i.txt" "$JOURNAL" worker "$jtask" "conflict with parallel task ${merged:-?}"
+            save_pending "$open_task" "$c"; continue
+        fi
+        for f in "${!add[@]}"; do mkdir -p "$(dirname "${add[$f]}")" && cat "$wave_dir/append-$k-$f" >>"${add[$f]}"; done
+        [ -n "$m" ] && mark_line "$pick" "$m" <"$TASKS_FILE" >"$TASKS_FILE.new" && mv "$TASKS_FILE.new" "$TASKS_FILE"
+        if check_run; then rm -f "$p"; merged+="${merged:+, }$(sed -nE 's/^- \[.\] ([0-9]+(\.[0-9]+)*)\..*/\1/p' <<<"$open_task")"
+        else save_pending "$open_task" "$c"; fi
+    done
+    wave_end; in_wave=''; FEEDBACK=$STATE/feedback.txt; fails=0; last=''; rm -f "$FEEDBACK"; save_attempts
+    [ -n "$lessons_due" ] && { lessons_due=''; condense_lessons; }
+    if [ -n "$limit_at" ]; then
+        t=$(limit_reset "$limit_at"); waits=$((waits + 1))
+        [ "$waits" -gt 20 ] && { announce crit "Usage limit persists, stopped"; exit 1; }
+        note "Usage limit${t:+ (resets $t)}, waiting $((LIMIT_WAIT / 60)) min"; pause "$LIMIT_WAIT"
+    fi
+    if [ -n "$api_at" ]; then cooldown "$api_at" "$jtask" || { announce crit "Claude API errors persist: $(head -1 "$api_at" | shorten 160)"; exit 1; }
+    else api_waits=0; fi
+    return 0
+}
+
 [ -n "$TEST_CMD" ] || { announce crit "TEST_CMD is not set in $CONF"; exit 1; }
 [ -n "$DEMO_CMD" ] || announce warn "DEMO_CMD is not set in $CONF: the loop can never end as delivered (it ends as \"not delivered: no demo\")"
 # 0.8 locked the acceptance test through ACCEPT_FILES; ignoring it silently would leave those files unlocked
@@ -646,7 +920,7 @@ one_of FRESH_CHECK 'on|off' 'on or off'; one_of SECRETS_CHECK 'on|off' 'on or of
 for k in EFFORT_WORKER EFFORT_REVIEWER EFFORT_PLANNER EFFORT_LESSONS; do one_of "$k" 'low|medium|high|xhigh|max' 'low, medium, high, xhigh or max'; done
 one_of MAX_COST_PER_CALL_USD '[0-9]+(\.[0-9]+)?' 'a number, e.g. 2 or 0.5'
 one_of COOLDOWN '[0-9]+[smh]?' 'a duration like 10m, 600 or 1s'; one_of MILESTONE_GATE 'auto|ask' 'auto or ask'
-one_of SIZE_CHECK 'on|off' 'on or off'; one_of PR_WAIT 'on|off' 'on or off'
+one_of SIZE_CHECK 'on|off' 'on or off'; one_of PR_WAIT 'on|off' 'on or off'; one_of PARALLEL '[1-4]' '1, 2, 3 or 4'
 # MERGE=pr pushes and opens a pull request at the end: find out now, not after all the runs, that it cannot
 if [ "$MERGE" = pr ]; then
     command -v gh >/dev/null || { announce crit "MERGE=pr needs the GitHub CLI gh: $(install_hint gh), then gh auth login"; exit 1; }
@@ -665,7 +939,7 @@ fi
 [ -n "$(g status --porcelain)" ] && { announce crit "Work directory not clean, aborting"; exit 1; }
 g var GIT_COMMITTER_IDENT >/dev/null 2>&1 || { announce crit "Git cannot commit in $WORKDIR: no identity. Set one: git config --global user.email you@example.org; git config --global user.name \"Your Name\""; exit 1; }
 
-i=0; acc=0; cost=0; worker=''; cmd=''; reason=''; rejected_n=0; demo_rc=''; verdict=''; jtask=''; api_waits=0
+i=0; acc=0; cost=0; worker=''; cmd=''; in_wave=''; lessons_due=''; wave_dir=''; wave_pids=(); reason=''; rejected_n=0; demo_rc=''; verdict=''; jtask=''; api_waits=0
 merge_note=''; merge_cmd=''; merge_state=''; fresh_line=''; final_issues=''; fresh=''; fresh_out=''; ci_red=''; pick=''
 ms_all=$([ -n "$PLAN_FILE" ] && milestones "$PLAN_FILE"); ms=''; ms_from=''; last_ms=1
 if [ -n "$ms_all" ]; then  # the current milestone: from .autopilot/milestone if it is one of the plan's, else the first
@@ -680,6 +954,7 @@ for c in "$TEST_CMD" "$ACCEPT_CMD" "$DEMO_CMD"; do
     c=${c##*sandbox-run }; case $c in bash\ *|sh\ *) c=${c#* } ;; esac; c=${c%% *}; c=${c#./}  # "bash demo.sh": demo.sh
     [ -n "$c" ] && [ "${c#/}" = "$c" ] && [ -f "$c" ] && cmd_files+=("$c")
 done
+git_dir=$(g rev-parse --path-format=absolute --git-dir)  # read by wave_git
 fingerprint=$(git_fingerprint)  # before the first run_cmd: it checks .git after every test command
 trap 'interrupted 130' INT; trap 'interrupted 143' TERM; trap 'interrupted 129' HUP  # HUP: tmux session killed
 run_tests "$LOGS/start.txt" || { announce crit "Tests hit the time limit (TEST_TIMEOUT=$TEST_TIMEOUT) before the start, see $LOGS/start.txt"; exit 1; }
@@ -769,6 +1044,8 @@ while :; do
         grep -q 'waiting on blocked task' <<<"$w" || reason="$(open_tasks) open tasks wait on each other (check their \"(after …)\")"
         note "No task can start: $reason"; handover not-delivered "$reason"; exit 0
     fi
+    # A task rejected or in conflict in a wave goes on alone, with its failed attempts and feedback
+    l=$(sed -n "${pick}p" "$TASKS_FILE"); [ "$l" != "$last" ] && [ -s "$(pending_file "$l")" ] && { last=$l; fails=0; rm -f "$FEEDBACK"; load_pending "$l"; }
     [ "$fails" -ge "$ATTEMPTS" ] && { block_task "$fails failed attempts, last: $(last_reason | shorten 120)"; continue; }
     [ "$(grep -c '^- \[~\]' "$TASKS_FILE")" -ge "$MAX_BLOCKED" ] &&
         { announce crit "$MAX_BLOCKED tasks blocked, please check BLOCKED.md"; handover not-delivered "$MAX_BLOCKED tasks blocked (MAX_BLOCKED), see BLOCKED.md"; exit 1; }
@@ -776,6 +1053,7 @@ while :; do
     spent=$(cost_sum "$COSTS" "$costs_from")
     awk -v s="$spent" -v m="$MAX_COST_USD" 'BEGIN { exit !(s >= m) }' &&
         { note "Cost cap reached: $spent USD"; handover limit "cost cap MAX_COST_USD=$MAX_COST_USD reached ($spent USD), $(open_tasks) tasks still open"; exit 0; }
+    if [ "$PARALLEL" -gt 1 ] && [ "$fails" = 0 ] && [ ! -s "$FEEDBACK" ]; then wave; [ $? = 1 ] || continue; fi
     [ "$SIZE_CHECK" = on ] && [ "$fails" = 0 ] && size_check && continue  # split: the loop picks its first part
 
     i=$((i + 1)); before=$(g rev-parse HEAD); cost=0; verdict=''
@@ -785,32 +1063,7 @@ while :; do
     [ "$open_task" != "$last" ] && { last=$open_task; fails=0; rm -f "$FEEDBACK"; }
     save_attempts
     note "Run $i: $(shorten 80 <<<"${open_task:6}")"
-    prompt=$(cat "$PROMPT_FILE")
-    # Quoted replacements: taken literally (no & from bash 5.2 patsub_replacement, no backslash handling)
-    prompt=${prompt//\{TASKS_FILE\}/"$TASKS_FILE"}
-    prompt=${prompt//\{DECISIONS_FILE\}/"$DECISIONS_FILE"}
-    prompt=${prompt//\{TEST_CMD\}/"$TEST_CMD"}
-    prompt=${prompt//\{ACCEPT_CMD\}/"${ACCEPT_CMD:-(no acceptance test)}"}
-    prompt+=$'\n\n## This run\n'"Your task (the script picked it, line $pick of $TASKS_FILE): $open_task"
-    prompt+=$'\n'"Time budget: $WORKER_TIMEOUT, then the run is aborted and reset. Attempt $((fails + 1)) of at most $ATTEMPTS for this task (then it is blocked)."
-    [ -n "$DEMO_CMD" ] && prompt+=$'\n'"Demo command (it must exit 0 once all tasks are done): $(run_hint "$DEMO_CMD" "demo command")"
-    [ -n "$task_check" ] && prompt+=$'\n'"Check command of this task (it must exit 0): $(run_hint "$task_check" "check command")"
-    prompt+=$(project_rules)
-    [ -s "$FEEDBACK" ] && prompt+=$'\n\n## Feedback on the previous attempt\n'"$(cat "$FEEDBACK")"
-    # Brief (MODELS=cheap only): the planner plans the task with the whole plan, the haiku worker implements it.
-    # Otherwise the worker gets the plan itself and reads the code on its own (a brief costs more than it saves).
-    brief_ok=''
-    if [ "$MODELS" = cheap ]; then
-        brief=$(cat "$BRIEF_FILE"; plan_section; project_rules; printf '\n\n## Task\n%s\n' "$open_task"
-                [ -s "$FEEDBACK" ] && { printf '\n## Feedback on the previous attempt\n'; cat "$FEEDBACK"; }; memory brief)
-        if claude_run "$LOGS/brief-$i.txt" brief --model "$PLANNER_MODEL" --allowedTools Read Grep Glob <<<"$brief" >/dev/null &&
-           [ -s "$LOGS/brief-$i.txt" ]; then
-            brief_ok=1; prompt+=$'\n\n## Brief from the planner\n'"$(strip_note "$LOGS/brief-$i.txt")"
-        else note "Run $i: no brief from the planner ($PLANNER_MODEL), the worker gets the plan instead"; fi
-        journal_add "$LOGS/brief-$i.txt" "$JOURNAL" brief "$jtask" "$([ -n "$brief_ok" ] && echo written || echo failed)"
-    fi
-    [ -n "$brief_ok" ] || prompt+=$(plan_section)
-    prompt+=$(memory worker)
+    worker_prompt
     # In the background so that a signal interrupts `wait` at once (a foreground child delays the trap)
     # --add-dir: the logs (rejected-N.patch) may lie outside the work directory (worktree case)
     CLAUDE_TIMEOUT=$WORKER_TIMEOUT claude_run "$LOGS/run-$i.txt" worker --model "$WORKER_MODEL" --permission-mode acceptEdits \
@@ -841,115 +1094,6 @@ while :; do
         exit 1
     fi
 
-    # Tool calls Claude Code refused: name them per tool, otherwise a run without e.g. the build command only
-    # ends in a time-out with no visible reason.
-    denied=$(jq -r '[.permission_denials[]? |
-        if .tool_name == "Bash" then "Bash `\(.tool_input.command // "?")` (not covered by WORKER_TOOLS)"
-        elif (.tool_name | test("^(Edit|Write|MultiEdit|NotebookEdit)$")) then
-            "\(.tool_name) \(.tool_input.file_path // .tool_input.notebook_path // "?") (Claude Code refused the write: outside the work directory, below ~/.claude or a protected path)"
-        else "\(.tool_name) (not in WORKER_TOOLS)" end] | unique | .[:3] | join(" | ")' \
-        "$LOGS/run-$i.txt.json" 2>/dev/null | tr '\n' ' ' | sed 's/ *$//' | shorten 400)
-    [ -n "$denied" ] && { last_denied=$denied; note "Run $i: tool calls denied: $denied"; }
-
-    # Script checks: only green, not weakened work in allowed paths counts.
-    g add -A
-    task=$(g diff --cached --no-ext-diff -U0 -- "$TASKS_FILE" | grep -m1 '^+- \[[x~]\]' | cut -c4- | shorten 90)
-    if [ "$rc" -eq 124 ]; then
-        # Time limit: say so, with what was refused (this run has no readable answer, so the last one that had)
-        reject "$before" "aborted after $WORKER_TIMEOUT (time limit): work smaller, or block early with [~]${last_denied:+; denied tool calls from the last readable run: $last_denied}" "$LOGS/run-$i.txt"
-        continue
-    fi
-    if [ "$rc" -ne 0 ] && over_budget "$LOGS/run-$i.txt"; then
-        reject "$before" "hit the per-call budget (MAX_COST_PER_CALL_USD=$MAX_COST_PER_CALL_USD): work smaller, or block early with [~]" "$LOGS/run-$i.txt"; continue
-    fi
-    if [ -z "$task" ]; then
-        reject "$before" "no task ticked off or blocked (rc $rc)${denied:+; denied tool calls: $denied}" "$LOGS/run-$i.txt"; continue
-    fi
-    # The only allowed change to the task list: the task picked for this run (line $pick) ticked off [x] or blocked [~]
-    old_tasks=$(g show "$before:$TASKS_FILE"); now_tasks=$(cat "$TASKS_FILE")
-    if [ "$now_tasks" != "$(mark_line "$pick" x <<<"$old_tasks")" ] && [ "$now_tasks" != "$(mark_line "$pick" '~' <<<"$old_tasks")" ]; then
-        reject "$before" "task list changed beyond ticking off or blocking the task picked for this run (only [ ] -> [x] or [~] of line $pick is allowed)"; continue
-    fi
-    # Blocking means giving up: nothing but the task list, BLOCKED.md and the decisions may change
-    if [[ $task == '[~]'* ]] && extra=$(changed | grep -vxF -e "$TASKS_FILE" -e BLOCKED.md -e "$DECISIONS_FILE") && [ -n "$extra" ]; then
-        reject "$before" "code changed while blocking the task: revert your code changes before blocking ($(echo $extra | shorten 120))"; continue
-    fi
-    subs=$(changed_submodules)
-    if [ -n "$subs" ]; then reject "$before" "change inside a submodule: $(echo $subs)"; continue; fi
-    # Task list, BLOCKED.md and the decisions are always allowed; ALLOWED (if set) is the rest, otherwise
-    # everything except the files that control the test command.
-    if [ -n "$ALLOWED" ]; then
-        foreign=$(changed | grep -vxF -e "$TASKS_FILE" -e BLOCKED.md -e "$DECISIONS_FILE" | grep -Ev -- "$ALLOWED")
-        [ $? -le 1 ] || { reject "$before" "ALLOWED check failed (invalid pattern?)"; continue; }
-        if [ -n "$foreign" ]; then reject "$before" "change outside allowed paths: $(echo $foreign)"; continue; fi
-    else
-        foreign=$( { changed | grep -E -- "$TEST_CONTROL"; [ ${#cmd_files[@]} = 0 ] || changed | grep -xF "${cmd_files[@]/#/-e}"; } | sort -u)
-        if [ -n "$foreign" ]; then reject "$before" "change to a file that controls the test command: $(echo $foreign) (allow it through ALLOWED in autopilot.conf)"; continue; fi
-    fi
-    locked=$( { changed | grep -E "$ALWAYS_LOCKED"
-                for p in ${LOCKED[@]+"${LOCKED[@]}"}; do changed "$p"; done; } | sort -u)
-    if [ -n "$locked" ]; then reject "$before" "locked file changed: $(echo $locked)"; continue; fi
-    links=$(outside_links)
-    if [ -n "$links" ]; then reject "$before" "symlink pointing outside the work directory: $(echo $links)"; continue; fi
-    added=$(g diff --cached --no-ext-diff --no-renames -U0 -- . ":(exclude)$TASKS_FILE" ":(exclude)BLOCKED.md" ":(exclude)$DECISIONS_FILE" |
-        grep '^+' | grep -v '^+++' | sed 's/^+//')
-    if [ "$SECRETS_CHECK" != off ] && grep -qE -- "$SECRETS" <<<"$added"; then
-        reject "$before" "added line looks like a secret (AWS key, private key or a long password/secret/token/api_key literal): keep secrets out of the code (a false alarm: SECRETS_CHECK=off)"; continue
-    fi
-    if [ -n "$FORBIDDEN_CONTENT" ]; then
-        grep -qE -- "$FORBIDDEN_CONTENT" <<<"$added"; r=$?  # 1 = no hit; 0 = hit, 2 = check failed: both reject
-        [ "$r" = 1 ] || { reject "$before" "forbidden content added or check failed (pattern: $FORBIDDEN_CONTENT)"; continue; }
-    fi
-    # New code that prints the count line itself could fake the check (pattern without ^/$, because in code
-    # the line sits in the middle of a print/echo). Documentation is not run, so it may quote the line.
-    fake_t=${TEST_COUNT_REGEX#^}; fake_t=${fake_t%\$}; fake_a=${ACCEPT_REGEX#^}; fake_a=${fake_a%\$}
-    code=$(g diff --cached --no-ext-diff --no-renames -U0 -- . ":(exclude)$TASKS_FILE" ":(exclude)BLOCKED.md" ":(exclude)$DECISIONS_FILE" \
-        ":(exclude)*.md" ":(exclude)*.rst" | grep '^+' | grep -v '^+++' | sed 's/^+//')
-    hit=$( { [ -z "$TEST_COUNT_CMD" ] && grep -m1 -E "$fake_t" <<<"$code"; } || { [ -n "$ACCEPT_CMD" ] && grep -m1 -E "$fake_a" <<<"$code"; } )
-    if [ -n "$hit" ]; then
-        reject "$before" "new code contains the count line of the test command or acceptance test (could fake the result): $hit"; continue
-    fi
-    run_tests "$LOGS/tests-$i.txt" || { reject "$before" "tests hit the time limit (TEST_TIMEOUT=$TEST_TIMEOUT)" "$LOGS/tests-$i.txt"; continue; }
-    new=$tests_n
-    if [ -z "$new" ]; then reject "$before" "tests red or without a readable number" "$LOGS/tests-$i.txt"; continue; fi
-    if [ "$new" -lt "$count" ]; then reject "$before" "tests dropped from $count to $new"; continue; fi
-    ticked=$(( $(grep -c '^- \[x\]' "$TASKS_FILE") - $(g show "$before:$TASKS_FILE" | grep -c '^- \[x\]') ))
-    if [ "$ticked" -gt 0 ] && [ -n "$task_check" ]; then
-        run_cmd "$task_check" >"$LOGS/check-$i.txt" 2>&1; crc=$?
-        [ "$crc" = 0 ] || { reject "$before" "the task's check \`$task_check\` failed (exit code $crc)" "$LOGS/check-$i.txt"; continue; }
-    elif [ "$ticked" -gt 0 ] && [ "$new" -le "$count" ]; then reject "$before" "task ticked off without a new test"; continue; fi
-    run_accept "$LOGS/accept-$i.txt"; acc_new=$accept_n
-    if [ -z "$acc_new" ]; then reject "$before" "acceptance test without a readable number (crashed or time limit?)" "$LOGS/accept-$i.txt"; continue; fi
-    if [ "$acc_new" -lt "$acc" ]; then reject "$before" "Accept dropped from $acc to $acc_new" "$LOGS/accept-$i.txt"; continue; fi
-    # Files the test or acceptance command wrote were never checked above, so nothing may be staged
-    # after the checks: the commit takes exactly the index staged before those commands ran.
-    # Ignored files (caches like __pycache__/) do not show up here and stay allowed.
-    drift=$(g -c core.quotePath=false status --porcelain --untracked-files=all | grep -v '^[MADRCT] ')
-    if [ -n "$drift" ]; then reject "$before" "test command changed files: $(echo $drift | shorten 200)"; continue; fi
-
-    # Reviewer: only for completed tasks
-    if [ "$ticked" -gt 0 ]; then
-        verdict=$(review)
-        if [ "${verdict:-}" != "VERDICT: ACCEPT" ]; then
-            reason=${verdict#VERDICT: REJECT: }; [ -n "$reason" ] || reason="no verdict, see log/review-$i.txt"
-            reject "$before" "Reviewer: $reason"; continue
-        fi
-    fi
-
-    g commit -q --no-verify -m "Autopilot: $task" -m "Tests $count -> $new${ACCEPT_CMD:+, Accept $acc -> $acc_new of ${target:-?}}" ||
-        { reject "$before" "commit failed"; continue; }
-    note "Run $i accepted: $task | Tests $count -> $new${ACCEPT_CMD:+, Accept $acc -> $acc_new of ${target:-?}} | worker $cost USD"
-    progress=1; [ -n "$ACCEPT_CMD" ] && [ "$acc_new" -le "$acc" ] && [ "$acc_new" != "${target:-x}" ] && progress=''
-    count=$new; acc=$acc_new; last_tests=$LOGS/tests-$i.txt; last_tests_rc=$tests_rc; fails=0; rm -f "$FEEDBACK"
-    if [ "$ticked" -gt 0 ]; then journal_run accepted
-        # every 5 accepted tasks the lessons are condensed again (counted from the script's own history lines)
-        [ $(( $(grep -cE '^[0-9-]{10} [0-9:]{8} Run [0-9]+ accepted: \[x\]' "$LOGS/history.log") % 5 )) = 0 ] && condense_lessons
-    else journal_run blocked; condense_lessons; fi
-    # Accepted runs without acceptance progress: the tasks miss the goal, more of them would not help
-    if [ -z "$progress" ]; then
-        np_add 1
-        [ "$(np_count)" -ge "$NO_PROGRESS" ] && {
-            note "No progress: Accept has not risen for $NO_PROGRESS accepted runs (stays at $acc of ${target:-?}) – stopped, the tasks do not lead to the goal"
-            handover not-delivered "no progress: Accept $acc of ${target:-?} unchanged for $NO_PROGRESS accepted runs"; exit 1; }
-    fi
+    denied_check
+    check_run || continue
 done

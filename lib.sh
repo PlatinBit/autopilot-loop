@@ -272,8 +272,9 @@ shorten() { # N <lines
 # Dependencies: "- [ ] 4. (after 2, 3) …" right after the number waits until tasks 2 and 3 are ticked off [x];
 # "after 3" also covers the parts 3.1, 3.2 … of a split task 3, a number that no task has counts as done.
 # next: line number of the next task, the first open one whose dependencies are all [x] (empty: none can start).
+# ready: the line numbers of all open tasks whose dependencies are all [x] (none of them waits on another).
 # waiting: every open task that cannot start, with the blocked [~] (or else open) task it waits on.
-tasks_awk() { # next|waiting FILE
+tasks_awk() { # next|ready|waiting FILE
     awk -v mode="$1" '
         function state(d,   j, s) { s = "x"; for (j = 1; j <= NR; j++) if (num[j] == d || index(num[j], d ".") == 1) { if (st[j] == "~") return "~"; if (st[j] != "x") s = " " }; return s }
         { line[NR] = $0 }
@@ -285,6 +286,7 @@ tasks_awk() { # next|waiting FILE
                   for (k = 1; k <= n; k++) { d = a[k]; sub(/\.$/, "", d); if (d == "") continue; s = state(d)
                       if (s == "~") { why = "blocked task " d; break }; if (s == " " && why == "") why = "task " d }
                   if (mode == "next" && why == "") { print i; exit }
+                  if (mode == "ready" && why == "") print i
                   if (mode == "waiting" && why != "") print line[i] " – waiting on " why } }' "$2"
 }
 next_task() { tasks_awk next "$1"; }  # FILE
