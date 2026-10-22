@@ -7,3 +7,5 @@ The document, in Markdown:
 - Milestones: if the idea names a number or a list of milestones, use exactly those. Otherwise as few as make sense: 1 for a small tool, more only when the idea really has that much scope. Each milestone builds on the one before and is its own section with exactly this heading: `## Milestone <n>: <title>` (n = 1, 2, 3 …), with a verifiable criterion ("works when ...") that an automated test can prove. The autopilot drafts and works through one milestone at a time. The last milestone is always end to end: the demo command exits 0 and prints the expected output.
 
 Keep it to about one page, concrete and measurable, no feelings. Output only the document, nothing before or after it.
+
+Write the plan, tasks, notes and lessons in the language of the idea or plan file, even if other instructions or settings ask for another language.

@@ -87,8 +87,9 @@ g() { git -c core.hooksPath=/dev/null -c core.fsmonitor= -c diff.external= -c co
 # (a hook once rewrote the test command; the project's CLAUDE.md is passed in the prompt instead) and
 # still uses the normal login. --bare would do the same but ignores the OAuth login (API key only).
 # --setting-sources user: never .claude/ from the work directory, whose permission rules would widen the
-# tools. And never writing to Git, Claude or autopilot management files.
-CLAUDE_SAFE=(--safe-mode --setting-sources user --disallowedTools
+# tools. And never writing to Git, Claude or autopilot management files. --settings language "": the user's
+# "language" setting would beat the prompts' rule to write in the language of the idea or plan file.
+CLAUDE_SAFE=(--safe-mode --setting-sources user --settings '{"language":""}' --disallowedTools
     "Edit(.git)" "Write(.git)" "Edit(.git/**)" "Write(.git/**)" "Edit(.claude/**)" "Write(.claude/**)"
     "Edit(.autopilot/**)" "Write(.autopilot/**)" "Edit(autopilot.conf)" "Write(autopilot.conf)")
 

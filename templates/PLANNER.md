@@ -11,3 +11,5 @@ Rules:
 - If the goal cannot be reached through tasks (it needs the owner: a decision, a missing file or tool, a change outside the allowed paths), do not invent tasks: leave `tasks` empty and say in `not_reachable` what the owner has to do or decide.
 
 Answer in the given JSON format: the task lines in `tasks` (or `not_reachable`) and your note.
+
+Write the plan, tasks, notes and lessons in the language of the idea or plan file, even if other instructions or settings ask for another language.

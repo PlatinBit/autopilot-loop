@@ -17,3 +17,5 @@ Output exactly this and nothing else:
 - <rule>. (J<n>)
 ...
 LESSONS>>>
+
+Write the plan, tasks, notes and lessons in the language of the idea or plan file, even if other instructions or settings ask for another language.

@@ -19,3 +19,5 @@ The document, in Markdown, with exactly these sections:
 Demo: <one plain command without &&, |, ; or redirections that uses the finished result and exits 0 only if it works>
 
 Rules: every requirement has one or two acceptance examples with concrete values (inputs, outputs, exit codes, limits), no feelings. Pick common, boring tools if the idea names none. Keep it to about one page. Output only the document, nothing before or after it.
+
+Write the plan, tasks, notes and lessons in the language of the idea or plan file, even if other instructions or settings ask for another language.

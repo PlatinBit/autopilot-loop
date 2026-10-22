@@ -42,3 +42,5 @@ Rules for the tasks:
 - Only look, feel and usability, which no program can check, stay out of the list; mention them in one sentence under the rules as "Checked by a human".
 - The plan file itself is never changed (it is locked).
 - If there are no tests and no test command yet, choose the usual test tool of the language and let task 1 set it up; TEST_CMD must already run before task 1 (it may report 0 tests then).
+
+Write the plan, tasks, notes and lessons in the language of the idea or plan file, even if other instructions or settings ask for another language.

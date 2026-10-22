@@ -12,3 +12,5 @@ Report only real defects that a user or the next developer would hit. Do not rep
 Answer in the given JSON format: `ok` is true if there is no real defect, with `tasks` empty; otherwise `ok` is false and `tasks` holds at most 5 fixes, each exactly like this, numbers continuing after the highest one in the task list:
 - [ ] <number>. <fix>. Done when <automatically checkable criterion>.
 A fix may only touch the allowed paths below: a defect that needs any other path is no task and does not count against `ok`, mention it in the note for the owner. "Done when" is followed either by the whole command in backticks that exits 0 on success (e.g. Done when `python -m pytest -q tests/test_x.py` exits 0; a bare path is no command), or without a command by a criterion that new tests prove (the test count must rise).
+
+Write the plan, tasks, notes and lessons in the language of the idea or plan file, even if other instructions or settings ask for another language.

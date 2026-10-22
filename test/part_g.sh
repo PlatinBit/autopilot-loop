@@ -89,6 +89,11 @@ pg_g4() {
         fail "G4: cost of the idea or the draft not in the project's costs.csv: $(cat "$w/.autopilot/costs.csv" 2>&1)"
     grep -qF "Build a Tiny counter! App" "$FAKE_DIR/idea-prompt" || fail "G4: idea missing in the prompt"
     grep -q "Milestones: if the idea names a number or a list of milestones, use exactly those. Otherwise as few as make sense: 1 for a small tool" "$FAKE_DIR/idea-prompt" && ! grep -q "5 to 15" "$FAKE_DIR/idea-prompt" || fail "G4: IDEA template (milestone rule) missing in the prompt"
+    # the plan and the tasks follow the language of the idea, not the user's "language" setting
+    for p in idea-prompt setup-prompt; do
+        grep -qF "in the language of the idea or plan file, even if other instructions or settings ask for another language" "$FAKE_DIR/$p" || fail "G4: language rule missing in $p"
+    done
+    grep -qF -- '--settings {"language":""}' "$FAKE_DIR/args" || fail "G4: the user's language setting is not neutralised: $(head -2 "$FAKE_DIR/args")"
     cp "$f" "$f.keep"
     "$TOOL_DIR/menu.sh" plan "Build a Tiny counter! App" >"$T/pg4b.txt" 2>&1 && fail "G4: overwrite not refused"
     grep -q "already exists" "$T/pg4b.txt" || fail "G4: overwrite message missing: $(cat "$T/pg4b.txt")"
