@@ -8,7 +8,4 @@ Check only these four points:
 
 Do not reject because of style, naming, missing comments or taste. When in doubt about small things, accept; be strict on points 2 to 4: rejecting is wanted whenever the criterion is not proven, a rejection costs one run, a fake costs the project.
 
-The last line of your answer must look exactly like this (nothing after it):
-VERDICT: ACCEPT
-or
-VERDICT: REJECT: <one or two sentences on what exactly is missing or wrong>
+Answer in the given JSON format: `verdict` is `accept` or `reject`; for `reject`, `reasons` says in one or two sentences what exactly is missing or wrong (empty for `accept`).

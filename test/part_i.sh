@@ -29,7 +29,7 @@ EOF
         grep -qx 'did: ticked task 1 without a test' "$FAKE_DIR/last-prompt" && grep -q "^End your answer with this block" "$FAKE_DIR/last-prompt" ||
         fail "I1: journal or note instruction missing in the worker prompt"
     grep -q "^## Journal and lessons" "$FAKE_DIR/brief-prompt" || fail "I1: journal missing in the brief prompt"
-    grep -q "^Before your last line, write this block" "$s/log/review-prompt.txt" || fail "I1: note instruction missing in the review prompt"
+    grep -q "^Fill the note field of your answer" "$s/log/review-prompt.txt" || fail "I1: note instruction missing in the review prompt"
     MAX_RUNS=1 "$TOOL_DIR/autopilot.sh" >"$T/pi1.txt" 2>&1 || fail "I1: second start failed: $(tail -3 "$T/pi1.txt")"
     [ "$(sed -n 's/^### J\([0-9]*\) .*/\1/p' "$j" | tr '\n' ' ')" = "1 2 3 4 5 6 7 8 " ] || fail "I1: numbers do not run on over the restart: $(grep '^### J' "$j")"
     grep -q '^### J7 .* worker 2\. two accepted$' "$j" || fail "I1: entry of the second start wrong: $(cat "$j")"

@@ -12,7 +12,7 @@ ln -s "$TOOL_DIR/test/fake-claude" "$T/bin/claude"
 # notify-send stub: the default notify() must never pop real desktop notifications during the test;
 # it appends its arguments to $NOTIFY_LOG (part_g reads that).
 printf '#!/bin/bash\necho "$*" >>"${NOTIFY_LOG:-/dev/null}"\n' >"$T/bin/notify-send" && chmod +x "$T/bin/notify-send"
-unset AUTOPILOT_CONF MAX_RUNS MAX_COST_USD ATTEMPTS MAX_BLOCKED NO_PROGRESS  # e.g. inherited from a running autopilot
+unset AUTOPILOT_CONF MAX_RUNS MAX_COST_USD ATTEMPTS MAX_BLOCKED NO_PROGRESS MAX_COST_PER_CALL_USD COOLDOWN EFFORT_WORKER EFFORT_REVIEWER EFFORT_PLANNER EFFORT_LESSONS  # e.g. inherited from a running autopilot
 # SANDBOX=off unless a test asks for the sandbox (SANDBOX= in its conf): the results must not depend on bwrap
 export PATH="$T/bin:$PATH" XDG_CONFIG_HOME="$T/config" FAKE_DIR="$T/fake" AUTOPILOT_LIMIT_WAIT=0 SANDBOX=off
 new_round() { rm -rf "$FAKE_DIR"; mkdir -p "$FAKE_DIR/steps"; }
@@ -93,8 +93,8 @@ grep -qx 1 "$FAKE_DIR/with-plan" || fail "plan was not passed to the worker with
 [ "$(grep -c "tool calls denied" "$v")" = 1 ] || fail "refused tool calls reported although there were none"
 grep -qx 1 "$FAKE_DIR/with-decisions" || fail "{DECISIONS_FILE} was not filled into the prompt"
 c=$T/pa/.autopilot/costs.csv
-[ "$(head -1 "$c")" = "time;kind;model;usd;input_tokens;cache_read_tokens;output_tokens" ] || fail "costs.csv header wrong: $(head -1 "$c")"
-[ "$(grep -c ';worker;opus;0.01;100;1000;10$' "$c")" = 15 ] && [ "$(grep -c ';reviewer;opus;0.01;' "$c")" = 6 ] ||
+[ "$(head -1 "$c")" = "time;kind;model;usd;input_tokens;cache_read_tokens;output_tokens;effort" ] || fail "costs.csv header wrong: $(head -1 "$c")"
+[ "$(grep -c ';worker;opus;0.01;100;1000;10;high$' "$c")" = 15 ] && [ "$(grep -c ';reviewer;opus;0.01;' "$c")" = 6 ] ||
     fail "costs.csv: worker and reviewer calls with tokens not recorded: $(cat "$c")"
 "$TOOL_DIR/menu.sh" status >"$T/st.txt" || fail "status failed"
 grep -q "4 done, 0 open, 1 blocked" "$T/st.txt" || fail "status wrong: $(cat "$T/st.txt")"
@@ -156,7 +156,7 @@ grep -q "^TEST_COUNT_CMD=" "$conf" || fail "TEST_COUNT_CMD not adopted"
 [ ! -e "$T/config/autopilot-loop/standard.conf" ] || fail "a standard.conf was still written"
 [ -f "$T/p2-autopilot/AUTOPILOT-TASKS.md" ] || fail "task list not in the work branch"
 git -C "$T/p2" status --porcelain | grep -q . && fail "project polluted by state files: $(git -C "$T/p2" status --porcelain)"
-grep -q ';draft;opus;0.01;100;1000;10$' "$T/p2/.autopilot/costs.csv" || fail "the draft's Claude call is missing in costs.csv"
+grep -q ';draft;opus;0.01;100;1000;10;high$' "$T/p2/.autopilot/costs.csv" || fail "the draft's Claude call is missing in costs.csv"
 echo "# changed" >>"$conf"
 "$TOOL_DIR/autopilot.sh" >/dev/null 2>&1; [ $? = 4 ] || fail "changed configuration loaded without a new confirmation"
 "$TOOL_DIR/menu.sh" trust >/dev/null || fail "trusting again (conf found in the current folder) failed"
@@ -530,7 +530,7 @@ grep -q "time limit" "$T/rt-conf/.autopilot/log/history.log" || fail "reviewer t
 ! grep -q "no verdict" "$T/rt-conf/.autopilot/log/history.log" || fail "reviewer timeout: reported as no verdict: $(cat "$T/rt.txt")"
 [ "$SECONDS" -lt 30 ] || fail "reviewer timeout: waited too long: $(cat "$T/rt.txt")"
 ! git log --format=%s | grep -q "^Autopilot:" || fail "reviewer timeout: a task was accepted: $(cat "$T/rt.txt")"
-grep -q ';reviewer;opus;?;;;$' "$T/rt-conf/.autopilot/costs.csv" || fail "reviewer timeout: cost not recorded as unknown: $(cat "$T/rt-conf/.autopilot/costs.csv")"
+grep -q ';reviewer;opus;?;;;;xhigh$' "$T/rt-conf/.autopilot/costs.csv" || fail "reviewer timeout: cost not recorded as unknown: $(cat "$T/rt-conf/.autopilot/costs.csv")"
 # SIGTERM during a worker run: child killed, work directory reset, history line with the hint
 new_round; sample_project "$T/si"
 printf -- '- [ ] 1. one\n' >TASKS.md
@@ -607,4 +607,5 @@ cd "$T" || exit 1
 . "$TOOL_DIR/test/part_h.sh"
 . "$TOOL_DIR/test/part_i.sh"
 . "$TOOL_DIR/test/part_j.sh"
+. "$TOOL_DIR/test/part_k.sh"
 echo ok

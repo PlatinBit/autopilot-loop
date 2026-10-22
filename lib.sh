@@ -95,41 +95,66 @@ CLAUDE_SAFE=(--safe-mode --setting-sources user --disallowedTools
 # claude -p with JSON output; the prompt comes via stdin (no length limit for arguments).
 # Answer text goes to TEXTFILE, cost in USD to stdout (0 if unknown, "?" after the time limit: the
 # tokens were spent but never reported). Every call is appended to $COSTS (if set) with its kind,
-# model, cost and tokens. Returns the exit code of claude. Time limit via CLAUDE_TIMEOUT (default 20m).
-COSTS_HEADER='time;kind;model;usd;input_tokens;cache_read_tokens;output_tokens'
+# model, cost, tokens and effort. Returns the exit code of claude. Time limit via CLAUDE_TIMEOUT (default 20m).
+# Effort per kind: EFFORT_WORKER, EFFORT_REVIEWER, EFFORT_LESSONS, and EFFORT_PLANNER for every other kind
+# (default high); CLAUDE_CODE_EFFORT_LEVEL from the environment would beat --effort, so the call runs without it.
+# Every call stops at MAX_COST_PER_CALL_USD (default 2), see over_budget.
+COSTS_HEADER='time;kind;model;usd;input_tokens;cache_read_tokens;output_tokens;effort'
 claude_run() { # TEXTFILE KIND [claude arguments …] <prompt
-    local text=$1 kind=$2 raw=$1.json rc cost tokens='0;0;0' model=? a prev=''; shift 2
+    local text=$1 kind=$2 raw=$1.json rc cost tokens='0;0;0' model=? a prev='' effort; shift 2
     for a in "$@"; do [ "$prev" = --model ] && model=$a; prev=$a; done
-    with_timeout "${CLAUDE_TIMEOUT:-20m}" claude -p --output-format json "$@" "${CLAUDE_SAFE[@]}" >"$raw" 2>&1; rc=$?
+    case $kind in worker|reviewer|lessons) effort=EFFORT_${kind^^} ;; *) effort=EFFORT_PLANNER ;; esac; effort=${!effort:-high}
+    with_timeout "${CLAUDE_TIMEOUT:-20m}" env -u CLAUDE_CODE_EFFORT_LEVEL claude -p --output-format json --effort "$effort" \
+        --max-budget-usd "${MAX_COST_PER_CALL_USD:-2}" "$@" "${CLAUDE_SAFE[@]}" >"$raw" 2>&1; rc=$?
     if jq -e . "$raw" >/dev/null 2>&1; then
-        jq -r '.result // ""' "$raw" >"$text"
+        jq -r '.result // (.errors // [] | join("; "))' "$raw" >"$text"
         cost=$(jq -r '.total_cost_usd // 0' "$raw")
         tokens=$(jq -r '[.usage.input_tokens, .usage.cache_read_input_tokens, .usage.output_tokens] | map(. // 0 | tostring) | join(";")' "$raw")
     else
         cp "$raw" "$text"; cost=0
     fi
     [ "$rc" = 124 ] && { cost='?'; tokens=';;'; }
-    if [ -n "${COSTS:-}" ]; then
+    if [ -n "${COSTS:-}" ]; then  # a costs.csv from before 0.10 gets the new header (its rows have no effort)
         [ -s "$COSTS" ] || echo "$COSTS_HEADER" >"$COSTS"
-        echo "$(date '+%F %T');$kind;$model;$cost;$tokens" >>"$COSTS"
+        [ "$(head -1 "$COSTS")" = "$COSTS_HEADER" ] || { { echo "$COSTS_HEADER"; tail -n +2 "$COSTS"; } >"$COSTS.new" && mv "$COSTS.new" "$COSTS"; }
+        echo "$(date '+%F %T');$kind;$model;$cost;$tokens;$effort" >>"$COSTS"
     fi
     echo "$cost"
     return $rc
 }
+# The flags of the claude CLI the loop relies on that this claude lacks (empty: all there)
+missing_flags() {
+    local h f m=''; h=$(claude --help 2>/dev/null)
+    for f in --safe-mode --effort --max-budget-usd --json-schema; do grep -q -- "$f" <<<"$h" || m+=" $f"; done
+    echo "${m# }"
+}
+# The call stopped at MAX_COST_PER_CALL_USD (--max-budget-usd)
+over_budget() { jq -e '.subtype == "error_max_budget_usd"' "$1.json" >/dev/null 2>&1; }  # TEXTFILE (from claude_run)
+# Fixed answer formats (--json-schema) of reviewer, final review and planner; the CLI puts the answer into
+# .structured_output. The note goes to the journal (journal_add).
+NOTE_SCHEMA='{"type":"object","additionalProperties":false,"required":["did","problem","hint"],"description":"your note for the shared journal of the next agents: one line each, about 300 characters in total, no secrets","properties":{"did":{"type":"string","description":"what you did"},"problem":{"type":"string","description":"what went wrong or cost time, or none"},"hint":{"type":"string","description":"one tip for the next agent, or none"}}}'
+TASKS_SCHEMA='{"type":"array","maxItems":10,"items":{"type":"string","description":"- [ ] <number>. <task>. Done when <automatically checkable criterion>."}}'
+REVIEWER_SCHEMA='{"type":"object","additionalProperties":false,"required":["verdict","reasons","note"],"properties":{"verdict":{"enum":["accept","reject"]},"reasons":{"type":"array","items":{"type":"string"},"description":"for reject: what exactly is missing or wrong, one or two sentences"},"note":'$NOTE_SCHEMA'}}'
+FINAL_SCHEMA='{"type":"object","additionalProperties":false,"required":["ok","tasks","note"],"properties":{"ok":{"type":"boolean","description":"true only if there is no real defect"},"tasks":'$TASKS_SCHEMA',"note":'$NOTE_SCHEMA'}}'
+PLANNER_SCHEMA='{"type":"object","additionalProperties":false,"required":["tasks","note"],"properties":{"tasks":'$TASKS_SCHEMA',"not_reachable":{"type":"string","description":"only when the goal needs the owner, not tasks: what the owner has to do or decide"},"note":'$NOTE_SCHEMA'}}'
+# Values of the structured answer, one per line: newlines and other control characters inside a value become spaces
+answer_lines() { jq -r ".structured_output | $2 | tostring | gsub(\"[[:cntrl:]]\"; \" \")" "$1.json" 2>/dev/null; }  # TEXTFILE JQ-PATH
 
 # Journal (.autopilot/JOURNAL.md, written only by the script): one entry per agent run,
 # "### J<n> <time> <role> <task> <result>" plus the agent's note: only did:/problem:/hint: lines of the LAST
-# <<<NOTE … NOTE>>> block, at most 3 lines / 600 bytes, control characters removed. Without a block (or
-# answer file) the entry holds only the header. Numbers run on over restarts; the file is never shortened.
+# <<<NOTE … NOTE>>> block, or of the note field of a structured answer (one line per field), at most 3 lines /
+# 600 bytes, control characters removed. Without a note (or answer file) the entry holds only the header.
+# Numbers run on over restarts; the file is never shortened.
 journal_add() { # ANSWER_FILE JOURNAL ROLE TASK RESULT
   local _ans=$1 _jf=$2 _role=$3 _res=$5 _task _n _note
   _task=$(printf '%s' "$4" | tr -d '\000-\037\177')
   _n=$(grep -c '^### J' "$_jf" 2>/dev/null)
   _n=$(( ${_n:-0} + 1 ))
-  _note=$(awk '/^<<<NOTE[[:space:]]*$/ { b = ""; on = 1; next }
+  _note=$( { answer_lines "$_ans" '.note // {} | to_entries[] | select(.key | test("^(did|problem|hint)$")) | "\(.key): \(.value)"'
+             awk '/^<<<NOTE[[:space:]]*$/ { b = ""; on = 1; next }
                /^NOTE>>>[[:space:]]*$/ { if (on) last = b; on = 0; next }
                on { b = b $0 "\n" }
-               END { printf "%s", last }' "$_ans" 2>/dev/null \
+               END { printf "%s", last }' "$_ans" 2>/dev/null; } \
     | tr -d '\000-\011\013-\037\177' \
     | grep -E '^(did|problem|hint):' | head -n 3 | head -c 600 \
     | { iconv -f UTF-8 -t UTF-8 -c 2>/dev/null || cat; })
@@ -193,6 +218,14 @@ usage_limit() { # TEXTFILE (from claude_run)
     else
         grep -qiE "$LIMIT_PATTERN" "$raw"
     fi
+}
+# Did the call end with an API or network error (overloaded, 5xx, connection reset, API timeout)? The CLI then
+# prints no JSON at all, or an error answer naming it. The usage limit is not one of them (usage_limit).
+API_ERROR_PATTERN='overloaded|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|socket hang up|fetch failed|network|connection error|timed? ?out|internal server error|bad gateway|service unavailable|(^|[^0-9])5[0-9][0-9]([^0-9]|$)'
+api_error() { # TEXTFILE (from claude_run)
+    usage_limit "$1" && return 1
+    jq -e . "$1.json" >/dev/null 2>&1 || return 0
+    jq -e --arg p "$API_ERROR_PATTERN" '(.is_error == true) and (((.api_error_status // 0) >= 500) or ((.result // "") | test($p; "i")))' "$1.json" >/dev/null
 }
 # When the usage limit resets, as far as the message says ("resets 5pm", or "…|<unix time>")
 limit_reset() { # TEXTFILE (from claude_run)

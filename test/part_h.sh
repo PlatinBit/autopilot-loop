@@ -45,7 +45,7 @@ EOF
         fail "H2: time limit feedback missing or without the denied commands: $(cat "$s/log/history.log")"
     grep -q "aborted after 45m" "$s/feedback.txt" && grep -q "rejected-2.patch" "$s/feedback.txt" || fail "H2: feedback.txt lacks the reason or the patch path: $(cat "$s/feedback.txt")"
     grep -q '^+half' "$s/log/rejected-2.patch" && grep -q '^+check' "$s/log/rejected-1.patch" || fail "H2: diff of the rejected attempts not saved: $(ls "$s/log")"
-    grep -q ';worker;sonnet;?;;;$' "$s/costs.csv" || fail "H2: time-limit cost not recorded as ?: $(cat "$s/costs.csv")"
+    grep -q ';worker;sonnet;?;;;;medium$' "$s/costs.csv" || fail "H2: time-limit cost not recorded as ?: $(cat "$s/costs.csv")"
     "$TOOL_DIR/menu.sh" status | grep -q "worker .*(+1 calls cut off at the time limit, cost unknown)" || fail "H2: status does not name the unknown cost: $("$TOOL_DIR/menu.sh" status)"
     [ "$(cat "$s/outcome")" = "$(printf 'limit\trun cap MAX_RUNS=2 reached, 2 tasks still open')" ] || fail "H2: run cap outcome wrong: $(cat "$s/outcome")"
     [ -z "$(git status --porcelain)" ] || fail "H2: work directory not clean"

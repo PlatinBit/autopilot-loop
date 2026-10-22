@@ -28,6 +28,7 @@ exclude_state() { # REPO: state directory and configuration never in Git
 claude_failed() { # ANSWERFILE
     local t
     usage_limit "$1" && { t=$(limit_reset "$1"); fail "Claude's usage limit is reached${t:+ (resets $t)} – nothing was set up; run the same command again then."; }
+    over_budget "$1" && fail "Claude hit the per-call budget (MAX_COST_PER_CALL_USD=${MAX_COST_PER_CALL_USD:-2}) – run it again with a higher one, e.g. MAX_COST_PER_CALL_USD=5 autopilot plan …"
     fail "Claude exited with an error, see $1"
 }
 
@@ -239,9 +240,11 @@ accept_suggestion() { # adds the planner's suggestion to the task list of the pr
         n=$(grep -c . "$STATE/suggestion.md")
         is_running && { echo "Stop it first: the autopilot is running."; exit 1; }
         [ -z "$(g -C "$WORKDIR" status --porcelain)" ] || { echo "Work directory not clean."; exit 1; }
+        # MILESTONE_GATE=ask: these are the tasks of the next milestone, which starts here
+        read -r nx 2>/dev/null <"$STATE/gate" && echo "$nx $(g -C "$WORKDIR" rev-parse HEAD)" >"$STATE/milestone"
         cat "$STATE/suggestion.md" >>"$WORKDIR/$TASKS_FILE"
         g -C "$WORKDIR" add "$TASKS_FILE" && g -C "$WORKDIR" commit -q -m "Planner: $n new tasks" || exit 1
-        rm -f "$STATE/suggestion.md" "$STATE/no-progress"  # adopted = new state: the no-progress brake starts afresh
+        rm -f "$STATE/suggestion.md" "$STATE/no-progress" "$STATE/gate"  # adopted = new state: the no-progress brake starts afresh
         echo "$n tasks adopted. Start: autopilot start"
     )
 }
@@ -266,7 +269,7 @@ case "${1:-}" in
             accept:draft) accept_draft "$path" ;;
             accept:suggestion) accept_suggestion ;;
             discard:draft) rm -rf "$path"; rm -f "$LAST"; echo "Draft thrown away." ;;
-            discard:suggestion) rm -f "$path"; echo "Planner suggestion thrown away." ;;
+            discard:suggestion) rm -f "$path" "$(dirname "$path")/gate"; echo "Planner suggestion thrown away." ;;
         esac ;;
     -h|--help|help) sed -n '2,11p' "$0" | cut -c3- ;;
     *) need_claude && need_jq || exit 1

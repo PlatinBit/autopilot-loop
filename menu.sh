@@ -4,9 +4,10 @@
 #   autopilot plan <file> | plan "<idea>"   draft a project from a plan file, or from a few sentences
 #   autopilot plan [accept|discard]          show / set up or adopt / throw away the draft or the planner's suggestion
 #   autopilot start                          run the loop in the background (tmux) until done or a cap is hit
-#   autopilot status [--short]               where it stands; after the end: outcome, tasks, tests, cost, tokens
+#   autopilot status [--short|--watch]       where it stands; after the end: outcome, tasks, tests, cost, tokens
 #   autopilot stop [--now]                   stop after the current run / now (the unfinished run is discarded)
-#   autopilot handover                       the result: what was built, how to try it, the proof, what is open
+#   autopilot handover [--export-lessons]    the result: what was built, how to try it, the proof, what is open
+#                                            / add the lessons to AGENTS.md next to autopilot.conf
 #   autopilot doctor                         check tools, versions and the project's test command
 #   autopilot trust [file]                   confirm a hand-written or changed autopilot.conf (it is Bash code)
 #   autopilot help                           this help
@@ -49,8 +50,9 @@ doctor() {
     printf ' ✔ %-9s %-8s %s\n' bash "${BASH_VERSION%%(*}" "runs all scripts (4.4 or newer)"
     doc_row claude "writes, plans and reviews the code" "https://claude.com/claude-code – then log in once: claude" || miss=1
     if command -v claude >/dev/null; then
-        if claude --help 2>/dev/null | grep -q -- '--safe-mode'; then echo " ✔ claude --safe-mode supported (runs without foreign hooks and plugins)"
-        else echo " ✘ claude is too old for --safe-mode (needs Claude Code >= 2.1) – update it"; miss=1; fi
+        t=$(missing_flags)
+        if [ -z "$t" ]; then echo " ✔ claude supports --safe-mode (no foreign hooks and plugins), --effort, --max-budget-usd, --json-schema"
+        else echo " ✘ claude is too old for $t (needs Claude Code >= 2.1) – update it"; miss=1; fi
     fi
     doc_row git "work branch, checks and commit of every run" || miss=1
     doc_row jq "reads Claude's JSON answers" || miss=1
@@ -128,6 +130,7 @@ status() {
     echo "Tests:       ${t0:-?} -> ${t1:-?}"
     [ -n "$acc" ] && echo "Acceptance:  ${acc#Accept }"
     echo "This start:  $started, ${run:-0} runs, $spent USD"
+    [ -n "$(info "$st" EFFORT)" ] && echo "Effort:      $(info "$st" EFFORT)"
     echo "Cost (all Claude calls of this project):"; cost_table "$st/costs.csv"
     [ -s "$st/suggestion.md" ] && echo "Suggestion:  $(grep -c . "$st/suggestion.md") new tasks from the planner wait: autopilot plan, then autopilot plan accept"
     echo; echo "Latest events:"; tail -8 <<<"$ev" | cut_chars 12 110
@@ -153,8 +156,28 @@ stop() { # [--now]
     kill -0 "$pid" 2>/dev/null && { echo "Could not stop the autopilot (PID $pid) – check it: ps -p $pid"; return 1; }
     echo "Stopped now: the unfinished run was discarded (work directory reset to the last commit)."
 }
-handover() {
+# status again every 5 seconds with the latest journal entries, until Ctrl+C (--once: a single round)
+watch() { # [--once]
     local st; st=$(state_of) || { echo "$NO_PROJECT" >&2; return 3; }
+    while :; do
+        [ -t 1 ] && printf '\033[H\033[2J'
+        status; echo; echo "Journal (last 5 entries, all of them: $st/JOURNAL.md):"; journal_tail "$st/JOURNAL.md" 5
+        [ "${1:-}" = --once ] && return 0
+        sleep 5
+    done
+}
+handover() { # [--export-lessons]
+    local st a s; st=$(state_of) || { echo "$NO_PROJECT" >&2; return 3; }
+    if [ "${1:-}" = --export-lessons ]; then  # only on the owner's command: AGENTS.md is read by every later session
+        s=$st/AGENTS-suggestion.md; a=$(dirname "$st")/AGENTS.md
+        [ -s "$s" ] || { echo "No lessons to export: $s is written when a start ends with lessons."; return 1; }
+        # the section "## Lessons from autopilot" (up to the next "## " heading) is replaced, or appended
+        cat "$a" 2>/dev/null | awk -v f="$s" 'BEGIN { while ((getline l < f) > 0) new = new l "\n" }
+            /^## Lessons from autopilot[[:space:]]*$/ { printf "%s", new; skip = done = 1; next }
+            skip && /^## / { skip = 0; print "" } !skip { print }
+            END { if (!done) { if (NR) print ""; printf "%s", new } }' >"$a.new" && mv "$a.new" "$a" || return 1
+        echo "Written to $a (commit it yourself):"; cat "$s"; return 0
+    fi
     [ -s "$st/HANDOVER.md" ] || { echo "No handover yet: it is written when a start ends. Start it: autopilot start"; return 0; }
     cat "$st/HANDOVER.md"
 }
@@ -187,9 +210,9 @@ case "${1:-}" in
     start)
         [ $# -eq 1 ] || { echo "autopilot start takes no arguments: runs, cost cap and models are set in autopilot.conf (MAX_RUNS, MAX_COST_USD, MODELS)."; exit 2; }
         start_now ;;
-    status) if [ "${2:-}" = --short ]; then status_short; else status; fi ;;
+    status) case ${2:-} in --short) status_short ;; --watch) watch "${3:-}" ;; *) status ;; esac ;;
     stop) stop "${2:-}" ;;
-    handover) handover ;;
+    handover) handover "${2:-}" ;;
     doctor) doctor ;;
     trust)
         k=${2:-$(find_conf)} && [ -f "$k" ] || { echo "No autopilot.conf found."; exit 1; }

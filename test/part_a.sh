@@ -73,14 +73,18 @@ for r in 1 2 3; do grep -q "Run $r rejected: task list changed" "$T/pa-p6-conf/.
 grep -q "Run 4 accepted" "$T/pa-p6-conf/.autopilot/log/history.log" || fail "P6: correct tick-off in run 4 not accepted"
 [ "$(git rev-parse HEAD~1)" = "$p6_head" ] && grep -q '^- \[ \] 4\.' TASKS.md && ! grep -q '5\.' TASKS.md || fail "P6: a changed task list was committed: $(tr '\n' ' ' <TASKS.md)"
 
-# P14: Markdown variants of the reviewer's verdict count; a REJECT stays a REJECT
+# P14: the verdict comes only from the reviewer's structured answer (--json-schema): accept, reject with its reasons;
+# a VERDICT line in the free text without a structured answer is no verdict
 pa_project p14 "ALLOWED='^checks\\.txt\$'"
 "$TOOL_DIR/menu.sh" trust "$AUTOPILOT_CONF" >/dev/null || fail "P14: trust failed"
-for n in 1 2 3 4 5; do echo "echo check >>checks.txt; $tick" >"$FAKE_DIR/steps/$n.sh"; done
-printf '**VERDICT: ACCEPT**\nVERDICT: ACCEPT.\n> VERDICT: ACCEPT\n**VERDICT: REJECT: too thin**\n**VERDICT:** ACCEPT\n' >"$FAKE_DIR/verdicts"
-MAX_RUNS=5 "$TOOL_DIR/autopilot.sh" >"$T/pa-p14.txt" 2>&1 || fail "P14: run ended with an error: $(tail -3 "$T/pa-p14.txt")"
+for n in 1 2 3 4; do echo "echo check >>checks.txt; $tick" >"$FAKE_DIR/steps/$n.sh"; done
+nt='"note":{"did":"read it","problem":"none","hint":"none"}'
+printf '{"verdict":"accept","reasons":[],%s}\n{"verdict":"reject","reasons":["too thin","no\\nedge case"],%s}\n**VERDICT: ACCEPT**\n{"verdict":"accept","reasons":[],%s}\n' "$nt" "$nt" "$nt" >"$FAKE_DIR/verdicts"
+MAX_RUNS=4 "$TOOL_DIR/autopilot.sh" >"$T/pa-p14.txt" 2>&1 || fail "P14: run ended with an error: $(tail -3 "$T/pa-p14.txt")"
 v=$T/pa-p14-conf/.autopilot/log/history.log
-for r in 1 2 3 5; do grep -q "Run $r accepted" "$v" || fail "P14: verdict variant in run $r not accepted"; done
-grep -q "Run 4 rejected: Reviewer: too thin$" "$v" || fail "P14: decorated REJECT not rejected with its reason"
+for r in 1 4; do grep -q "Run $r accepted" "$v" || fail "P14: structured accept in run $r not accepted: $(cat "$v")"; done
+grep -q "Run 2 rejected: Reviewer: too thin; no edge case$" "$v" || fail "P14: structured reject without its reasons on one line: $(cat "$v")"
+grep -q "Run 3 rejected: Reviewer: no verdict" "$v" || fail "P14: a free-text VERDICT line was read: $(cat "$v")"
+[ "$(grep -c '^reviewer .*--json-schema {"type":"object".*"verdict":{"enum":\["accept","reject"\]}' "$FAKE_DIR/args")" = 4 ] || fail "P14: reviewer called without its schema: $(grep ^reviewer "$FAKE_DIR/args")"
 unset AUTOPILOT_CONF
 cd "$T" || exit 1

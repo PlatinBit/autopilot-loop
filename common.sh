@@ -42,6 +42,10 @@ MAX_COST_USD=${MAX_COST_USD:-20}
 ATTEMPTS=${ATTEMPTS:-3}
 MAX_BLOCKED=${MAX_BLOCKED:-3}
 NO_PROGRESS=${NO_PROGRESS:-10}
+MAX_COST_PER_CALL_USD=${MAX_COST_PER_CALL_USD:-2}
+COOLDOWN=${COOLDOWN:-10m}
+EFFORT_WORKER=${EFFORT_WORKER:-}; EFFORT_REVIEWER=${EFFORT_REVIEWER:-}; EFFORT_PLANNER=${EFFORT_PLANNER:-}; EFFORT_LESSONS=${EFFORT_LESSONS:-}
+MILESTONE_GATE=auto
 PLANNER=on
 MERGE=ff
 FRESH_CHECK=on
@@ -61,12 +65,14 @@ notify() { # LEVEL TEXT; LEVEL is ok|info|warn|crit. Default: desktop notificati
 # shellcheck disable=SC1090
 . "$CONF"
 
-case $MODELS in
-    balanced) WORKER_MODEL=sonnet; REVIEWER_MODEL=sonnet; PLANNER_MODEL=opus ;;
-    max)      WORKER_MODEL=opus;   REVIEWER_MODEL=opus;   PLANNER_MODEL=opus ;;
-    cheap)    WORKER_MODEL=haiku;  REVIEWER_MODEL=sonnet; PLANNER_MODEL=sonnet ;;
+case $MODELS in  # models, then effort: worker reviewer planner lessons (the planner's also for final, brief, draft, plan)
+    balanced) WORKER_MODEL=sonnet; REVIEWER_MODEL=sonnet; PLANNER_MODEL=opus;   e=(medium high high low) ;;
+    max)      WORKER_MODEL=opus;   REVIEWER_MODEL=opus;   PLANNER_MODEL=opus;   e=(high xhigh xhigh xhigh) ;;
+    cheap)    WORKER_MODEL=haiku;  REVIEWER_MODEL=sonnet; PLANNER_MODEL=sonnet; e=(medium medium medium low) ;;
     *) echo "MODELS=$MODELS in $CONF: use balanced, max or cheap." >&2; exit 1 ;;
 esac
+EFFORT_WORKER=${EFFORT_WORKER:-${e[0]}}; EFFORT_REVIEWER=${EFFORT_REVIEWER:-${e[1]}}
+EFFORT_PLANNER=${EFFORT_PLANNER:-${e[2]}}; EFFORT_LESSONS=${EFFORT_LESSONS:-${e[3]}}
 case $MERGE in ff|off) ;; *) echo "MERGE=$MERGE in $CONF: use ff or off." >&2; exit 1 ;; esac
 abs_path() { case "$1" in /*) echo "$1" ;; *) echo "$CONF_DIR/$1" ;; esac; }
 WORKDIR=$(abs_path "$WORKDIR")
