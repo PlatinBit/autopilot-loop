@@ -12,7 +12,7 @@ TEST_COUNT_REGEX='<regular expression (Bash, extended) whose first group reads t
 TEST_EMPTY_RC=<only if the test tool has an exit code that means "no tests yet", e.g. 5 for pytest – omit the line otherwise>
 ALLOWED='<optional, only if the plan limits it: regular expression on file paths relative to the project that the worker may change, e.g. ^(src/|tests/) – omit the line otherwise>'
 WORKER_TOOLS=(Read Edit Write Glob Grep 'Bash(<test command without arguments>:*)')
-DEMO_CMD='<one command that starts or uses the finished result the way the owner would, from the plan's "Deliverable" (or "What exists at the end") section; exit 0 = it works, e.g. python app.py --help, ./bin/tool examples/a.md, npm start -- --check. No interactive command, no server that never exits>'
+DEMO_CMD='<one command that starts or uses the finished result the way the owner would, from the plan's "Deliverable" (or "What exists at the end") section; exit 0 = it works, e.g. python app.py --help, ./bin/tool examples/a.md, npm start -- --check. No interactive command, no server that never exits; one plain command without &&, |, ; or redirections (the worker may only run it in that form) – several steps go into a script in the repo, e.g. bash demo.sh, which a task creates and which is then locked for the worker>'
 TRY_IT='<one or two sentences on how the owner tries the result by hand, with paths relative to the project folder (the handover names that folder), e.g. In the project folder run python app.py, open http://localhost:8000 and upload a file>'
 
 (Instead of TEST_COUNT_REGEX you may write TEST_COUNT_CMD='<command>': it gets the output of the test command on stdin and prints only the number – for tools without a summary line. Proven values:

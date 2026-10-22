@@ -123,7 +123,7 @@ The project is `./autopilot.conf` (or one in a folder above, up to the Git root)
 | No. | Setting | Meaning |
 |---|---|---|
 | 1 | `TEST_CMD` | builds and runs all tests, exit 0 = green; its output has a count line (`TEST_COUNT_REGEX`, default `^TESTS: ([0-9]+)`) that must never drop and must rise with every task that names no [check command](#check-command-per-task) of its own |
-| 2 | `DEMO_CMD` | uses the finished result like you would, exit 0 = it works. Without it the start only warns, and the end is always "not delivered: no demo" |
+| 2 | `DEMO_CMD` | uses the finished result like you would, exit 0 = it works. Without it the start only warns, and the end is always "not delivered: no demo". One plain command without `&&`, `|`, `;` or redirections, so `plan accept` can let the worker run it; several steps go into a script in the repo, e.g. `bash demo.sh`. The worker prompt offers the demo and a task's check command only when a `WORKER_TOOLS` entry covers exactly that command |
 
 Everything else has a default; [`templates/autopilot.conf`](templates/autopilot.conf) documents each one, [`examples/gradle.conf`](examples/gradle.conf) shows a Gradle project. The start refuses a value of the wrong form (`MAX_RUNS`, `ATTEMPTS`, `MAX_BLOCKED`, `NO_PROGRESS` a whole number, `MAX_COST_USD` a number, `FRESH_CHECK`/`SECRETS_CHECK` `on` or `off`, `MERGE` `ff` or `off`, `SANDBOX` empty, `on` or `off`). The most useful ones:
 
@@ -134,7 +134,7 @@ Everything else has a default; [`templates/autopilot.conf`](templates/autopilot.
 | 3 | `ATTEMPTS` | 3 | failed attempts per task (script rejection, reviewer no, time limit), then it is blocked |
 | 4 | `MAX_BLOCKED` | 3 | blocked tasks, then the loop stops |
 | 5 | `NO_PROGRESS` | 10 | accepted runs without a higher acceptance count end the loop; a planner round counts as half of it, so two rounds without progress end it too. Adopting a suggestion resets it |
-| 6 | `ALLOWED` | empty | regex of paths the worker may change. Empty: everything except the files that control the test command (`package.json`, `pyproject.toml`, `pytest.ini`, `setup.cfg`, `tox.ini`, `noxfile.py`, `conftest.py`, `jest.config.*`, `vitest.config.*`, `build.gradle*`, `settings.gradle*`, `gradle.properties`, `gradlew`, `gradle/wrapper/*`, `mvnw`, `Cargo.toml`, `go.mod`, `Makefile`, `*.csproj`, `pom.xml`) and the script `TEST_CMD`, `ACCEPT_CMD` or `DEMO_CMD` starts when its first word is a file in the work directory (e.g. `./run-tests.sh`). The task list, `BLOCKED.md` and the decisions file are always allowed |
+| 6 | `ALLOWED` | empty | regex of paths the worker may change. Empty: everything except the files that control the test command (`package.json`, `pyproject.toml`, `pytest.ini`, `setup.cfg`, `tox.ini`, `noxfile.py`, `conftest.py`, `jest.config.*`, `vitest.config.*`, `build.gradle*`, `settings.gradle*`, `gradle.properties`, `gradlew`, `gradle/wrapper/*`, `mvnw`, `Cargo.toml`, `go.mod`, `Makefile`, `*.csproj`, `pom.xml`) and the script `TEST_CMD`, `ACCEPT_CMD` or `DEMO_CMD` starts when its first word (or the second after `bash`/`sh`) is a file in the work directory (e.g. `./run-tests.sh`, `bash demo.sh`). The task list, `BLOCKED.md` and the decisions file are always allowed |
 | 7 | `LOCKED` | the plan | paths that must never change, e.g. the acceptance test |
 | 8 | `ACCEPT_CMD` | empty | optional overall goal printing `ACCEPT: k of n`; may be red, `k` must never drop |
 | 9 | `SANDBOX` | on when bwrap works | `off` switches it off |
@@ -146,7 +146,7 @@ Everything else has a default; [`templates/autopilot.conf`](templates/autopilot.
 
 ## What you get at the end
 
-Every loop ends with `.autopilot/outcome` (`delivered`, `not-delivered`, `stopped`, `limit` or `error`, tab, reason), `.autopilot/HANDOVER.md` and `.autopilot/demo.txt`. **"Delivered" means: all tasks (of all milestones) done, the acceptance test (if any) met, `DEMO_CMD` exited 0, the final review found nothing, and tests and demo passed in a fresh checkout.** The handover says "Merged into main" or "Not merged: reason" with the command to do it, names the folder to try it in, shows command, exit code and last lines of the demo and the tests, the blocked tasks, new dependencies (lines added to `package.json`, `requirements*.txt`, `pyproject.toml`, `build.gradle*`, `Cargo.toml`, `go.mod`, `pom.xml`, `Gemfile`, `composer.json`), the cost and tokens per kind of Claude call (plan, draft, brief, worker, reviewer, planner, lessons, final – all in `.autopilot/costs.csv`), the lessons, the last 10 journal entries and the next step.
+Every loop ends with `.autopilot/outcome` (`delivered`, `not-delivered`, `stopped`, `limit` or `error`, tab, reason), `.autopilot/HANDOVER.md` and `.autopilot/demo.txt`. **"Delivered" means: all tasks (of all milestones) done, the acceptance test (if any) met, `DEMO_CMD` exited 0, the final review found nothing, and tests and demo passed in a fresh checkout.** Outcome, handover headline, `status --short` and the toast read "delivered, merged into main", "delivered (not merged: reason)" or, with `MERGE=off`, just "delivered". The handover says "Merged into main" or "Not merged: reason" with the command to do it, names the fresh checkout ("tests and demo green" or "off") in the proof, names the folder to try it in, shows command, exit code and last lines of the demo and the tests, the blocked tasks, new dependencies (lines added to `package.json`, `requirements*.txt`, `pyproject.toml`, `build.gradle*`, `Cargo.toml`, `go.mod`, `pom.xml`, `Gemfile`, `composer.json`), the cost and tokens per kind of Claude call (plan, draft, brief, worker, reviewer, planner, lessons, final – all in `.autopilot/costs.csv`), the lessons, the last 10 journal entries and the next step.
 
 ## The end: final review, fresh checkout, merge
 
@@ -178,7 +178,7 @@ It stays removed and is not brought back, not even reworded; a lesson that comes
 
 Token cost: every prompt gets the last 25 journal entries (about 25 x 150 tokens, roughly 4k), worker, brief and planner also all lessons (under 1k). Condensing the lessons costs one extra planner run each time (kind `lessons` in `costs.csv`).
 
-In Claude Code the status line shows each running project; when one ends, a toast leads with the outcome: "Autopilot shop: Delivered - 5 done, 1 blocked, tests 114 -> 131, 4.20 USD - /autopilot-loop handover". Desktop notifications use `notify-send` where it exists; a `notify()` in `autopilot.conf` replaces it.
+In Claude Code the status line shows each running project; when one ends, a toast leads with the outcome: "Autopilot shop: Delivered, merged into main - 5 done, 1 blocked, tests 114 -> 131, 4.20 USD - /autopilot-loop handover". Desktop notifications use `notify-send` where it exists; a `notify()` in `autopilot.conf` replaces it.
 
 ## Safeguards
 

@@ -277,12 +277,13 @@ proof() { # COMMAND EXITCODE FILE LINES
 # Every end of the loop: $STATE/outcome (one line: outcome, tab, reason) and $STATE/HANDOVER.md, written by
 # the shell alone (no Claude call), and the result first in the notification.
 handover() { # OUTCOME REASON; OUTCOME is delivered|not-delivered|stopped|limit|error
-    local b built merged='' next deps where=$ROOT
+    local b built merged='' next deps where=$ROOT head=Delivered
     printf '%s\t%s\n' "$1" "$2" >"$STATE/outcome"
     b=$(g branch --show-current); [ -n "$b" ] || b=$(g rev-parse --short HEAD)
     { [ "$b" = "$BASE_BRANCH" ] || g merge-base --is-ancestor HEAD "$BASE_BRANCH" 2>/dev/null; } && merged=1
     [ -n "$merged" ] && [ "$b" != "$BASE_BRANCH" ] && where=$(main_worktree)  # merged: try it in the project folder
     built=$(g log --oneline "$BASE_BRANCH..HEAD" 2>/dev/null | cut_chars 1 100); [ -n "$built" ] || built=$(grep '^- \[x\]' "$TASKS_FILE")
+    case $2 in "merged into"*) head+=", $2" ;; "not merged"*) head+=" ($2)" ;; esac  # delivered: REASON is the merge state
     case $1 in
         delivered) if [ -n "$merged" ]; then next="try it (see above): the work is on $BASE_BRANCH"
                    else next="try it (see above), then adopt it: ${merge_cmd:-cd $(printf %q "$(main_worktree)") && git switch $(printf %q "$BASE_BRANCH") && git merge $(printf %q "$b")}"; fi ;;
@@ -291,7 +292,7 @@ handover() { # OUTCOME REASON; OUTCOME is delivered|not-delivered|stopped|limit|
            elif [ -s "$STATE/suggestion.md" ]; then next="read the planner's suggestion: autopilot plan – adopt it: autopilot plan accept"
            else next="fix the cause (logs: $LOGS), then: autopilot start"; fi ;;
     esac
-    {   if [ "$1" = delivered ]; then echo "# Delivered"; else echo "# Not delivered: $2"; fi
+    {   if [ "$1" = delivered ]; then echo "# $head"; else echo "# Not delivered: $2"; fi
         echo "Project $NAME, $t_start to $(date '+%F %T'), $i runs, $(cost_sum "$COSTS" "$costs_from") USD this start"
         [ -n "$ms" ] && echo "Plan milestones: $(echo $ms_all), current: Milestone $ms"
         echo; echo "## What was built"; echo "${built:-nothing new}"
@@ -303,6 +304,7 @@ handover() { # OUTCOME REASON; OUTCOME is delivered|not-delivered|stopped|limit|
         [ -n "$final_issues" ] && { echo; echo "## Final review found"; echo "$final_issues"; }
         [ -n "$fresh_out" ] && { echo; echo "## Fresh checkout of HEAD (all of it: $STATE/fresh.txt), last lines"; echo "$fresh_out"; }
         echo; echo "## Proof"
+        [ -n "$fresh_line" ] && echo "Fresh checkout: $fresh_line"
         if [ -n "$demo_rc" ]; then echo -n "Demo: "; proof "$DEMO_CMD" "$demo_rc" "$STATE/demo.txt" 20
         elif [ -n "$DEMO_CMD" ]; then echo "Demo: not run (\`$DEMO_CMD\`)"
         else echo "Demo: none (DEMO_CMD is not set in autopilot.conf)"; fi
@@ -317,7 +319,7 @@ handover() { # OUTCOME REASON; OUTCOME is delivered|not-delivered|stopped|limit|
         [ -s "$JOURNAL" ] && { echo; echo "## Log (last 10 entries, all of them: $JOURNAL)"; journal_tail "$JOURNAL" 10; }
         echo; echo "## Next step for you"; echo "$next"
     } >"$STATE/HANDOVER.md"
-    if [ "$1" = delivered ]; then notify ok "Delivered: $2" >/dev/null 2>&1 || true
+    if [ "$1" = delivered ]; then notify ok "$head" >/dev/null 2>&1 || true
     else notify warn "Not delivered: $2" >/dev/null 2>&1 || true; fi
 }
 finish() { # EXIT trap: an end that wrote no outcome itself (crit stop) is an error with the last history line
@@ -413,8 +415,8 @@ merge_into_base() {
          [ -n "$ign" ]; then why="the merge would overwrite ignored files in $main: $(echo $ign | shorten 120)"
     elif ! g merge-base --is-ancestor "$BASE_BRANCH" HEAD; then why="$BASE_BRANCH has moved on, no fast-forward possible"
     elif ! out=$(g -C "$main" merge -q --ff-only "$b" 2>&1); then why="git merge --ff-only failed: $(tail -1 <<<"$out")"; fi
-    if [ -z "$why" ]; then merge_note="Merged into $BASE_BRANCH (fast-forward) in $main."; note "$merge_note"
-    else merge_note="Not merged: $why. Adopt it yourself: $merge_cmd"; fi
+    if [ -z "$why" ]; then merge_note="Merged into $BASE_BRANCH (fast-forward) in $main."; note "$merge_note"; merge_state="merged into $BASE_BRANCH"
+    else merge_note="Not merged: $why. Adopt it yourself: $merge_cmd"; [ "$MERGE" = off ] || merge_state="not merged: $(shorten 80 <<<"$why")"; fi
 }
 # Milestones: "## Milestone N" headings of the plan; the current one and the commit it started at are in
 # .autopilot/milestone ("<n> <commit>", default: the first, started at BASE_BRANCH)
@@ -497,6 +499,23 @@ tools_cover_test_cmd() {
     done
     [ -z "$has" ]
 }
+# A WORKER_TOOLS entry lets the worker run exactly this command: plain Bash, or Bash(<command>) / Bash(<prefix>:*)
+# that covers it; a command with && | ; or a redirection matches no single entry
+tool_allows() { # COMMAND
+    local t p
+    for t in "${WORKER_TOOLS[@]}"; do [ "$t" = Bash ] && return 0; done
+    [[ $1 =~ [\;\&\|\<\>] ]] && return 1
+    for t in "${WORKER_TOOLS[@]}"; do
+        [[ $t == Bash\(*\) ]] || continue; p=${t#Bash(}; p=${p%)}
+        case $p in '*') return 0 ;; *:\*) p=${p%:\*}; [ "$1" = "$p" ] || [[ $1 == "$p "* ]] && return 0 ;; *) [ "$1" = "$p" ] && return 0 ;; esac
+    done
+    return 1
+}
+run_hint() { # COMMAND WHAT: for the worker prompt, whether it may run the command itself
+    if tool_allows "$1"; then echo "run the $2 yourself to try your change: \`$1\`"
+    elif tool_allows "$TOOL_DIR/sandbox-run $1"; then echo "run the $2 yourself to try your change, prefixed with $TOOL_DIR/sandbox-run (only that form is allowed): \`$TOOL_DIR/sandbox-run $1\`"
+    else echo "you cannot run the $2 yourself; the script runs it after you: \`$1\`"; fi
+}
 
 # File names of the staged changes, without rename detection (otherwise the old path would drop out)
 changed() { g -c core.quotePath=false diff --cached --name-only --no-renames -- "$@"; }
@@ -543,7 +562,7 @@ fi
 g var GIT_COMMITTER_IDENT >/dev/null 2>&1 || { announce crit "Git cannot commit in $WORKDIR: no identity. Set one: git config --global user.email you@example.org; git config --global user.name \"Your Name\""; exit 1; }
 
 i=0; acc=0; cost=0; worker=''; cmd=''; reason=''; rejected_n=0; demo_rc=''; verdict=''; jtask=''
-merge_note=''; merge_cmd=''; final_issues=''; fresh=''; fresh_out=''
+merge_note=''; merge_cmd=''; merge_state=''; fresh_line=''; final_issues=''; fresh=''; fresh_out=''
 ms_all=$([ -n "$PLAN_FILE" ] && milestones "$PLAN_FILE"); ms=''; ms_from=''; last_ms=1
 if [ -n "$ms_all" ]; then  # the current milestone: from .autopilot/milestone if it is one of the plan's, else the first
     read -r ms ms_from 2>/dev/null <"$STATE/milestone"
@@ -551,10 +570,10 @@ if [ -n "$ms_all" ]; then  # the current milestone: from .autopilot/milestone if
     [ -n "$ms_from" ] && ! g rev-parse -q --verify "$ms_from^{commit}" >/dev/null && ms_from=''
     echo "$ms${ms_from:+ $ms_from}" >"$STATE/milestone"
 fi
-# Without ALLOWED the scripts that TEST_CMD, ACCEPT_CMD and DEMO_CMD start (first word, a relative path to a file here) are locked too
+# Without ALLOWED the scripts that TEST_CMD, ACCEPT_CMD and DEMO_CMD start (first word, or the second after bash/sh, a relative path to a file here) are locked too
 cmd_files=()
 for c in "$TEST_CMD" "$ACCEPT_CMD" "$DEMO_CMD"; do
-    c=${c##*sandbox-run }; c=${c%% *}; c=${c#./}
+    c=${c##*sandbox-run }; case $c in bash\ *|sh\ *) c=${c#* } ;; esac; c=${c%% *}; c=${c#./}  # "bash demo.sh": demo.sh
     [ -n "$c" ] && [ "${c#/}" = "$c" ] && [ -f "$c" ] && cmd_files+=("$c")
 done
 fingerprint=$(git_fingerprint)  # before the first run_cmd: it checks .git after every test command
@@ -619,16 +638,17 @@ while :; do
             [ "$r" = 1 ] && continue
             [ "$r" = 2 ] && { note "Not delivered: $reason"; handover not-delivered "$reason"; exit 1; }
             [ -z "$last_ms" ] && { next_milestone; continue; }
-            r=0; [ "$FRESH_CHECK" = off ] || { fresh_check "$TEST_CMD" "$DEMO_CMD"; r=$?; }
+            r=0; fresh_line='off (FRESH_CHECK=off)'; [ "$FRESH_CHECK" = off ] || { fresh_check "$TEST_CMD" "$DEMO_CMD"; r=$?; fresh_line='tests and demo green'; }
             if [ "$r" != 0 ]; then
                 reason="works only in the work directory: TEST_CMD or DEMO_CMD red in a fresh checkout"
                 [ "$r" = 2 ] && reason="no fresh checkout could be made: $(tail -1 "$STATE/fresh.txt" | shorten 120)"
-                note "$reason (see $STATE/fresh.txt)"; fresh_out=$(tail -20 "$STATE/fresh.txt" | no_ansi)
+                fresh_line=''; note "$reason (see $STATE/fresh.txt)"; fresh_out=$(tail -20 "$STATE/fresh.txt" | no_ansi)
                 handover not-delivered "$reason"; exit 1
             fi
+            note "Fresh checkout: $fresh_line"
             merge_into_base; rm -f "$STATE/final-rounds"
-            note "Goal reached: all tasks done${ACCEPT_CMD:+, Accept $acc of $target}, demo green."
-            handover delivered "all tasks done${ACCEPT_CMD:+, Accept $acc of $target}, demo green"
+            note "Goal reached: all tasks done${ACCEPT_CMD:+, Accept $acc of $target}, demo green${merge_state:+, $merge_state}."
+            handover delivered "$merge_state"
         elif [ "$PLANNER" = on ]; then plan_more "No open tasks, Accept only $acc of ${target:-?}"
         else note "No open tasks left, Accept only $acc of ${target:-?}: new tasks needed"; handover not-delivered "Accept $acc of ${target:-?}, new tasks needed"; fi
         exit 0
@@ -655,8 +675,8 @@ while :; do
     prompt=${prompt//\{TEST_CMD\}/"$TEST_CMD"}
     prompt=${prompt//\{ACCEPT_CMD\}/"${ACCEPT_CMD:-(no acceptance test)}"}
     prompt+=$'\n\n## This run\n'"Time budget: $WORKER_TIMEOUT, then the run is aborted and reset. Attempt $((fails + 1)) of at most $ATTEMPTS for this task (then it is blocked)."
-    [ -n "$DEMO_CMD" ] && prompt+=$'\n'"Demo command (it must exit 0 once all tasks are done; you may run it to try your change): \`$DEMO_CMD\`"
-    case $TEST_CMD in "$TOOL_DIR/sandbox-run "*) prompt+=$'\n'"Run the demo and the task's check command like the test command, prefixed with $TOOL_DIR/sandbox-run (only that form is allowed)." ;; esac
+    [ -n "$DEMO_CMD" ] && prompt+=$'\n'"Demo command (it must exit 0 once all tasks are done): $(run_hint "$DEMO_CMD" "demo command")"
+    [ -n "$task_check" ] && prompt+=$'\n'"Check command of this task (it must exit 0): $(run_hint "$task_check" "check command")"
     prompt+=$(project_rules)
     [ -s "$FEEDBACK" ] && prompt+=$'\n\n## Feedback on the previous attempt\n'"$(cat "$FEEDBACK")"
     # Brief (MODELS=cheap only): the planner plans the task with the whole plan, the haiku worker implements it.

@@ -225,7 +225,67 @@ EOF
     return 0
 }
 
-for pj in ${PART_J_ONLY:-j1 j2 j3 j4 j5 j6 j7 j8 j9 j10 j11 j12}; do
+# J13: merged into main: outcome, handover head, status --short and notification say so, FRESH_CHECK=off is named in the
+# proof; the worker is told to run the demo only when a WORKER_TOOLS entry covers it, not the task's check command here
+pj_j13() {
+    new_round; sample_project "$T/pj13"
+    printf -- '- [ ] 1. one. Done when `test -e out.txt` exits 0.\n' >TASKS.md && git add -A && git commit -qm start && git worktree add -q "$T/pj13-wt" -b autopilot || fail "J13: setup failed"
+    mkdir -p "$T/pj13-conf"; printf "WORKDIR=%q\nTEST_CMD='bash check.sh'\nDEMO_CMD='bash check.sh --demo'\nWORKER_TOOLS=(Read Edit 'Bash(bash check.sh:*)')\nFRESH_CHECK=off\n" "$T/pj13-wt" >"$T/pj13-conf/autopilot.conf"
+    export AUTOPILOT_CONF=$T/pj13-conf/autopilot.conf; "$TOOL_DIR/menu.sh" trust "$AUTOPILOT_CONF" >/dev/null || fail "J13: trust failed"
+    echo "echo x >out.txt; $tick" >"$FAKE_DIR/steps/1.sh"; echo "VERDICT: ACCEPT" >"$FAKE_DIR/verdicts"
+    local log=$T/pj13-notify.log s=$T/pj13-conf/.autopilot; : >"$log"
+    NOTIFY_LOG=$log MAX_RUNS=1 "$TOOL_DIR/autopilot.sh" >"$T/pj13.txt" 2>&1 || fail "J13: run failed: $(tail -3 "$T/pj13.txt")"
+    [ "$(cat "$s/outcome")" = "$(printf 'delivered\tmerged into main')" ] || fail "J13: outcome wrong: $(cat "$s/outcome")"
+    head -1 "$s/HANDOVER.md" | grep -qx "# Delivered, merged into main" || fail "J13: handover head wrong: $(head -1 "$s/HANDOVER.md")"
+    grep -qx "Fresh checkout: off (FRESH_CHECK=off)" "$s/HANDOVER.md" && grep -q "Fresh checkout: off (FRESH_CHECK=off)$" "$s/log/history.log" ||
+        fail "J13: FRESH_CHECK=off not named: $(grep -i fresh "$s/HANDOVER.md" "$s/log/history.log")"
+    "$TOOL_DIR/menu.sh" status --short | grep -q "^Autopilot pj13-conf ended: delivered, merged into main - 1 done" || fail "J13: status --short wrong: $("$TOOL_DIR/menu.sh" status --short)"
+    tail -1 "$log" | grep -q "Autopilot pj13-conf Delivered, merged into main$" || fail "J13: notification wrong: $(tail -1 "$log")"
+    grep -qF "Demo command (it must exit 0 once all tasks are done): run the demo command yourself to try your change: \`bash check.sh --demo\`" "$FAKE_DIR/last-prompt" &&
+        grep -qF "Check command of this task (it must exit 0): you cannot run the check command yourself; the script runs it after you: \`test -e out.txt\`" "$FAKE_DIR/last-prompt" ||
+        fail "J13: run hints wrong: $(grep -E 'Demo command|Check command' "$FAKE_DIR/last-prompt")"
+}
+
+# J14: MERGE=off: plain "delivered" everywhere; a compound demo is not offered although a prefix entry matches its start
+pj_j14() {
+    b_project "$T/pj14" <<'EOF'
+TEST_CMD='bash check.sh'
+DEMO_CMD='bash check.sh && true'
+WORKER_TOOLS=(Read Edit 'Bash(bash check.sh:*)')
+MERGE=off
+FRESH_CHECK=off
+EOF
+    for n in 1 2; do echo "echo check >>checks.txt; $tick" >"$FAKE_DIR/steps/$n.sh"; echo "VERDICT: ACCEPT" >>"$FAKE_DIR/verdicts"; done
+    MAX_RUNS=3 "$TOOL_DIR/autopilot.sh" >"$T/pj14.txt" 2>&1 || fail "J14: run failed: $(tail -3 "$T/pj14.txt")"
+    local s=$T/pj14-conf/.autopilot
+    [ "$(cat "$s/outcome")" = "$(printf 'delivered\t')" ] && head -1 "$s/HANDOVER.md" | grep -qx "# Delivered" ||
+        fail "J14: MERGE=off not plain delivered: $(cat "$s/outcome"; head -1 "$s/HANDOVER.md")"
+    "$TOOL_DIR/menu.sh" status --short | grep -q "^Autopilot pj14-conf ended: delivered - 2 done" || fail "J14: status --short wrong: $("$TOOL_DIR/menu.sh" status --short)"
+    grep -qF "you cannot run the demo command yourself; the script runs it after you: \`bash check.sh && true\`" "$FAKE_DIR/last-prompt" ||
+        fail "J14: compound demo offered to the worker: $(grep 'Demo command' "$FAKE_DIR/last-prompt")"
+}
+
+# J15: a multi-step demo as "bash demo.sh": plan accept lets the worker run exactly that command, and without ALLOWED
+# demo.sh is locked like the test command's own script
+pj_j15() {
+    new_round; sample_project "$T/pj15"; echo 'bash check.sh' >demo.sh; git add -A && git commit -qm start || fail "J15: setup failed"
+    printf "===CONFIG===\nTEST_CMD='bash check.sh'\nDEMO_CMD='bash demo.sh'\n===TASKS===\n- [ ] 1. one. Done when a test passes.\n" >"$FAKE_DIR/setup.txt"
+    "$TOOL_DIR/menu.sh" plan "$T/pj15/plan.md" >/dev/null 2>&1 && "$TOOL_DIR/menu.sh" plan accept >"$T/pj15.txt" 2>&1 || fail "J15: plan failed: $(cat "$T/pj15.txt")"
+    grep -qE "'Bash\((.*/sandbox-run )?bash demo.sh:\*\)'" "$T/pj15/autopilot.conf" || fail "J15: WORKER_TOOLS without the demo command: $(grep WORKER_TOOLS "$T/pj15/autopilot.conf")"
+    b_project "$T/pj15b" <<'EOF'
+TEST_CMD='bash check.sh'
+DEMO_CMD='bash demo.sh'
+ATTEMPTS=3
+EOF
+    echo 'bash check.sh' >demo.sh && git add demo.sh && git commit -qm demo || fail "J15: setup failed"
+    echo "echo check >>checks.txt; echo true >demo.sh; $tick" >"$FAKE_DIR/steps/1.sh"
+    echo "echo check >>checks.txt; $tick" >"$FAKE_DIR/steps/2.sh"; echo "VERDICT: ACCEPT" >"$FAKE_DIR/verdicts"
+    MAX_RUNS=2 "$TOOL_DIR/autopilot.sh" >"$T/pj15.txt" 2>&1 || fail "J15: run failed: $(tail -3 "$T/pj15.txt")"
+    local h=$T/pj15b-conf/.autopilot/log/history.log
+    grep -q "Run 1 rejected: change to a file that controls the test command: demo.sh" "$h" && grep -q "Run 2 accepted" "$h" || fail "J15: demo.sh not locked: $(cat "$h")"
+}
+
+for pj in ${PART_J_ONLY:-j1 j2 j3 j4 j5 j6 j7 j8 j9 j10 j11 j12 j13 j14 j15}; do
     "pj_$pj"
     unset AUTOPILOT_CONF; cd "$T" || exit 1
 done

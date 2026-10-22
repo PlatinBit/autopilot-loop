@@ -84,7 +84,10 @@ outcome_text() { # STATE → "delivered" | "not delivered (reason)" | "stopped (
     local o='' why=''
     lock_alive "$1" && return 0
     [ -r "$1/outcome" ] && IFS=$'\t' read -r o why <"$1/outcome" || return 0
-    [ "$o" = delivered ] && why=''  # a delivery needs no reason
+    if [ "$o" = delivered ]; then  # a delivery names only its merge state
+        case $why in "merged into"*) echo "delivered, $why" ;; "not merged"*) echo "delivered ($(shorten 100 <<<"$why"))" ;; *) echo delivered ;; esac
+        return 0
+    fi
     echo "${o/not-delivered/not delivered}${why:+ ($(shorten 100 <<<"$why"))}"
 }
 status_short() { # one line per project in running/ (the Claude Code status line and finish toast read these)

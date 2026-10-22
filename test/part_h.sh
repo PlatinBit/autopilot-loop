@@ -144,14 +144,18 @@ EOF
     NOTIFY_LOG=$log MAX_RUNS=3 "$TOOL_DIR/autopilot.sh" >"$T/ph6.txt" 2>&1 || fail "H6: delivered run exits non-zero: $(tail -3 "$T/ph6.txt")"
     local s=$T/ph6-conf/.autopilot
     [ "$(cut -f1 "$s/outcome")" = delivered ] || fail "H6: outcome not delivered: $(cat "$s/outcome")"
-    head -1 "$s/HANDOVER.md" | grep -qx "# Delivered" || fail "H6: HANDOVER.md headline wrong: $(head -1 "$s/HANDOVER.md")"
+    head -1 "$s/HANDOVER.md" | grep -qx "# Delivered (not merged: .* is not on main)" || fail "H6: HANDOVER.md headline wrong: $(head -1 "$s/HANDOVER.md")"
     grep -q "Run bash check.sh and read the count." "$s/HANDOVER.md" && grep -q "DEMO-OK" "$s/HANDOVER.md" &&
         grep -q "git merge autopilot" "$s/HANDOVER.md" && grep -q "Autopilot: \[x\] 2\." "$s/HANDOVER.md" ||
         fail "H6: HANDOVER.md incomplete: $(cat "$s/HANDOVER.md")"
     grep -qF "In the work directory $(cd "$T/ph6" && pwd -P) (branch autopilot" "$s/HANDOVER.md" || fail "H6: where to try it missing"
-    "$TOOL_DIR/menu.sh" handover | grep -qx "# Delivered" || fail "H6: autopilot handover does not show HANDOVER.md"
-    "$TOOL_DIR/menu.sh" status --short | grep -q "^Autopilot ph6-conf ended: delivered - 2 done, 0 blocked" || fail "H6: status --short wrong: $("$TOOL_DIR/menu.sh" status --short)"
-    tail -1 "$log" | grep -q "^-u low Autopilot ph6-conf Delivered: all tasks done" || fail "H6: notification does not lead with the result: $(tail -1 "$log")"
+    "$TOOL_DIR/menu.sh" handover | grep -q "^# Delivered (not merged: " || fail "H6: autopilot handover does not show HANDOVER.md"
+    "$TOOL_DIR/menu.sh" status --short | grep -q "^Autopilot ph6-conf ended: delivered (not merged: .* is not on main) - 2 done, 0 blocked" || fail "H6: status --short wrong: $("$TOOL_DIR/menu.sh" status --short)"
+    tail -1 "$log" | grep -q "^-u low Autopilot ph6-conf Delivered (not merged: .* is not on main)$" || fail "H6: notification does not lead with the result: $(tail -1 "$log")"
+    grep -qx "Fresh checkout: tests and demo green" "$s/HANDOVER.md" && grep -q "Fresh checkout: tests and demo green$" "$s/log/history.log" ||
+        fail "H6: fresh checkout result missing in handover or history: $(grep -i fresh "$s/HANDOVER.md" "$s/log/history.log")"
+    grep -qF "Demo command (it must exit 0 once all tasks are done): you cannot run the demo command yourself; the script runs it after you: \`echo DEMO-OK; bash check.sh\`" "$FAKE_DIR/last-prompt" ||
+        fail "H6: a demo no WORKER_TOOLS entry covers is offered to the worker: $(grep 'Demo command' "$FAKE_DIR/last-prompt")"
     grep -q "## Project rules (CLAUDE.md)" "$FAKE_DIR/last-prompt" && grep -q "keep it short" "$FAKE_DIR/last-prompt" || fail "H6: CLAUDE.md missing in the worker prompt"
     grep -q "## Project rules (CLAUDE.md)" "$s/log/review-prompt.txt" && grep -q "## Test output" "$s/log/review-prompt.txt" || fail "H6: CLAUDE.md or test output missing in the review prompt"
     [ ! -e "$s/STOP" ] || fail "H6: STOP left behind"

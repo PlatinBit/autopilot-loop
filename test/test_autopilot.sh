@@ -183,7 +183,7 @@ grep -q "Goal reached" "$T/p2/.autopilot/log/history.log" || fail "project not c
 grep -q "models balanced (planner opus, worker sonnet, reviewer sonnet)" "$T/p2/.autopilot/log/history.log" || fail "models not shown at the start"
 grep -q ';brief;' "$T/p2/.autopilot/costs.csv" && fail "costs.csv: a brief call under MODELS=balanced"
 grep -q ';worker;sonnet;' "$T/p2/.autopilot/costs.csv" || fail "costs.csv: worker model wrong"
-"$TOOL_DIR/menu.sh" status --short | grep -qx "Autopilot p2 ended: delivered - 1 done, 0 blocked, tests 1 -> 2, 0.03 USD" ||
+"$TOOL_DIR/menu.sh" status --short | grep -qx "Autopilot p2 ended: delivered, merged into main - 1 done, 0 blocked, tests 1 -> 2, 0.03 USD" ||
     fail "status --short after the end: $("$TOOL_DIR/menu.sh" status --short)"
 # Planner suggestion: shown by `plan`, adopted by `plan accept`, thrown away by `plan discard` (honest when there is none)
 printf -- '- [ ] 2. two. Done when two more tests pass.\n' >"$T/p2/.autopilot/suggestion.md"
