@@ -101,6 +101,10 @@ grep -q "4 done, 0 open, 1 blocked" "$T/st.txt" || fail "status wrong: $(cat "$T
 grep -qE '^  worker +0\.15 USD +tokens: 1500 in, 15k cache read, 150 out$' "$T/st.txt" && grep -qE '^  lessons +0\.01 USD' "$T/st.txt" &&
     ! grep -qE '^  size ' "$T/st.txt" && grep -qE '^  total +0\.22 USD$' "$T/st.txt" ||  # no size check: SIZE_CHECK is off by default
     fail "status: cost and tokens per kind wrong: $(cat "$T/st.txt")"
+# A shortened event with an unpaired backtick: status closes it, so Markdown does not join it with the next line
+echo '2026-01-01 00:00:00 Run 9: 9. `main(argv: list[str] | None…' >>"$v"
+"$TOOL_DIR/menu.sh" status | grep -qF '00:00:00 Run 9: 9. `main(argv: list[str] | None…`' || fail "status does not close the cut backtick: $("$TOOL_DIR/menu.sh" status)"
+sed -i '$d' "$v"
 grep -q "Autopilot: \[x\] 5. five" "$T/pa/.autopilot/HANDOVER.md" || fail "handover does not list the commits"
 grep -qx "User file" secret.txt || fail "foreign file lost through a rename"
 # A task that hits the time limit twice (ATTEMPTS=2) is blocked, and the loop moves on to the next one

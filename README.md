@@ -16,6 +16,8 @@
 
 **Give [Claude Code](https://claude.com/claude-code) a plan or an idea and it builds it task by task on its own – and only calls it "delivered" when your demo, a final review and a fresh checkout all pass.**
 
+<p align="center"><img src="assets/demo.gif" alt="autopilot-loop in Claude Code: plan, accept, start, delivered, handover" width="100%"></p>
+
 - **A shell script checks, not the model:** tests green, test count never drops, only allowed paths touched, locked files untouched. Only the script commits. [Safeguards](docs/REFERENCE.md#safeguards)
 - **A read-only reviewer with a veto:** a second Claude reads diff and test output; a rejection resets the run and its reason goes into the next attempt. [How it works](docs/REFERENCE.md#how-it-works)
 - **"Delivered" is earned:** `DEMO_CMD` exits 0, the final review finds nothing, tests and demo pass in a fresh checkout, then `main` is fast-forwarded and `HANDOVER.md` explains how to try it. [The end](docs/REFERENCE.md#the-end-final-review-fresh-checkout-merge)
@@ -24,22 +26,24 @@
 
 ## What a run looks like
 
-A real run, `history.log` shortened (the plan was written in German):
+A real run in Claude Code, `history.log` shortened:
 
 ```text
-2026-10-22 17:09:55 Final review (round 1): 1 new tasks
-2026-10-22 17:10:27 Run 6 accepted: [x] 6. Überlauf bei mustergültigen, aber sehr großen Operanden abfangen: Liefert… | Tests 22 -> 24 | worker 0.1353624 USD
-2026-10-22 17:10:39 Final review (round 2): OK
-2026-10-22 17:10:55 Milestone 1 done: 4 tasks of Milestone 2 proposed. Read: autopilot plan – adopt: autopilot plan accept
-2026-10-22 17:51:34 Start: 24 tests green, at most 50 runs or 1.2 USD, models balanced (planner opus, worker sonnet, reviewer sonnet), sandbox on
-2026-10-22 17:51:59 Run 1 accepted: [x] 7. Multiplikation ergänzen: `*` in die Operator-Whitelist von `calc.py` aufnehmen,… | Tests 24 -> 28 | worker 0.122641 USD
+2026-10-22 21:46:35 Start: 0 tests green, at most 50 runs or 1.89 USD, models cheap (planner sonnet, worker haiku, reviewer sonnet), sandbox on
+2026-10-22 21:47:04 Run 1 accepted: [x] 1. Test scaffolding and counting function. Create `tests/__init__.py`,… | Tests 0 -> 4 | worker 0.0044 USD
+2026-10-22 21:47:53 Run 2 accepted: [x] 2. (after 1) CLI for one file. `mdcount.py` gets `main(argv: list[str] | None =… | Tests 4 -> 7 | worker 0.0077 USD
+2026-10-22 21:48:46 Run 3 rejected: no task ticked off or blocked (rc 0)
+2026-10-22 21:49:28 Run 4 accepted: [x] 3. (after 2) Several files and the total line. With 2 or more paths, a final line… | Tests 7 -> 9 | worker 0.0052 USD
+2026-10-22 21:51:48 Final review (round 1): OK
+2026-10-22 21:51:48 Milestone 1 done: the planner drafts the tasks of Milestone 2 …
 […]
-2026-10-22 17:53:44 Fresh checkout: tests and demo green
-2026-10-22 17:53:44 Merged into main (fast-forward) in ~/projects/rechner.
-2026-10-22 17:53:44 Goal reached: all tasks done, demo green, merged into main.
+2026-10-22 21:54:33 Run 11 accepted: [x] 10. (after 9) End to end. Done when `bash demo.sh` exits 0 and prints the counts… | Tests 19 -> 19 | worker 0.0041 USD
+2026-10-22 21:54:48 Final review (round 1): OK
+2026-10-22 21:54:48 Fresh checkout: tests and demo green
+2026-10-22 21:54:48 Merged into main (fast-forward).
 ```
 
-The final review of milestone 1 found that a 400-digit operand crashed the calculator and added task 6 for it. The whole 10-task project, planning included, cost 3.74 USD.
+Run 3 was rejected and redone. The final review checked each milestone; after a fresh-checkout run the result was merged into `main`. The 10-task project cost 2.0 USD with `MODELS=cheap`, planning included.
 
 ## Quick start
 
@@ -62,6 +66,20 @@ Needs Linux or WSL, Bash 4.4+, `git`, `tmux`, `jq` and Claude Code 2.1+; `autopi
 
 ## How it works
 
+```mermaid
+flowchart LR
+  P([Plan or idea]) --> W[Worker<br/>one task]
+  W --> S{Script<br/>checks}
+  S -- fail --> W
+  S --> R{Reviewer<br/>read-only}
+  R -- reject --> W
+  R --> C[Commit]
+  C -- next task --> W
+  C --> E{Demo, final review,<br/>fresh checkout}
+  E -- issues --> W
+  E --> D([Delivered:<br/>merge + handover])
+```
+
 - **The worker** (Claude) does one small task per run, with a fresh context and no Git access.
 - **A shell script** checks the result with hard rules; anything that fails is reset, and the reason goes into the next attempt.
 - **The reviewer** (a second Claude, read-only tools) rejects weak tests and fakes; only then the script commits.
@@ -69,7 +87,7 @@ Needs Linux or WSL, Bash 4.4+, `git`, `tmux`, `jq` and Claude Code 2.1+; `autopi
 - **Large plans** go milestone by milestone; the planner drafts the next one's tasks itself.
 - **Test and demo commands** run in a bubblewrap sandbox; the worker's own Bash calls only through the bundled `sandbox-run`. It is not a security boundary: [Security](docs/REFERENCE.md#security).
 
-Flowchart and details: [How it works](docs/REFERENCE.md#how-it-works).
+Full flowchart and details: [How it works](docs/REFERENCE.md#how-it-works).
 
 ## Commands
 

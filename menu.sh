@@ -144,7 +144,8 @@ status() {
     [ -n "$(info "$st" EFFORT)" ] && echo "Effort:      $(info "$st" EFFORT)"
     echo "Cost (all Claude calls of this project):"; cost_table "$st/costs.csv"
     [ -s "$st/suggestion.md" ] && echo "Suggestion:  $(grep -c . "$st/suggestion.md") new tasks from the planner wait: autopilot plan, then autopilot plan accept"
-    echo; echo "Latest events:"; tail -8 <<<"$ev" | cut_chars 12 110
+    # a backtick left unpaired by a cut would join two lines into one code span in Claude Code's Markdown: close it
+    echo; echo "Latest events:"; tail -8 <<<"$ev" | cut_chars 12 110 | sed -E '/^[^`]*(`[^`]*`[^`]*)*`[^`]*$/s/$/`/'
     lock_alive "$st" && return 0
     if [ "$(cut -f1 "$st/outcome" 2>/dev/null)" = delivered ]; then next='read the handover and try the result: autopilot handover'
     elif [ "${n_open:-0}" -gt 0 ]; then next="continue: autopilot start ($n_open tasks open)"
