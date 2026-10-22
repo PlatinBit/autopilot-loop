@@ -208,6 +208,10 @@ pj_j11() {
         fail "J11: WORKER_TOOLS without demo or check command, or twice the test command: $w"
     "$TOOL_DIR/menu.sh" doctor >"$T/pj11.txt" 2>&1
     grep -q "MERGE=ff: .* has uncommitted or untracked files" "$T/pj11.txt" || fail "J11: doctor does not name the dirty main worktree: $(cat "$T/pj11.txt")"
+    # before the first start: autopilot.conf and .autopilot/ untracked and not yet excluded are no leftovers
+    rm other.txt; : >"$(git rev-parse --git-common-dir)/info/exclude"; [ -n "$(git status --porcelain)" ] || fail "J11: setup of the clean case failed"
+    "$TOOL_DIR/menu.sh" doctor >"$T/pj11.txt" 2>&1
+    grep -q "MERGE=ff" "$T/pj11.txt" && fail "J11: doctor names autopilot.conf or .autopilot/ as leftovers: $(git status --porcelain)"
 }
 
 # J12: colours: project commands run with NO_COLOR/TERM=dumb, and escape sequences never reach the handover

@@ -210,7 +210,30 @@ EOF
         fail "M10: delete or rename lost: $(git ls-files; git status --porcelain)"
 }
 
-for pm in ${PART_M_ONLY:-m1 m2 m3 m4 m5 m6 m7 m8 m9 m10}; do
+# M11: MODELS=cheap: the briefs of a wave are written first, then the workers start together (time stamps overlap
+# although each brief takes longer than a worker); without ACCEPT_CMD the worker prompt has no acceptance step
+pm_m11() {
+    b_project "$T/pm11" <<'EOF'
+TEST_CMD='bash check.sh'
+PARALLEL=2
+MODELS=cheap
+EOF
+    m_tasks "1. one" "2. two"
+    local n
+    for n in 1 2; do
+        echo "date +%s.%N >\"\$FAKE_DIR/t$n.start\"; sleep 1; echo $n >f$n.txt; $(m_tick $n); date +%s.%N >\"\$FAKE_DIR/t$n.end\"" >"$FAKE_DIR/steps/t$n.sh"
+        echo "VERDICT: ACCEPT" >>"$FAKE_DIR/verdicts"
+    done
+    echo 1.5 >"$FAKE_DIR/brief-sleep"
+    MAX_RUNS=2 "$TOOL_DIR/autopilot.sh" >"$T/pm11.txt" 2>&1 || fail "M11: run failed: $(tail -3 "$T/pm11.txt")"
+    [ "$(cat "$FAKE_DIR/brief-nr")" = 2 ] && grep -q "Brief from the planner" "$FAKE_DIR/prompt-t2" || fail "M11: not two briefs"
+    awk -v a="$(cat "$FAKE_DIR/t1.start")" -v b="$(cat "$FAKE_DIR/t1.end")" -v c="$(cat "$FAKE_DIR/t2.start")" -v d="$(cat "$FAKE_DIR/t2.end")" 'BEGIN { exit !(a < d && c < b) }' ||
+        fail "M11: the workers did not overlap: $(cat "$FAKE_DIR"/t?.start "$FAKE_DIR"/t?.end)"
+    grep -qE 'ACCEPT_CMD|no acceptance test|Then run `|conditions still open' "$FAKE_DIR/prompt-t1" && fail "M11: worker prompt without ACCEPT_CMD has an acceptance step: $(grep -E 'ACCEPT_CMD|Then run' "$FAKE_DIR/prompt-t1")"
+    grep -q "^4\. .*once is enough\.$" "$FAKE_DIR/prompt-t1" || fail "M11: step 4 of the worker prompt broken: $(grep '^4\.' "$FAKE_DIR/prompt-t1")"
+}
+
+for pm in ${PART_M_ONLY:-m1 m2 m3 m4 m5 m6 m7 m8 m9 m10 m11}; do
     "pm_$pm"
     unset AUTOPILOT_CONF; cd "$T" || exit 1
 done

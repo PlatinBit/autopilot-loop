@@ -440,6 +440,8 @@ final_review() {
     { echo "$f"; plan_section; project_rules
       [ -n "$ms" ] && printf '\n\n## Scope\nThe plan has milestones (%s). This is the end of Milestone %s: judge only what is due up to it, later milestones are not due yet.%s\n' "$(echo $ms_all)" "$ms" \
           "$([ "$range" = "$ms_from..HEAD" ] && echo ' The change below is this milestone'"'"'s only; earlier milestones were reviewed at their end.')"
+      printf '\n\n## Allowed paths\n%s\n' "$(if [ -n "$ALLOWED" ]; then echo "Only paths matching the regular expression \`$ALLOWED\`, and $TASKS_FILE, BLOCKED.md, $DECISIONS_FILE."
+          else echo "All paths except the locked ones: \`$ALWAYS_LOCKED\`, \`$TEST_CONTROL\`${LOCKED[*]:+, ${LOCKED[*]}}${cmd_files[*]:+, ${cmd_files[*]}}."; fi)"
       printf '\n\n## Task list (%s)\n%s\n' "$TASKS_FILE" "$(cat "$TASKS_FILE")"
       printf '\n## Change: git diff %s\n' "$range"
       # ponytail: a big diff is cut to its summary and first 1500 lines; the reviewer reads files for the rest
@@ -575,7 +577,7 @@ Milestone $ms of the plan is done. Propose the tasks of \"Milestone $nx\" only, 
 
 # --- Planner: proposes new tasks, adopted only with `autopilot plan accept` -----------------------
 # No progress: accepted runs without a higher acceptance count, persisted per acceptance level ("<acc> <count>").
-np_count() { local a='' c=''; read -r a c <"$STATE/no-progress" 2>/dev/null; if [ "$a" = "$acc" ] && is_number "$c"; then echo "$c"; else echo 0; fi; }
+np_count() { local a='' c=''; read -r a c 2>/dev/null <"$STATE/no-progress"; if [ "$a" = "$acc" ] && is_number "$c"; then echo "$c"; else echo 0; fi; }
 np_add() { echo "$acc $(( $(np_count) + $1 ))" >"$STATE/no-progress"; }
 # MAX_COST_USD, checked before every Claude call of the loop (not before the reviewer of a finished run): reached → limit
 cost_cap() {
@@ -711,7 +713,8 @@ worker_prompt() {
     prompt=${prompt//\{TASKS_FILE\}/"$TASKS_FILE"}
     prompt=${prompt//\{DECISIONS_FILE\}/"$DECISIONS_FILE"}
     prompt=${prompt//\{TEST_CMD\}/"$TEST_CMD"}
-    prompt=${prompt//\{ACCEPT_CMD\}/"${ACCEPT_CMD:-(no acceptance test)}"}
+    [ -n "$ACCEPT_CMD" ] || prompt=${prompt// Then run \`\{ACCEPT_CMD\}\`*make it pass./}  # no acceptance test: no such step
+    prompt=${prompt//\{ACCEPT_CMD\}/"$ACCEPT_CMD"}
     prompt+=$'\n\n## This run\n'"Your task (the script picked it, line $pick of $TASKS_FILE): $open_task"
     prompt+=$'\n'"Time budget: $WORKER_TIMEOUT, then the run is aborted and reset. Attempt $((fails + 1)) of at most $ATTEMPTS for this task (then it is blocked)."
     [ -n "$DEMO_CMD" ] && prompt+=$'\n'"Demo command (it must exit 0 once all tasks are done): $(run_hint "$DEMO_CMD" "demo command")"
@@ -880,7 +883,7 @@ wave_end() { # the workers' worktrees and the wave file removed (also at every e
 # The task list never comes from a worker: only its own line ticked off or blocked counts, the script sets that mark.
 # → 0 the wave ran, 1 no wave (fewer than 2 tasks for it: the serial run goes on), 2 a size check split a task
 wave() {
-    local lines=() l p f c=0 k n avg base m add x merged='' limit_at='' api_at='' rcs=() runs=() texts=() t free=0
+    local lines=() l p f c=0 k n avg base m add x merged='' limit_at='' api_at='' rcs=() runs=() texts=() prompts=() t free=0
     while IFS= read -r l; do
         p=$(pending_file "$(sed -n "${l}p" "$TASKS_FILE")")
         if [ -s "$p" ]; then read -r f c <"$p"; [ "$f" = 0 ] && [ "${c:-0}" -lt 2 ] || continue; fi
@@ -909,12 +912,15 @@ wave() {
         note "Run $i: $(shorten 80 <<<"${open_task:6}") (wave of $n)"
         worker_prompt
         prompt+=$'\n\n'"Other workers work on other tasks of the list at the same time, each in its own copy; the script merges your change after theirs. Change only what your task needs."
+        prompts[k]=$prompt
         g worktree add -q --detach "$wave_dir/w$k" "$base" >"$wave_dir/add-$k.txt" 2>&1 ||
             { announce crit "Could not create a worktree for the wave: $(tail -1 "$wave_dir/add-$k.txt")"; exit 1; }
+    done
+    for k in "${!lines[@]}"; do  # all prompts (and briefs) are ready: the workers start together
         # Each worker in its worktree (cwd: relative Bash entries of WORKER_TOOLS and sandbox-run work there)
-        ( cd "$wave_dir/w$k" && CLAUDE_TIMEOUT=$WORKER_TIMEOUT claude_run "$LOGS/run-$i.txt" worker --model "$WORKER_MODEL" --permission-mode acceptEdits \
-            --add-dir "$LOGS" --allowedTools "${WORKER_TOOLS[@]}" <<<"$prompt" >"$wave_dir/cost-$k" ) & wave_pids[k]=$!
-        echo "Run $i: ${open_task:6}" >>"$STATE/wave"
+        ( cd "$wave_dir/w$k" && CLAUDE_TIMEOUT=$WORKER_TIMEOUT claude_run "$LOGS/run-${runs[$k]}.txt" worker --model "$WORKER_MODEL" --permission-mode acceptEdits \
+            --add-dir "$LOGS" --allowedTools "${WORKER_TOOLS[@]}" <<<"${prompts[$k]}" >"$wave_dir/cost-$k" ) & wave_pids[k]=$!
+        echo "Run ${runs[$k]}: ${texts[$k]:6}" >>"$STATE/wave"
     done
     for k in "${!lines[@]}"; do wait "${wave_pids[$k]}"; rcs[k]=$?; done; wave_pids=()
     [ "$(git_fingerprint)" = "$fingerprint" ] || { announce crit "A worker of the wave changed .git (config, info or hooks) – stopped. Please inspect before starting again."; exit 1; }

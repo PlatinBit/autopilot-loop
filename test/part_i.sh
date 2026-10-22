@@ -172,6 +172,8 @@ EOF
         fail "I6: final review not in the journal: $(cat "$s/JOURNAL.md")"
     grep -q "^## Change: git diff main...HEAD" "$FAKE_DIR/final-prompt" && grep -q "^+check" "$FAKE_DIR/final-prompt" && grep -q "^## Journal and lessons" "$FAKE_DIR/final-prompt" ||
         fail "I6: final prompt without diff or journal"
+    grep -A1 "^## Allowed paths" "$FAKE_DIR/final-prompt" | grep -q "^All paths except the locked ones: .*autopilot" && grep -q "only touch the allowed paths" "$FAKE_DIR/final-prompt" ||
+        fail "I6: final prompt without the allowed paths: $(grep -A1 '^## Allowed' "$FAKE_DIR/final-prompt")"
     grep -q ';final;opus;0.01;' "$s/costs.csv" || fail "I6: final review not in costs.csv"
     grep -q "^## New dependencies" "$s/HANDOVER.md" && fail "I6: dependency section without new dependencies"
     # issues in both rounds

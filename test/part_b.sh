@@ -57,6 +57,7 @@ grep -qF "Run 1 rejected: tests hit the time limit (TEST_TIMEOUT=2s)" "$T/p3-con
 grep -qF "Run 2 rejected: acceptance test without a readable number" "$T/p3-conf/.autopilot/log/history.log" || fail "acceptance time limit not rejected: $(cat "$T/p3-conf/.autopilot/log/history.log")"
 grep -q "time limit" "$T/p3-conf/.autopilot/log/accept-2.txt" || fail "acceptance test without time limit note"
 [ ! -e slow ] && [ ! -e slow2 ] && [ -z "$(git status --porcelain)" ] || fail "time limit: work directory not reset"
+grep -qF 'Then run `test -e slow2 && sleep 30; bash accept.sh`; the number of met conditions must not drop.' "$FAKE_DIR/last-prompt" || fail "worker prompt without the acceptance step"
 
 # N3: a second start moves the per-run logs of the first one to log/archive/<time>/ instead of overwriting them;
 # status counts only the runs of the current start

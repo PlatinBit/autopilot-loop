@@ -199,6 +199,7 @@ EOF
     local s=$T/ph8-conf/.autopilot
     grep -q "Run 1 accepted" "$s/log/history.log" && ! grep -q "Run 2:" "$s/log/history.log" || fail "H8: loop did not stop without progress: $(cat "$s/log/history.log")"
     [ "$(cat "$s/outcome")" = "$(printf 'not-delivered\tno progress: Accept 0 of 2 unchanged for 1 accepted runs')" ] || fail "H8: outcome wrong: $(cat "$s/outcome")"
+    grep -q 'no-progress: No such file' "$T/ph8.txt" && fail "H8: error output for the missing no-progress file"
 }
 
 # H9: planner rounds: two rounds without acceptance progress end the loop; NOT REACHABLE ends it at once;

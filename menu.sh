@@ -41,7 +41,8 @@ doc_project() { # with a trusted configuration: work directory, sandbox state an
      elif sandbox_works; then echo "  sandbox on (bwrap works)"
      else echo "  no sandbox: bwrap is missing or cannot start here – $(install_hint bubblewrap), or set SANDBOX=off"; fi
      main=$(g -C "$WORKDIR" worktree list --porcelain 2>/dev/null | sed -n '1s/^worktree //p')
-     [ "${MERGE:-ff}" = ff ] && [ -n "$main" ] && [ -n "$(g -C "$main" status --porcelain 2>/dev/null)" ] &&
+     # what the start puts into info/exclude (common.sh) is no leftover, even before the first start
+     [ "${MERGE:-ff}" = ff ] && [ -n "$main" ] && [ -n "$(g -C "$main" status --porcelain 2>/dev/null | grep -vE '^\?\? (\.autopilot/|autopilot\.conf|(.*/)?__pycache__/|.*\.pyc)$')" ] &&
          echo "  ✘ MERGE=ff: $main has uncommitted or untracked files – a delivered result is not merged until they are committed or removed"
      if [ "${MERGE:-ff}" = pr ]; then  # the start refuses on each of these
          if ! command -v gh >/dev/null; then echo "  ✘ MERGE=pr: gh (GitHub CLI) not found – $(install_hint gh), then gh auth login"

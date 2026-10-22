@@ -6,7 +6,7 @@
 # setup.txt, planner.txt, idea.txt, spec.txt, size-<k>.txt, final-<k>.txt (fixed answers; reviewer, planner and final review answers are turned
 # into the structured answer of --json-schema: task lines, "NOT REACHABLE: …", "FINAL: OK", did:/problem:/hint: lines),
 # garbage (raw non-JSON output for the setup call), review-sleep (seconds the reviewer
-# waits before answering), limit.txt (every call answers with this usage-limit error), budget/<n> (worker run n
+# waits before answering; brief-sleep the same for the brief), limit.txt (every call answers with this usage-limit error), budget/<n> (worker run n
 # stops at the per-call budget; like the CLI, .usage then says 0 and .modelUsage has the tokens), final-budget (the next N
 # final reviews stop at the budget), api-errors (the next N calls end with an overloaded API error), steps/t<N>.sh (task N, see below).
 # Every call appends "<role> env=<CLAUDE_CODE_EFFORT_LEVEL or unset> <arguments>" to args.
@@ -80,7 +80,7 @@ case "$prompt" in
         answer "$t" "$(jq -n --arg t "$t" '[$t | splits("\n") | select(test("^- \\[ \\] "))] | {fits: (length == 0), split: .}')" ;;
     *"You are writing a specification"*) role=spec; printf '%s\n' "$prompt" >"$d/spec-prompt"; answer "$(cat "$d/spec.txt")" ;;
     *"You are turning a rough idea"*) role=plan; printf '%s\n' "$prompt" >"$d/idea-prompt"; answer "$(cat "$d/idea.txt")" ;;
-    *"You are writing the brief"*) role=brief; count brief-nr >/dev/null; printf '%s\n' "$prompt" >"$d/brief-prompt"; answer "BRIEF: reuse check.sh, add one check line" ;;
+    *"You are writing the brief"*) role=brief; [ -f "$d/brief-sleep" ] && sleep "$(cat "$d/brief-sleep")"; count brief-nr >/dev/null; printf '%s\n' "$prompt" >"$d/brief-prompt"; answer "BRIEF: reuse check.sh, add one check line" ;;
     # steps/t<N>-<k>.sh: the k-th run of task N, steps/t<N>.sh: every run of it (parallel workers, whatever their order);
     # otherwise steps/<n>.sh for the n-th worker run. prompt-t<N>: the last prompt for task N.
     *)  t=$(sed -nE 's/^Your task \(the script picked it, line [0-9]+ of .*\): - \[ \] ([0-9][0-9.]*)\..*/\1/p' <<<"$prompt" | head -1)
