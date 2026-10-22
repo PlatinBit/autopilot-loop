@@ -7,7 +7,8 @@
 # into the structured answer of --json-schema: task lines, "NOT REACHABLE: …", "FINAL: OK", did:/problem:/hint: lines),
 # garbage (raw non-JSON output for the setup call), review-sleep (seconds the reviewer
 # waits before answering), limit.txt (every call answers with this usage-limit error), budget/<n> (worker run n
-# stops at the per-call budget), api-errors (the next N calls end with an overloaded API error), steps/t<N>.sh (task N, see below).
+# stops at the per-call budget; like the CLI, .usage then says 0 and .modelUsage has the tokens), final-budget (the next N
+# final reviews stop at the budget), api-errors (the next N calls end with an overloaded API error), steps/t<N>.sh (task N, see below).
 # Every call appends "<role> env=<CLAUDE_CODE_EFFORT_LEVEL or unset> <arguments>" to args.
 # Every answer costs 0.01 USD and 100/1000/10 tokens.
 d=$FAKE_DIR
@@ -57,7 +58,12 @@ case "$prompt" in
     # lessons.txt: the answer of every lessons run (default: an empty list); final-<k>.txt: the k-th final review (default OK)
     *"You are condensing the lessons"*) role=lessons; count lessons-nr >/dev/null; printf '%s\n' "$prompt" >"$d/lessons-prompt"
         answer "$(cat "$d/lessons.txt" 2>/dev/null || printf '<<<LESSONS\nLESSONS>>>')" ;;
-    *"You are the final reviewer"*) role=final; k=$(count final-nr); printf '%s\n' "$prompt" >"$d/final-prompt"; cp "$d/final-prompt" "$d/final-prompt-$k"
+    *"You are the final reviewer"*) role=final
+        if [ "$(cat "$d/final-budget" 2>/dev/null || echo 0)" -gt 0 ]; then
+            echo $(( $(cat "$d/final-budget") - 1 )) >"$d/final-budget"; log_args
+            jq -n '{type: "result", subtype: "error_max_budget_usd", is_error: true, result: null, errors: ["Reached maximum budget"], total_cost_usd: 0.01}'; exit 1
+        fi
+        k=$(count final-nr); printf '%s\n' "$prompt" >"$d/final-prompt"; cp "$d/final-prompt" "$d/final-prompt-$k"
         t=$(cat "$d/final-$k.txt" 2>/dev/null || echo 'FINAL: OK'); answer "$t" "$(structured final "$t")" ;;
     *"You are the reviewer"*) role=reviewer; [ -f "$d/review-sleep" ] && sleep "$(cat "$d/review-sleep")"
         if [ "$(cat "$d/review-budget" 2>/dev/null || echo 0)" -gt 0 ]; then  # review-budget: the next N reviews stop at the budget
@@ -88,7 +94,9 @@ case "$prompt" in
         [ -f "$d/steps/$n.sh" ] || { answer "no steps left"; exit 1; }
         bash "$d/steps/$n.sh"; [ $? = 124 ] && exit 124  # step simulates the time limit
         if [ -f "$d/budget/$n" ]; then  # the run stops at --max-budget-usd after its changes
-            log_args; jq -n '{type: "result", subtype: "error_max_budget_usd", is_error: true, result: null, errors: ["Reached maximum budget ($2)"], total_cost_usd: 2.01}'; exit 1
+            log_args; jq -n '{type: "result", subtype: "error_max_budget_usd", is_error: true, result: null, errors: ["Reached maximum budget ($2)"], total_cost_usd: 2.01,
+                usage: {input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0},
+                modelUsage: {"claude-a": {inputTokens: 2, cacheReadInputTokens: 300, outputTokens: 40, cacheCreationInputTokens: 50}, "claude-b": {inputTokens: 1, cacheReadInputTokens: 0, outputTokens: 2, cacheCreationInputTokens: 5}}}'; exit 1
         fi
         answer "Step $n done$([ -f "$d/notes/$n" ] && printf '\n%s' "$(cat "$d/notes/$n")")" ;;  # notes/<n>: appended to the answer
 esac

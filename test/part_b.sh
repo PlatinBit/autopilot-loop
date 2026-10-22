@@ -87,14 +87,14 @@ EOF
 echo "echo check >>checks.txt; $tick" >"$FAKE_DIR/steps/1.sh"; echo "VERDICT: ACCEPT" >"$FAKE_DIR/verdicts"
 SB_OUT1=$T/sb-nobw MAX_RUNS=1 PATH="$T/nobw" "$TOOL_DIR/autopilot.sh" >"$T/s1.txt" 2>&1 || fail "no bwrap: run refused: $(tail -3 "$T/s1.txt")"
 grep -q "No sandbox: bubblewrap is missing or cannot start here" "$T/s1-conf/.autopilot/log/history.log" || fail "no bwrap: no warning: $(cat "$T/s1-conf/.autopilot/log/history.log")"
-grep -q "sandbox off" "$T/s1-conf/.autopilot/log/history.log" && [ -e "$T/sb-nobw" ] || fail "no bwrap: test command did not run unsandboxed"
+grep -q "sandbox off$" "$T/s1-conf/.autopilot/log/history.log" && [ -e "$T/sb-nobw" ] || fail "no bwrap: test command did not run unsandboxed"
 git reset -q --hard HEAD~1   # the task again, now with the sandbox
 echo "echo check >>checks.txt; $tick" >"$FAKE_DIR/steps/2.sh"; printf 'VERDICT: ACCEPT\nVERDICT: ACCEPT\n' >"$FAKE_DIR/verdicts"
 if command -v bwrap >/dev/null && bwrap --ro-bind / / --unshare-all true 2>/dev/null; then
     o1=$T/sb-out; o2=$TOOL_DIR/test/.sb-probe-$$
     SB_OUT1=$o1 SB_OUT2=$o2 MAX_RUNS=1 "$TOOL_DIR/autopilot.sh" >"$T/s1.txt" 2>&1; r=$?
     [ ! -e "$o1" ] && [ ! -e "$o2" ] || { rm -f "$o2"; fail "sandboxed test command wrote outside WORKDIR"; }
-    [ "$r" = 0 ] && grep -q "sandbox on" "$T/s1-conf/.autopilot/log/history.log" && [ "$(grep -c "Run 1 accepted" "$T/s1-conf/.autopilot/log/history.log")" = 2 ] ||
+    [ "$r" = 0 ] && grep -q "sandbox on$" "$T/s1-conf/.autopilot/log/history.log" && [ "$(grep -c "Run 1 accepted" "$T/s1-conf/.autopilot/log/history.log")" = 2 ] ||
         fail "sandboxed run failed: $(tail -3 "$T/s1.txt")"
     s=$T/s1-conf/.autopilot/log/start.txt
     grep -q TMP-OK "$s" && grep -q WD-OK "$s" || fail "sandbox: /tmp or WORKDIR not writable: $(cat "$s")"

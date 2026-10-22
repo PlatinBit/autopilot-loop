@@ -45,7 +45,7 @@ EOF
         fail "H2: time limit feedback missing or without the denied commands: $(cat "$s/log/history.log")"
     grep -q "aborted after 45m" "$s/feedback.txt" && grep -q "rejected-2.patch" "$s/feedback.txt" || fail "H2: feedback.txt lacks the reason or the patch path: $(cat "$s/feedback.txt")"
     grep -q '^+half' "$s/log/rejected-2.patch" && grep -q '^+check' "$s/log/rejected-1.patch" || fail "H2: diff of the rejected attempts not saved: $(ls "$s/log")"
-    grep -q ';worker;sonnet;?;;;;medium$' "$s/costs.csv" || fail "H2: time-limit cost not recorded as ?: $(cat "$s/costs.csv")"
+    grep -q ';worker;sonnet;?;;;;medium;$' "$s/costs.csv" || fail "H2: time-limit cost not recorded as ?: $(cat "$s/costs.csv")"
     "$TOOL_DIR/menu.sh" status | grep -q "worker .*(+1 calls cut off at the time limit, cost unknown)" || fail "H2: status does not name the unknown cost: $("$TOOL_DIR/menu.sh" status)"
     [ "$(cat "$s/outcome")" = "$(printf 'limit\trun cap MAX_RUNS=2 reached, 2 tasks still open')" ] || fail "H2: run cap outcome wrong: $(cat "$s/outcome")"
     [ -z "$(git status --porcelain)" ] || fail "H2: work directory not clean"
@@ -314,11 +314,11 @@ EOF
     local h=$T/ph12-conf/.autopilot/log/history.log
     grep -q "Run 1 rejected: change to a file that controls the test command: web/package.json" "$h" || fail "H12: package.json not refused without ALLOWED: $(cat "$h")"
     grep -q "Run 2 accepted" "$h" || fail "H12: an ordinary file refused without ALLOWED: $(cat "$h")"
-    # cost cap: every call costs 0.01, so 0.02 USD is used up after the first run (size check, worker, reviewer: 0.03)
+    # cost cap: every call costs 0.01, so 0.02 USD is used up after the first run (worker, reviewer)
     echo "echo check >>checks.txt; $tick" >"$FAKE_DIR/steps/3.sh"; printf "VERDICT: ACCEPT\nVERDICT: ACCEPT\n" >"$FAKE_DIR/verdicts"
     printf -- '- [ ] 3. three\n- [ ] 4. four\n' >>TASKS.md && git add -A && git commit -qm more
     MAX_COST_USD=0.02 "$TOOL_DIR/autopilot.sh" >"$T/ph12.txt" 2>&1 || fail "H12: cost cap run failed: $(tail -3 "$T/ph12.txt")"
-    [ "$(cat "$T/ph12-conf/.autopilot/outcome")" = "$(printf 'limit\tcost cap MAX_COST_USD=0.02 reached (0.03 USD), 2 tasks still open')" ] ||
+    [ "$(cat "$T/ph12-conf/.autopilot/outcome")" = "$(printf 'limit\tcost cap MAX_COST_USD=0.02 reached (0.02 USD), 2 tasks still open')" ] ||
         fail "H12: cost cap outcome wrong: $(cat "$T/ph12-conf/.autopilot/outcome")"
 }
 

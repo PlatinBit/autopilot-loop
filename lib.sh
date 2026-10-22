@@ -99,13 +99,13 @@ CLAUDE_SAFE=(--safe-mode --setting-sources user --disallowedTools
 # Effort per kind: EFFORT_WORKER, EFFORT_REVIEWER, EFFORT_LESSONS, and EFFORT_PLANNER for every other kind
 # (default high); CLAUDE_CODE_EFFORT_LEVEL from the environment would beat --effort, so the call runs without it.
 # The size check always runs with effort low. Every call stops at MAX_COST_PER_CALL_USD (default 5), see over_budget.
-COSTS_HEADER='time;kind;model;usd;input_tokens;cache_read_tokens;output_tokens;effort'
-costs_header() { # $COSTS with the current header; a costs.csv from before 0.10 gets it (its rows have no effort)
+COSTS_HEADER='time;kind;model;usd;input_tokens;cache_read_tokens;output_tokens;effort;cache_creation_tokens'
+costs_header() { # $COSTS with the current header; an older costs.csv gets it (its rows lack the last columns)
     [ -s "$COSTS" ] || echo "$COSTS_HEADER" >"$COSTS"
     [ "$(head -1 "$COSTS")" = "$COSTS_HEADER" ] || { { echo "$COSTS_HEADER"; tail -n +2 "$COSTS"; } >"$COSTS.new" && mv "$COSTS.new" "$COSTS"; }
 }
 claude_run() { # TEXTFILE KIND [claude arguments …] <prompt
-    local text=$1 kind=$2 raw=$1.json rc cost tokens='0;0;0' model=? a prev='' effort; shift 2
+    local text=$1 kind=$2 raw=$1.json rc cost tokens='0;0;0;0' model=? a prev='' effort; shift 2
     for a in "$@"; do [ "$prev" = --model ] && model=$a; prev=$a; done
     case $kind in worker|reviewer|lessons) effort=EFFORT_${kind^^} ;; *) effort=EFFORT_PLANNER ;; esac; effort=${!effort:-high}
     [ "$kind" = size ] && effort=low
@@ -114,13 +114,17 @@ claude_run() { # TEXTFILE KIND [claude arguments …] <prompt
     if jq -e . "$raw" >/dev/null 2>&1; then
         jq -r '.result // (.errors // [] | join("; "))' "$raw" >"$text"
         cost=$(jq -r '.total_cost_usd // 0' "$raw")
-        tokens=$(jq -r '[.usage.input_tokens, .usage.cache_read_input_tokens, .usage.output_tokens] | map(. // 0 | tostring) | join(";")' "$raw")
+        # in, cache read, out, cache creation; a call stopped at the budget reports 0 in .usage, but its tokens in .modelUsage
+        tokens=$(jq -r '([.usage.input_tokens, .usage.cache_read_input_tokens, .usage.output_tokens, .usage.cache_creation_input_tokens] | map(. // 0)) as $u
+            | [.modelUsage // {} | .[]] as $m | if ($u | add) == 0 and ($m | length) > 0
+              then [($m | map(.inputTokens // 0) | add), ($m | map(.cacheReadInputTokens // 0) | add), ($m | map(.outputTokens // 0) | add), ($m | map(.cacheCreationInputTokens // 0) | add)]
+              else $u end | map(tostring) | join(";")' "$raw")
     else
         cp "$raw" "$text"; cost=0
     fi
-    [ "$rc" = 124 ] && { cost='?'; tokens=';;'; }
+    [ "$rc" = 124 ] && { cost='?'; tokens=';;;'; }
     if [ -n "${COSTS:-}" ]; then
-        costs_header; echo "$(date '+%F %T');$kind;$model;$cost;$tokens;$effort" >>"$COSTS"
+        costs_header; echo "$(date '+%F %T');$kind;$model;$cost;${tokens%;*};$effort;${tokens##*;}" >>"$COSTS"
     fi
     echo "$cost"
     return $rc

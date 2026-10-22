@@ -57,6 +57,7 @@ EOF
 pl_l4() {
     b_project "$T/pl4" <<'EOF'
 TEST_CMD='bash check.sh'
+SIZE_CHECK=on
 EOF
     printf -- '- [ ] 1. one\n- [ ] 2. (after 1) big. Done when `bash check.sh` exits 0.\n- [ ] 3. three. Done when `bash check.sh` exits 0.\n' >TASKS.md && git commit -qam size || fail "L4: setup failed"
     printf -- '- [ ] 7. part a. Done when a test passes.\n- [ ] (after 9) part b. Done when `bash check.sh` exits 0.\n' >"$FAKE_DIR/size-2.txt"
@@ -71,15 +72,15 @@ EOF
         grep -q "Size check: task 3 does not fit one run, but the parts drop its check command – it stays" "$s/log/history.log" || fail "L4: history wrong: $(cat "$s/log/history.log")"
     grep -q '^### J[0-9]* .* script 2\. (after 1) big\..* split into 2 parts$' "$s/JOURNAL.md" || fail "L4: no journal entry: $(cat "$s/JOURNAL.md")"
     [ "$(cat "$FAKE_DIR/size-nr")" = 3 ] && [ "$(wc -l <"$s/sized")" = 5 ] || fail "L4: size checks not once per task: $(cat "$FAKE_DIR/size-nr") calls, $(wc -l <"$s/sized") sized"
-    grep -q ';size;opus;0.01;100;1000;10;low$' "$s/costs.csv" && grep -q '^size .*--json-schema {.*"fits"' "$FAKE_DIR/args" || fail "L4: size call not booked or without schema"
+    grep -q ';size;sonnet;0.01;100;1000;10;low;0$' "$s/costs.csv" && grep -q '^size .*--json-schema {.*"fits"' "$FAKE_DIR/args" || fail "L4: size call not booked or without schema"
     grep -q "^You are sizing a task" "$FAKE_DIR/size-prompt" && grep -qF -- '- [ ] 3. three.' "$FAKE_DIR/size-prompt" || fail "L4: size prompt wrong"
     MAX_RUNS=1 "$TOOL_DIR/autopilot.sh" >/dev/null 2>&1; [ "$(cat "$FAKE_DIR/size-nr")" = 3 ] || fail "L4: sized again after a restart"
 }
 
-# L5: SIZE_CHECK off by default with MODELS=cheap, off by hand, and a wrong value is refused
+# L5: SIZE_CHECK off by default in every profile, off by hand, and a wrong value is refused
 pl_l5() {
     local c
-    for c in MODELS=cheap SIZE_CHECK=off; do
+    for c in MODELS=balanced MODELS=max MODELS=cheap SIZE_CHECK=off; do
         b_project "$T/pl5" <<EOF
 TEST_CMD='bash check.sh'
 $c
@@ -191,6 +192,7 @@ pl_l9() {
 TEST_CMD='bash check.sh'
 DEMO_CMD='bash check.sh'
 FRESH_CHECK=off
+SIZE_CHECK=on
 EOF
     printf -- '- [ ] 1. one. Done when `bash check.sh` exits 0.\n' >TASKS.md && git commit -qam tasks || fail "L9: setup failed"
     printf -- '- [ ] a. Done when `touch %s/pl9-part` exits 0.\n- [ ] b. Done when `bash check.sh` exits 0.\n' "$T" >"$FAKE_DIR/size-1.txt"

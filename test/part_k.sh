@@ -27,9 +27,9 @@ EOF
     done
     grep -v ' env=unset ' "$FAKE_DIR/args" | grep -q . && fail "K1: CLAUDE_CODE_EFFORT_LEVEL reached claude: $(grep -v ' env=unset ' "$FAKE_DIR/args" | cut -c1-80)"
     [ "$(grep -c -- '--max-budget-usd 0.5 ' "$FAKE_DIR/args")" = "$(wc -l <"$FAKE_DIR/args")" ] || fail "K1: a call without --max-budget-usd 0.5: $(cut -c1-120 "$FAKE_DIR/args")"
-    [ "$(head -1 "$s/costs.csv")" = "time;kind;model;usd;input_tokens;cache_read_tokens;output_tokens;effort" ] &&
-        grep -q '^2026-01-01 10:00:00;worker;opus;0.50;1;2;3$' "$s/costs.csv" && grep -q ';reviewer;sonnet;0.01;100;1000;10;max$' "$s/costs.csv" &&
-        grep -q ';lessons;sonnet;0.01;100;1000;10;high$' "$s/costs.csv" || fail "K1: costs.csv without the effort column or the old rows: $(cat "$s/costs.csv")"
+    [ "$(head -1 "$s/costs.csv")" = "time;kind;model;usd;input_tokens;cache_read_tokens;output_tokens;effort;cache_creation_tokens" ] &&
+        grep -q '^2026-01-01 10:00:00;worker;opus;0.50;1;2;3$' "$s/costs.csv" && grep -q ';reviewer;sonnet;0.01;100;1000;10;max;0$' "$s/costs.csv" &&
+        grep -q ';lessons;sonnet;0.01;100;1000;10;high;0$' "$s/costs.csv" || fail "K1: costs.csv without the effort column or the old rows: $(cat "$s/costs.csv")"
     "$TOOL_DIR/menu.sh" status | grep -qx "Effort:      worker medium, reviewer max, planner medium, lessons high" || fail "K1: status without the effort: $("$TOOL_DIR/menu.sh" status)"
     # balanced profile without overrides
     b_project "$T/pk1b" <<'EOF'

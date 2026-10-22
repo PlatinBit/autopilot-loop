@@ -182,6 +182,7 @@ pm_m9() {
     b_project "$T/pm9" <<'EOF'
 TEST_CMD='bash check.sh'
 PARALLEL=2
+SIZE_CHECK=on
 EOF
     m_tasks "1. one" "2. two"; m_steps 2
     printf -- '- [ ] a. Done when a test passes.\n- [ ] b. Done when `bash check.sh` exits 0.\n' >"$FAKE_DIR/size-1.txt"

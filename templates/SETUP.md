@@ -33,7 +33,7 @@ TRY_IT='<one or two sentences on how the owner tries the result by hand, with pa
 - [ ] <last>. End to end: <wire the pieces together so that the deliverable works as a whole>; the README says what it is and names the start command. Done when `<DEMO_CMD>` exits 0 and prints <expected output>.
 
 Rules for the tasks:
-- A command in backticks right after "Done when" is run by the script after the task, and the task only counts if it exits 0 (the test count then need not rise). Use it only for a command that exits 0 on success.
+- A command in backticks right after "Done when" is run by the script after the task, and the task only counts if it exits 0 (the test count then need not rise). Use it only for a command that exits 0 on success, and write the whole command, e.g. `python -m pytest -q tests/test_x.py`: a bare path like `tests/test_x.py` is no command and is not run.
 - One task per sensible, checkable step: every task can be implemented in at most 30 minutes and proven by new automated tests. As a guide, 1 to 3 tasks per milestone of the plan.
 - The order builds up step by step; if needed, the first tasks create the test scaffolding so that the test command delivers a number at all.
 - A task that needs other tasks done first names them right after its number: `- [ ] 5. (after 2, 4) <task>. Done when …`. The next task is always the first open one whose dependencies are ticked off, so a task that depends on a blocked one is skipped. Without "(after …)" the list is worked from top to bottom.

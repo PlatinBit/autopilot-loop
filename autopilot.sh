@@ -129,6 +129,7 @@ journal_run() { # RESULT: the worker's entry for this run, then the reviewer's i
 condense_lessons() {
     local a=$LOGS/lessons.txt removed new
     [ -n "$in_wave" ] && { lessons_due=1; return 0; }  # a wave condenses once after its last merge
+    cost_cap
     removed=$(grep '^- \[removed by owner\]' "$LESSONS" 2>/dev/null)
     claude_wait "$a" lessons --model "$PLANNER_MODEL" --allowedTools Read Grep Glob <<<"$(cat "$TOOL_DIR/templates/LESSONS.md")
 
@@ -240,7 +241,9 @@ reject() { # BEFORE REASON [LOGFILE]: every rejection counts as a failed attempt
     case $2 in "Reviewer: reviewer hit the per-call budget"*) ;; *) fails=$((fails + 1)) ;; esac  # the reviewer's budget is not the worker's attempt
     rejected_n=$((rejected_n + 1)); save_attempts
     # lessons are condensed at a timeout, a blocked task and every 5 accepted tasks, not at every rejection (cost)
-    case $2 in "aborted after"*) journal_run timeout; condense_lessons ;; "hit the per-call budget"*) journal_run "over budget"; condense_lessons ;; *) journal_run "rejected: $(shorten 120 <<<"$2")" ;; esac
+    # (a timeout or budget abort that uses up the last attempt leaves it to block_task, which follows at once)
+    case $2 in "aborted after"*) journal_run timeout ;; "hit the per-call budget"*) journal_run "over budget" ;; *) journal_run "rejected: $(shorten 120 <<<"$2")"; return ;; esac
+    [ "$fails" -ge "$ATTEMPTS" ] || condense_lessons
 }
 
 block_task() { # REASON: mark the picked task (line $pick) as [~] so the loop can move on
@@ -254,8 +257,8 @@ block_task() { # REASON: mark the picked task (line $pick) as [~] so the loop ca
     rm -f "$FEEDBACK"; fails=0; condense_lessons
 }
 
-# Size check (SIZE_CHECK=on), once per task line before its first attempt (.autopilot/sized holds the hashes): the
-# planner judges whether the picked task fits one run. If not, the script puts its parts in its place as N.1, N.2 …,
+# Size check (SIZE_CHECK=on), once per task line before its first attempt (.autopilot/sized holds the hashes): a short
+# call (worker model, effort low) judges whether the picked task fits one run. If not, the script puts its parts in its place as N.1, N.2 …,
 # one after the other (N.k waits on N.(k-1)), each with the task's "(after …)", and commits that; the parts are never
 # checked again. A task without a number stays as it is, and so does one whose parts would bring a check command
 # the owner never approved: only the last part has one, exactly the task's own. → 0 split, 1 the task stays
@@ -263,8 +266,8 @@ size_check() {
     local line h a=$LOGS/size-$((i + 1)).txt num deps d cmd pc bad='' parts n k=0 p
     line=$(sed -n "${pick}p" "$TASKS_FILE"); h=$(hash_only <<<"$line" | cut -c1-16)
     grep -qxF "$h" "$STATE/sized" 2>/dev/null && return 1
-    echo "$h" >>"$STATE/sized"
-    claude_wait "$a" size --model "$PLANNER_MODEL" --allowedTools Read Grep Glob --json-schema "$SIZE_SCHEMA" <<<"$(cat "$TOOL_DIR/templates/SIZE.md")$(plan_section)$(project_rules)
+    cost_cap; echo "$h" >>"$STATE/sized"
+    claude_wait "$a" size --model "$WORKER_MODEL" --allowedTools Read Grep Glob --json-schema "$SIZE_SCHEMA" <<<"$(cat "$TOOL_DIR/templates/SIZE.md")$(plan_section)$(project_rules)
 
 ## Task list ($TASKS_FILE)
 $(cat "$TASKS_FILE")
@@ -275,9 +278,9 @@ $line"
     num=$(sed -nE 's/^- \[ \] ([0-9]+(\.[0-9]+)*)\..*/\1/p' <<<"$line")
     deps=$(sed -nE 's/^- \[ \] [0-9.]+\. (\(after [0-9][0-9., ]*\)).*/\1/p' <<<"$line")
     parts=$(answer_lines "$a" '.split[]?' | grep -E '^- \[ \] .*Done when' | head -5); n=$(grep -c . <<<"$parts")
-    [[ $line =~ $CHECK_RE ]] && cmd=${BASH_REMATCH[1]} || cmd=''
+    cmd=$(check_cmd "$line")
     if [ -z "$num" ] || [ "$n" -lt 2 ]; then note "Size check: task ${num:-without a number} does not fit one run, but cannot be split (see $a) – it stays"; return 1; fi
-    while IFS= read -r p; do k=$((k + 1)); pc=''; [[ $p =~ $CHECK_RE ]] && pc=${BASH_REMATCH[1]}  # read as the run reads it
+    while IFS= read -r p; do k=$((k + 1)); pc=$(check_cmd "$p")  # read as the run reads it
         if [ "$k" = "$n" ]; then [ "$pc" = "$cmd" ] || bad="the parts drop its check command"
         elif [ -n "$pc" ] && ! approved "$pc"; then bad="part $k brings a check command that is not approved (\`$(shorten 60 <<<"$pc")\`)"; fi
     done <<<"$parts"
@@ -445,10 +448,15 @@ final_review() {
       memory final
     } >"$LOGS/final-prompt.txt"
     for try in 1 2; do  # an answer with neither tasks nor ok is asked for once more
+        cost_cap
         claude_wait "$a" final --model "$PLANNER_MODEL" --allowedTools Read Grep Glob --json-schema "$FINAL_SCHEMA" <"$LOGS/final-prompt.txt"
         tasks=$(answer_lines "$a" '.tasks[]?' | grep -E '^- \[ \] .*Done when' | head -5)
         [ -n "$tasks" ] || [ "$(answer_lines "$a" .ok)" = true ] && break
-        [ "$try" = 1 ] && note "Final review (round $n): no usable answer, asking once more"
+        if over_budget "$a"; then  # like the reviewer: once more, then not delivered
+            [ "$try" = 2 ] && { journal_add "$a" "$JOURNAL" final - "over budget"; final_issues=''
+                reason="the final review hit the per-call budget (MAX_COST_PER_CALL_USD=$MAX_COST_PER_CALL_USD) twice, see $a"; return 2; }
+            note "Final review (round $n): per-call budget (MAX_COST_PER_CALL_USD=$MAX_COST_PER_CALL_USD), trying once more"
+        elif [ "$try" = 1 ]; then note "Final review (round $n): no usable answer, asking once more"; fi
     done
     if [ -z "$tasks" ]; then
         if [ "$(answer_lines "$a" .ok)" = true ]; then
@@ -545,7 +553,7 @@ open_pr() { # BRANCH
 milestone_after() { awk -v m="$1" 'f { print; exit } $0 == m { f = 1 }' <<<"$ms_all"; }
 next_milestone() { # the planner drafts the tasks of the next milestone from the locked plan; they are added without asking
     local nx answer rc
-    nx=$(milestone_after "$ms"); rm -f "$LOGS/suggestion-prev.md"
+    nx=$(milestone_after "$ms"); rm -f "$LOGS/suggestion-prev.md"; cost_cap
     note "Milestone $ms done: the planner drafts the tasks of Milestone $nx …"
     answer=$(run_planner "## Your job now
 Milestone $ms of the plan is done. Propose the tasks of \"Milestone $nx\" only, nothing of later milestones. Its last task proves the criterion of Milestone $nx$(if [ "$nx" = "$(tail -1 <<<"$ms_all")" ]; then echo '; it is the last milestone, so the last task is the end-to-end one with the demo command'; else echo '; it is not the last milestone, so no end-to-end task with the demo command yet'; fi)."); rc=$?
@@ -569,6 +577,12 @@ Milestone $ms of the plan is done. Propose the tasks of \"Milestone $nx\" only, 
 # No progress: accepted runs without a higher acceptance count, persisted per acceptance level ("<acc> <count>").
 np_count() { local a='' c=''; read -r a c <"$STATE/no-progress" 2>/dev/null; if [ "$a" = "$acc" ] && is_number "$c"; then echo "$c"; else echo 0; fi; }
 np_add() { echo "$acc $(( $(np_count) + $1 ))" >"$STATE/no-progress"; }
+# MAX_COST_USD, checked before every Claude call of the loop (not before the reviewer of a finished run): reached → limit
+cost_cap() {
+    local spent; spent=$(cost_sum "$COSTS" "$costs_from")
+    awk -v s="$spent" -v m="$MAX_COST_USD" 'BEGIN { exit !(s >= m) }' || return 0
+    note "Cost cap reached: $spent USD"; handover limit "cost cap MAX_COST_USD=$MAX_COST_USD reached ($spent USD), $(open_tasks) tasks still open"; exit 0
+}
 run_planner() { # [JOB]: replaces the default job (closing the gap to the goal), e.g. the next milestone
     local prompt r
     prompt="$(cat "$PLANNER_FILE")$(plan_section)$(project_rules)
@@ -610,10 +624,11 @@ plan_more() { # WHY (the loop ends here)
         note "No progress${ACCEPT_CMD:+ (Accept $acc of ${target:-?})}: accepted runs and planner rounds without progress reached NO_PROGRESS=$NO_PROGRESS – check the acceptance test or the demo"
         handover not-delivered "no progress${ACCEPT_CMD:+ (Accept $acc of ${target:-?})}: accepted runs and planner rounds (one counts $(( (NO_PROGRESS + 1) / 2 ))) reached NO_PROGRESS=$NO_PROGRESS"; exit 1
     fi
-    np_add $(( (NO_PROGRESS + 1) / 2 ))
+    cost_cap; np_add $(( (NO_PROGRESS + 1) / 2 ))
     note "$1: planner drafts new tasks …"
     answer=$(run_planner); rc=$?
     if [ "$rc" = 2 ]; then note "Planner: $answer"; handover not-delivered "$answer"; exit 1; fi  # NOT REACHABLE: needs the owner
+    if [ "$rc" != 0 ]; then rm -f "$STATE/suggestion.md"; note "Planner: $answer"; handover not-delivered "$1, the planner proposed nothing"; exit 1; fi
     note "Planner: $answer Read: autopilot plan – adopt: autopilot plan accept"
     handover not-delivered "$1, the planner proposed new tasks (autopilot plan)"; exit 0
 }
@@ -670,13 +685,20 @@ changed_submodules() {
 # TEST_CMD, DEMO_CMD, ACCEPT_CMD, or one of a task line adopted with `plan accept` (.autopilot/approved-checks). Task
 # lines nobody approved (split, final review, next milestone with MILESTONE_GATE=auto) may name another one: it is
 # not run, and the task needs a new test like one without a check command. → $task_check, $check_unapproved
+# A path alone (`tests/test_x.py`) is no command: the text counts only with a space in it or when it runs as it is
+# (a program on PATH or an executable file).
 CHECK_RE='Done when `([^`]+)`'
+check_cmd() { # TASK LINE → its check command (empty: none)
+    [[ $1 =~ $CHECK_RE ]] || return 0
+    [[ ${BASH_REMATCH[1]} == *[[:space:]]* ]] || command -v -- "${BASH_REMATCH[1]}" >/dev/null && echo "${BASH_REMATCH[1]}"
+    return 0
+}
 approved() { [ "$1" = "$TEST_CMD" ] || [ "$1" = "$DEMO_CMD" ] || [ "$1" = "$ACCEPT_CMD" ] || grep -qxF -- "$1" "$STATE/approved-checks" 2>/dev/null; }
 check_of() { # TASK LINE
-    task_check=''; check_unapproved=''
-    [[ $1 =~ $CHECK_RE ]] || return 0
-    approved "${BASH_REMATCH[1]}" && { task_check=${BASH_REMATCH[1]}; return 0; }
-    check_unapproved=${BASH_REMATCH[1]}
+    local c; task_check=''; check_unapproved=''
+    c=$(check_cmd "$1"); [ -n "$c" ] || return 0
+    approved "$c" && { task_check=$c; return 0; }
+    check_unapproved=$c
     grep -qxF -- "$check_unapproved" <<<"$unapproved" && return 0  # named once per start
     unapproved+="${unapproved:+$'\n'}$check_unapproved"
     note "check command not approved: \`$check_unapproved\` ($(shorten 50 <<<"${1:6}")) – not run, the test count must rise instead"
@@ -701,6 +723,7 @@ worker_prompt() {
     # Otherwise the worker gets the plan itself and reads the code on its own (a brief costs more than it saves).
     brief_ok=''
     if [ "$MODELS" = cheap ]; then
+        [ -n "$in_wave" ] || cost_cap  # a wave fits its workers into MAX_COST_USD before it starts them
         brief=$(cat "$BRIEF_FILE"; plan_section; project_rules; printf '\n\n## Task\n%s\n' "$open_task"
                 [ -s "$FEEDBACK" ] && { printf '\n## Feedback on the previous attempt\n'; cat "$FEEDBACK"; }; memory brief)
         if claude_run "$LOGS/brief-$i.txt" brief --model "$PLANNER_MODEL" --allowedTools Read Grep Glob <<<"$brief" >/dev/null &&
@@ -1040,7 +1063,7 @@ if [ "$FRESH_CHECK" != off ]; then
     [ "$r" = 0 ] || { announce crit "TEST_CMD is red in a fresh checkout of HEAD: it depends on files that are not committed (ignored caches, build output, local settings; with the sandbox nothing can be downloaded there), so the result could never be delivered. See $STATE/fresh.txt – commit what is missing, or set FRESH_CHECK=off"; exit 1; }
 fi
 [ "$PARALLEL" -gt 1 ] && note "PARALLEL=$PARALLEL is experimental: workers start without ignored files (caches, node_modules)"
-announce info "Start: $count tests green${ACCEPT_CMD:+, Accept $acc of ${target:-?}}, at most $MAX_RUNS runs or $MAX_COST_USD USD, models $MODELS (planner $PLANNER_MODEL, worker $WORKER_MODEL, reviewer $REVIEWER_MODEL), sandbox ${sandbox:+on}${sandbox:-off}"
+announce info "Start: $count tests green${ACCEPT_CMD:+, Accept $acc of ${target:-?}}, at most $MAX_RUNS runs or $MAX_COST_USD USD, models $MODELS (planner $PLANNER_MODEL, worker $WORKER_MODEL, reviewer $REVIEWER_MODEL), sandbox $([ -n "$sandbox" ] && echo on || echo off)"
 
 # Brake of the next task from the last start (same task: counter and feedback kept)
 fails=0; last=''
@@ -1052,6 +1075,10 @@ else rm -f "$FEEDBACK"; fi
 waits=0; last_denied=''; loop_started=1
 while :; do
     [ -e "$STATE/STOP" ] && { note "Stopped via STOP after $i runs"; handover stopped "stopped by you after $i runs"; exit 0; }
+    blocked=$(grep -c '^- \[~\]' "$TASKS_FILE")
+    if [ "$(open_tasks)" = 0 ] && [ "$blocked" -gt 0 ]; then  # nothing to build: no demo, no final review, no planner
+        note "Only blocked tasks left: $blocked (see BLOCKED.md)"; handover not-delivered "$blocked tasks blocked, nothing left to build"; exit 0
+    fi
     if [ "$(open_tasks)" = 0 ]; then
         # Only the last milestone (or a plan without milestones) ends with the demo and needs the acceptance goal
         last_ms=1; [ -n "$ms" ] && [ -n "$(milestone_after "$ms")" ] && last_ms=''
@@ -1064,11 +1091,7 @@ while :; do
                 [ "$PLANNER" = on ] && plan_more "Demo red"
                 handover not-delivered "demo failed: $reason"; exit 1
             fi
-            blocked=$(grep -c '^- \[~\]' "$TASKS_FILE")
-            if [ "$blocked" -gt 0 ]; then
-                note "Goal reached: all tasks done except $blocked blocked (see BLOCKED.md)${ACCEPT_CMD:+, Accept $acc of $target}."
-                handover not-delivered "$blocked tasks blocked"; exit 0
-            elif [ "$r" = 2 ]; then
+            if [ "$r" = 2 ]; then
                 note "Goal reached: all tasks done${ACCEPT_CMD:+, Accept $acc of $target}, but $reason"
                 handover not-delivered "$reason"; exit 0
             fi
@@ -1109,9 +1132,7 @@ while :; do
     [ "$(grep -c '^- \[~\]' "$TASKS_FILE")" -ge "$MAX_BLOCKED" ] &&
         { announce crit "$MAX_BLOCKED tasks blocked, please check BLOCKED.md"; handover not-delivered "$MAX_BLOCKED tasks blocked (MAX_BLOCKED), see BLOCKED.md"; exit 1; }
     [ "$i" -ge "$MAX_RUNS" ] && { note "Run cap reached: $MAX_RUNS runs"; handover limit "run cap MAX_RUNS=$MAX_RUNS reached, $(open_tasks) tasks still open"; exit 0; }
-    spent=$(cost_sum "$COSTS" "$costs_from")
-    awk -v s="$spent" -v m="$MAX_COST_USD" 'BEGIN { exit !(s >= m) }' &&
-        { note "Cost cap reached: $spent USD"; handover limit "cost cap MAX_COST_USD=$MAX_COST_USD reached ($spent USD), $(open_tasks) tasks still open"; exit 0; }
+    cost_cap
     if [ "$PARALLEL" -gt 1 ] && [ "$fails" = 0 ] && [ ! -s "$FEEDBACK" ]; then wave; [ $? = 1 ] || continue; fi
     [ "$SIZE_CHECK" = on ] && [ "$fails" = 0 ] && size_check && continue  # split: the loop picks its first part
 

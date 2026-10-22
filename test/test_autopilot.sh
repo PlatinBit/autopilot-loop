@@ -75,7 +75,7 @@ export AUTOPILOT_CONF="$T/pa/autopilot.conf"
 ATTEMPTS=9 "$TOOL_DIR/autopilot.sh" >"$T/output.txt" 2>&1 || fail "run ended with an error: $(tail -3 "$T/output.txt")"
 
 v=$T/pa/.autopilot/log/history.log
-for expected in "Goal reached" "no task ticked off" "without a new test" "outside allowed paths: accept.sh" \
+for expected in "Only blocked tasks left: 1" "no task ticked off" "without a new test" "outside allowed paths: accept.sh" \
                 "locked file changed: plan.md" "forbidden content" "Reviewer: too thin" "Task blocked: 9 failed attempts, last: Reviewer: too thin" \
                 "dropped from 2 to 1" "tests red" "count line of the test command" "outside allowed paths: secret.txt" \
                 'tool calls denied: Bash `rtk gradlew build` (not covered by WORKER_TOOLS)' \
@@ -93,13 +93,13 @@ grep -qx 1 "$FAKE_DIR/with-plan" || fail "plan was not passed to the worker with
 [ "$(grep -c "tool calls denied" "$v")" = 1 ] || fail "refused tool calls reported although there were none"
 grep -qx 1 "$FAKE_DIR/with-decisions" || fail "{DECISIONS_FILE} was not filled into the prompt"
 c=$T/pa/.autopilot/costs.csv
-[ "$(head -1 "$c")" = "time;kind;model;usd;input_tokens;cache_read_tokens;output_tokens;effort" ] || fail "costs.csv header wrong: $(head -1 "$c")"
-[ "$(grep -c ';worker;opus;0.01;100;1000;10;high$' "$c")" = 15 ] && [ "$(grep -c ';reviewer;opus;0.01;' "$c")" = 6 ] ||
+[ "$(head -1 "$c")" = "time;kind;model;usd;input_tokens;cache_read_tokens;output_tokens;effort;cache_creation_tokens" ] || fail "costs.csv header wrong: $(head -1 "$c")"
+[ "$(grep -c ';worker;opus;0.01;100;1000;10;high;0$' "$c")" = 15 ] && [ "$(grep -c ';reviewer;opus;0.01;' "$c")" = 6 ] ||
     fail "costs.csv: worker and reviewer calls with tokens not recorded: $(cat "$c")"
 "$TOOL_DIR/menu.sh" status >"$T/st.txt" || fail "status failed"
 grep -q "4 done, 0 open, 1 blocked" "$T/st.txt" || fail "status wrong: $(cat "$T/st.txt")"
 grep -qE '^  worker +0\.15 USD +tokens: 1500 in, 15k cache read, 150 out$' "$T/st.txt" && grep -qE '^  lessons +0\.01 USD' "$T/st.txt" &&
-    grep -qE '^  size +0\.05 USD' "$T/st.txt" && grep -qE '^  total +0\.27 USD$' "$T/st.txt" ||  # size: one check per task (SIZE_CHECK on with max)
+    ! grep -qE '^  size ' "$T/st.txt" && grep -qE '^  total +0\.22 USD$' "$T/st.txt" ||  # no size check: SIZE_CHECK is off by default
     fail "status: cost and tokens per kind wrong: $(cat "$T/st.txt")"
 grep -q "Autopilot: \[x\] 5. five" "$T/pa/.autopilot/HANDOVER.md" || fail "handover does not list the commits"
 grep -qx "User file" secret.txt || fail "foreign file lost through a rename"
@@ -156,7 +156,7 @@ grep -q "^TEST_COUNT_CMD=" "$conf" || fail "TEST_COUNT_CMD not adopted"
 [ ! -e "$T/config/autopilot-loop/standard.conf" ] || fail "a standard.conf was still written"
 [ -f "$T/p2-autopilot/AUTOPILOT-TASKS.md" ] || fail "task list not in the work branch"
 git -C "$T/p2" status --porcelain | grep -q . && fail "project polluted by state files: $(git -C "$T/p2" status --porcelain)"
-grep -q ';draft;opus;0.01;100;1000;10;high$' "$T/p2/.autopilot/costs.csv" || fail "the draft's Claude call is missing in costs.csv"
+grep -q ';draft;opus;0.01;100;1000;10;high;0$' "$T/p2/.autopilot/costs.csv" || fail "the draft's Claude call is missing in costs.csv"
 echo "# changed" >>"$conf"
 "$TOOL_DIR/autopilot.sh" >/dev/null 2>&1; [ $? = 4 ] || fail "changed configuration loaded without a new confirmation"
 "$TOOL_DIR/menu.sh" trust >/dev/null || fail "trusting again (conf found in the current folder) failed"
@@ -173,7 +173,7 @@ SECONDS=0; timeout 10 "$TOOL_DIR/autopilot.sh" >"$T/second.txt" 2>&1 && fail "se
 grep -q "already running" "$T/second.txt" || fail "second instance: no 'already running' message: $(cat "$T/second.txt")"
 [ -d "$T/p2/.autopilot/lock" ] || fail "second instance removed the lock of the first run"
 "$TOOL_DIR/menu.sh" status | grep -q "^Status: *running – run 1 of at most 50" || fail "status does not show the running run: $("$TOOL_DIR/menu.sh" status)"
-"$TOOL_DIR/menu.sh" status --short | grep -qx "Autopilot p2: run 1/50 · 0.01 USD" || fail "status --short while running: $("$TOOL_DIR/menu.sh" status --short)"  # 0.01: the size check
+"$TOOL_DIR/menu.sh" status --short | grep -qx "Autopilot p2: run 1/50 · 0.00 USD" || fail "status --short while running: $("$TOOL_DIR/menu.sh" status --short)"  # nothing booked yet: the worker is still running
 touch "$FAKE_DIR/go"
 wait "$first" || fail "run ended with an error: $(tail -3 "$T/output2.txt")"
 grep -q "Goal reached" "$T/p2/.autopilot/log/history.log" || fail "project not completed"
@@ -183,7 +183,7 @@ grep -q "Goal reached" "$T/p2/.autopilot/log/history.log" || fail "project not c
 grep -q "models balanced (planner opus, worker sonnet, reviewer sonnet)" "$T/p2/.autopilot/log/history.log" || fail "models not shown at the start"
 grep -q ';brief;' "$T/p2/.autopilot/costs.csv" && fail "costs.csv: a brief call under MODELS=balanced"
 grep -q ';worker;sonnet;' "$T/p2/.autopilot/costs.csv" || fail "costs.csv: worker model wrong"
-"$TOOL_DIR/menu.sh" status --short | grep -qx "Autopilot p2 ended: delivered, merged into main - 1 done, 0 blocked, tests 1 -> 2, 0.04 USD" ||
+"$TOOL_DIR/menu.sh" status --short | grep -qx "Autopilot p2 ended: delivered, merged into main - 1 done, 0 blocked, tests 1 -> 2, 0.03 USD" ||
     fail "status --short after the end: $("$TOOL_DIR/menu.sh" status --short)"
 # Planner suggestion: shown by `plan`, adopted by `plan accept`, thrown away by `plan discard` (honest when there is none)
 printf -- '- [ ] 2. two. Done when two more tests pass.\n' >"$T/p2/.autopilot/suggestion.md"
@@ -311,6 +311,7 @@ printf 'WORKDIR=work\nTEST_CMD=%q\nACCEPT_CMD=%q\nLOCKED=(accept.sh)\nALLOWED=%q
     '^(checks\.txt)$' >"$T/e4/autopilot.conf"
 echo "echo check >>checks.txt; $tick" >"$FAKE_DIR/steps/1.sh"
 echo "VERDICT: ACCEPT" >"$FAKE_DIR/verdicts"
+printf -- '- [ ] 2. more. Done when a test passes.\n' >"$FAKE_DIR/planner.txt"   # the planner proposes a task at the end (an empty answer is "not delivered")
 export AUTOPILOT_CONF="$T/e4/autopilot.conf"
 "$TOOL_DIR/menu.sh" trust "$AUTOPILOT_CONF" >/dev/null || fail "trust for the placeholder test failed"
 MAX_RUNS=1 "$TOOL_DIR/autopilot.sh" >"$T/e4/out.txt" 2>&1 || fail "placeholder run ended with an error: $(tail -3 "$T/e4/out.txt")"
@@ -530,7 +531,7 @@ grep -q "time limit" "$T/rt-conf/.autopilot/log/history.log" || fail "reviewer t
 ! grep -q "no verdict" "$T/rt-conf/.autopilot/log/history.log" || fail "reviewer timeout: reported as no verdict: $(cat "$T/rt.txt")"
 [ "$SECONDS" -lt 30 ] || fail "reviewer timeout: waited too long: $(cat "$T/rt.txt")"
 ! git log --format=%s | grep -q "^Autopilot:" || fail "reviewer timeout: a task was accepted: $(cat "$T/rt.txt")"
-grep -q ';reviewer;opus;?;;;;xhigh$' "$T/rt-conf/.autopilot/costs.csv" || fail "reviewer timeout: cost not recorded as unknown: $(cat "$T/rt-conf/.autopilot/costs.csv")"
+grep -q ';reviewer;opus;?;;;;xhigh;$' "$T/rt-conf/.autopilot/costs.csv" || fail "reviewer timeout: cost not recorded as unknown: $(cat "$T/rt-conf/.autopilot/costs.csv")"
 # SIGTERM during a worker run: child killed, work directory reset, history line with the hint
 new_round; sample_project "$T/si"
 printf -- '- [ ] 1. one\n' >TASKS.md
@@ -610,4 +611,5 @@ cd "$T" || exit 1
 . "$TOOL_DIR/test/part_k.sh"
 . "$TOOL_DIR/test/part_l.sh"
 . "$TOOL_DIR/test/part_m.sh"
+. "$TOOL_DIR/test/part_n.sh"
 echo ok

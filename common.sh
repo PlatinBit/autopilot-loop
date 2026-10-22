@@ -49,7 +49,7 @@ MILESTONE_GATE=auto
 PLANNER=on
 MERGE=ff
 PR_WAIT=off
-SIZE_CHECK=''           # empty: on, off with MODELS=cheap
+SIZE_CHECK=off
 PARALLEL=${PARALLEL:-1}
 FRESH_CHECK=on
 SECRETS_CHECK=on
@@ -77,7 +77,6 @@ case $MODELS in  # models, then effort: worker reviewer planner lessons (the pla
 esac
 EFFORT_WORKER=${EFFORT_WORKER:-${e[0]}}; EFFORT_REVIEWER=${EFFORT_REVIEWER:-${e[1]}}
 EFFORT_PLANNER=${EFFORT_PLANNER:-${e[2]}}; EFFORT_LESSONS=${EFFORT_LESSONS:-${e[3]}}
-[ -n "$SIZE_CHECK" ] || { [ "$MODELS" = cheap ] && SIZE_CHECK=off || SIZE_CHECK=on; }
 case $MERGE in ff|off|pr) ;; *) echo "MERGE=$MERGE in $CONF: use ff, off or pr." >&2; exit 1 ;; esac
 abs_path() { case "$1" in /*) echo "$1" ;; *) echo "$CONF_DIR/$1" ;; esac; }
 WORKDIR=$(abs_path "$WORKDIR")
