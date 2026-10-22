@@ -144,8 +144,24 @@ journal_tail() { # JOURNAL [N]
   awk -v k="${2:-25}" '/^### J/ { n++ } { l[NR] = $0; e[NR] = n }
        END { for (i = 1; i <= NR; i++) if (e[i] > n - k) print l[i] }' "$1" 2>/dev/null
 }
-# An answer without its note blocks, before VERDICT:/FINAL:/task lines are read from it.
-strip_note() { awk '/^<<<NOTE[[:space:]]*$/ { on = 1 } !on { print } /^NOTE>>>[[:space:]]*$/ { on = 0 }' "$1" 2>/dev/null; }
+# An answer without its closed note blocks, before VERDICT:/FINAL:/task lines are read from it.
+# A block that is never closed stays in (otherwise an answer with a stray "<<<NOTE" would lose its verdict).
+strip_note() {
+    awk '/^<<<NOTE[[:space:]]*$/ && !on { on = 1; b = "" }
+         on { b = b $0 "\n"; if (/^NOTE>>>[[:space:]]*$/) on = 0; next }
+         { print }
+         END { if (on) printf "%s", b }' "$1" 2>/dev/null
+}
+# Output of a project command without ANSI escape sequences (colours, cursor moves), for handover and prompts
+no_ansi() { sed "s/$(printf '\033')\[[0-9;?]*[A-Za-z]//g" | tr -d '\033'; }
+# "## Milestone N" headings of a plan (outside fenced code blocks): the numbers, sorted, each once
+milestones() { # PLANFILE
+    awk '/^[[:space:]]*(```|~~~)/ { code = !code; next }
+         !code && /^##[[:space:]]+Milestone[[:space:]]+[0-9]+/ { s = $0; sub(/^##[[:space:]]+Milestone[[:space:]]+/, "", s); sub(/[^0-9].*/, "", s); print s }' "$1" 2>/dev/null | sort -nu
+}
+# Lines that look like a secret: AWS key, private key block, a long literal assigned to a name that is or ends in
+# password/secret/token/api_key (DB_PASSWORD, dbPassword); longer names like tokenizer_name or PASSWORD_HASHERS do not count
+SECRETS='AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----|((^|[^A-Za-z0-9])([Pp]assword|PASSWORD|[Ss]ecret|SECRET|[Tt]oken|TOKEN|[Aa]pi_?[Kk]ey|API_?KEY)|[a-z0-9](Password|Secret|Token|Api_?[Kk]ey))["'"'"']?[[:space:]]*[:=][[:space:]]*["'"'"'][A-Za-z0-9+/=_.-]{20,}["'"'"']'
 
 # Sum of the cost in USD from line FROM on (a start notes where its calls begin; empty = all), unknown costs ("?") left out
 cost_sum() { # CSV [FROM]
@@ -246,7 +262,7 @@ probe_test_cmd() { # CONF (written and trusted)
         [ -n "$TEST_CMD" ] || { echo "WARNING: test command not checked: TEST_CMD is not set in $conf"; exit 0; }
         cd "$WORKDIR" 2>/dev/null || { echo "WARNING: test command not checked: work directory $WORKDIR missing"; exit 0; }
         w=(); [ "${SANDBOX:-}" != off ] && sandbox_works && w=("$LIB_DIR/sandbox-run")
-        with_timeout "${TEST_TIMEOUT:-30m}" ${w[@]+"${w[@]}"} bash -c "$TEST_CMD" >"$out" 2>&1; rc=$?
+        NO_COLOR=1 PY_COLORS=0 FORCE_COLOR=0 TERM=dumb with_timeout "${TEST_TIMEOUT:-30m}" ${w[@]+"${w[@]}"} bash -c "$TEST_CMD" >"$out" 2>&1; rc=$?
         if [ "$rc" = 0 ]; then
             if [ -n "${TEST_COUNT_CMD:-}" ]; then n=$(bash -c "$TEST_COUNT_CMD" <"$out" | tail -1)
             else re=${TEST_COUNT_REGEX:-'^TESTS: ([0-9]+)'}; n=''

@@ -8,6 +8,7 @@
 pi_i1() {
     b_project "$T/pi1" <<'EOF'
 TEST_CMD='bash check.sh'
+MODELS=cheap
 EOF
     mkdir -p "$FAKE_DIR/notes"
     echo "$tick" >"$FAKE_DIR/steps/1.sh"                            # no new test: rejected
@@ -44,14 +45,16 @@ MODELS=max
 EOF
     local s=$T/pi2-conf/.autopilot; mkdir -p "$s"
     printf -- '- Old rule. (J1)\n- [removed by owner] Skip the slow test. (J1)\n' >"$s/LESSONS.md"
-    echo "$tick" >"$FAKE_DIR/steps/1.sh"                            # rejected: lessons condensed
-    echo "echo check >>checks.txt; $tick" >"$FAKE_DIR/steps/2.sh"
-    printf '<<<LESSONS\n- Add a check line before ticking off. (J1)\n- A line without a reference.\nLESSONS>>>\n' >"$FAKE_DIR/lessons.txt"
+    echo "$tick" >"$FAKE_DIR/steps/1.sh"                            # rejected: no condensing (cost)
+    echo "exit 124" >"$FAKE_DIR/steps/2.sh"                         # time limit: lessons condensed
+    echo "echo check >>checks.txt; $tick" >"$FAKE_DIR/steps/3.sh"
+    # the removed lesson comes back without its prefix (other references): it stays out
+    printf '<<<LESSONS\n- Add a check line before ticking off. (J1)\n- A line without a reference.\n- Skip the slow test. (J1, J2)\nLESSONS>>>\n' >"$FAKE_DIR/lessons.txt"
     printf 'VERDICT: ACCEPT\nVERDICT: ACCEPT\n' >"$FAKE_DIR/verdicts"
-    MAX_RUNS=2 "$TOOL_DIR/autopilot.sh" >"$T/pi2.txt" 2>&1 || fail "I2: run failed: $(tail -3 "$T/pi2.txt")"
-    [ "$(cat "$FAKE_DIR/lessons-nr")" = 1 ] || fail "I2: lessons not condensed exactly once after one rejection: $(cat "$FAKE_DIR/lessons-nr" 2>/dev/null)"
+    MAX_RUNS=3 "$TOOL_DIR/autopilot.sh" >"$T/pi2.txt" 2>&1 || fail "I2: run failed: $(tail -3 "$T/pi2.txt")"
+    [ "$(cat "$FAKE_DIR/lessons-nr")" = 1 ] || fail "I2: lessons not condensed exactly once (a time limit yes, a plain rejection no): $(cat "$FAKE_DIR/lessons-nr" 2>/dev/null)"
     [ "$(cat "$s/LESSONS.md")" = "$(printf -- '- Add a check line before ticking off. (J1)\n- [removed by owner] Skip the slow test. (J1)')" ] ||
-        fail "I2: LESSONS.md wrong (removed line must stay, unreferenced line must go): $(cat "$s/LESSONS.md")"
+        fail "I2: LESSONS.md wrong (removed line must stay, also without its prefix; unreferenced line must go): $(cat "$s/LESSONS.md")"
     grep -q "Add a check line before ticking off" "$FAKE_DIR/last-prompt" && ! grep -q "Skip the slow test" "$FAKE_DIR/last-prompt" ||
         fail "I2: lessons not in the worker prompt, or a removed one is"
     grep -qx -- '- Old rule. (J1)' "$FAKE_DIR/lessons-prompt" && grep -A1 '^## Lessons removed by the owner' "$FAKE_DIR/lessons-prompt" | grep -q 'Skip the slow test' ||
@@ -60,7 +63,7 @@ EOF
     grep -q "^## Lessons learned" "$s/HANDOVER.md" && grep -q "Add a check line" "$s/HANDOVER.md" || fail "I2: handover without the lessons"
     local good; good=$(cat "$s/LESSONS.md")
     # invalid answers: more than 15 rules, then no block at all – the old file stays
-    for n in 3 4; do echo "$tick" >"$FAKE_DIR/steps/$n.sh"; done
+    for n in 4 5; do echo "exit 124" >"$FAKE_DIR/steps/$n.sh"; done
     for k in $(seq 1 16); do echo "- Rule $k. (J1)"; done | { echo '<<<LESSONS'; cat; echo 'LESSONS>>>'; } >"$FAKE_DIR/lessons.txt"
     MAX_RUNS=1 "$TOOL_DIR/autopilot.sh" >/dev/null 2>&1
     [ "$(cat "$s/LESSONS.md")" = "$good" ] && grep -q "Lessons: more than 15 rules, the old ones stay" "$s/log/history.log" || fail "I2: 16 rules replaced the lessons"
@@ -96,7 +99,7 @@ EOF
     grep -q '^- \[x\] 3\. three' TASKS.md && git log --oneline | grep -q "Autopilot: tasks of Milestone 2" || fail "I3: tasks of Milestone 2 not added: $(cat TASKS.md)"
     grep -q "Milestone 2: 1 tasks added" "$s/log/history.log" && grep -q '^### J[0-9]* .* script Milestone 2 started with 1 tasks$' "$s/JOURNAL.md" ||
         fail "I3: milestone change not in history or journal"
-    [ "$(cat "$s/milestone")" = 2 ] || fail "I3: .autopilot/milestone wrong: $(cat "$s/milestone")"
+    [ "$(cat "$s/milestone")" = "2 $(git rev-parse ":/Autopilot: tasks of Milestone 2")" ] || fail "I3: .autopilot/milestone wrong (number and start commit): $(cat "$s/milestone")"
     [ "$(wc -l <"$FAKE_DIR/demo-runs")" = 1 ] || fail "I3: demo ran $(wc -l <"$FAKE_DIR/demo-runs") times, expected once at the end"
     grep -q 'Propose the tasks of "Milestone 2" only' "$FAKE_DIR/planner-prompt" && grep -q "it is the last milestone" "$FAKE_DIR/planner-prompt" ||
         fail "I3: planner prompt without the milestone job"

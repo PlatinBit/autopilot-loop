@@ -100,7 +100,7 @@ idea() { # IDEA TEXT: write ./<slug>-plan.md, then draft from it
     echo "Plan file written: $out"
     echo; head -25 "$out" | sed 's/^/  /'; [ "$(wc -l <"$out")" -gt 25 ] && echo "  …"
     echo
-    draft "$out"
+    from_idea=1 draft "$out"
 }
 
 draft() { # PLANFILE
@@ -119,10 +119,11 @@ draft() { # PLANFILE
     c=$repo/.autopilot/costs.csv
     [ -s "$CONF_BASE/idea-costs.csv" ] && { { [ -s "$c" ] && tail -n +2 "$CONF_BASE/idea-costs.csv" || cat "$CONF_BASE/idea-costs.csv"; } >>"$c"; rm -f "$CONF_BASE/idea-costs.csv"; }
     echo "$file" >"$e/plan"
+    [ -n "${from_idea:-}" ] && touch "$e/idea"  # plan accept commits this plan file in the base branch
     echo "Claude reads $rel and the project and drafts the tasks (takes a few minutes) …"
     prompt="$(cat "$TOOL_DIR/templates/SETUP.md")"
     # A plan with "## Milestone N" sections: only the first milestone now, the loop drafts the others itself
-    grep -qE '^##[[:space:]]+Milestone[[:space:]]+[0-9]+' "$file" && prompt+="
+    [ -n "$(milestones "$file")" ] && prompt+="
 
 ## Milestones
 The plan is split into \"## Milestone N\" sections. Draft the tasks of the first milestone only; the autopilot drafts the next milestone itself when one is done. Its last task proves that milestone's criterion; the error-case and the end-to-end task belong to the last milestone only, unless the plan has just one."
@@ -148,7 +149,7 @@ $(g -C "$repo" ls-files | head -300)"
 }
 
 accept_draft() { # DRAFT DIRECTORY
-    local e=$1 repo file rel base wt err sr wrap='' z re f locked note=''
+    local e=$1 repo file rel base wt err sr wrap='' z re f locked note='' title c t tools=() had_tools=''
     repo=${e%/.autopilot/draft}
     file=$(cat "$e/plan"); rel=${file#"$repo"/}
     err=$(ALLOWED=$(sed -n "s/^ALLOWED='\(.*\)'$/\1/p" "$e/autopilot.part") FORBIDDEN_CONTENT=$(sed -n "s/^FORBIDDEN_CONTENT='\(.*\)'$/\1/p" "$e/autopilot.part") bad_patterns)
@@ -165,6 +166,15 @@ accept_draft() { # DRAFT DIRECTORY
             locked+=" $(printf '%q' "$f")"
         done
         grep -q '^ACCEPT_FILES=' "$e/autopilot.part" || note="The draft's acceptance test was dropped: it names no ACCEPT_FILES to lock."
+    fi
+    # A plan written from an idea inside a Git project is not committed yet: commit it (and only it) in the base
+    # branch, so the work branch has it (LOCKED covers it) and the main worktree stays clean for the merge
+    if [ -f "$e/idea" ] && [ "$wt" != "$repo" ] && ! g -C "$repo" ls-files --error-unmatch -- "$rel" >/dev/null 2>&1; then
+        [ -n "$(g -C "$repo" status --porcelain -- . ":(exclude)$rel")" ] &&
+            echo "Warning: $repo has other uncommitted changes – with MERGE=ff the result is only merged once they are committed or removed."
+        title=$(sed -n 's/^# *//p' "$file" | head -1)
+        g -C "$repo" add -- "$rel" && g -C "$repo" commit -q --no-verify -m "Plan: ${title:-$rel}" -m "Co-Authored-By: Claude <noreply@anthropic.com>" -- "$rel" ||
+            fail "Could not commit the plan $rel in $repo – commit it yourself, then run again: autopilot plan accept (the draft is kept)."
     fi
     if [ "$wt" = "$repo" ]; then
         base=main  # new_workspace created main with the plan
@@ -185,6 +195,12 @@ Move or remove what is at $wt (or delete a stale worktree with: git -C \"$repo\"
     # through sandbox-run, so the worker's own test calls are sandboxed too, not only the ones the loop runs.
     sr=$TOOL_DIR/sandbox-run; re='^[A-Za-z0-9_./:= -]+$'
     (cd "$wt" && sandbox_works) && [[ $(sed -n "s/^TEST_CMD='\(.*\)'\$/\1/p" "$e/autopilot.part") =~ $re ]] && wrap=1
+    # The worker may also run the test and demo command and the tasks' check commands itself (each as a whole
+    # command prefix, only metachar-free ones, through sandbox-run like the test command)
+    re='^(\./)?[A-Za-z0-9_][A-Za-z0-9_./ -]*$'
+    while IFS= read -r c; do [[ $c =~ $re ]] && tools+=("Bash(${wrap:+$sr }$c:*)"); done < <(
+        sed -n -e "s/^TEST_CMD='\(.*\)'\$/\1/p" -e "s/^DEMO_CMD='\(.*\)'\$/\1/p" "$e/autopilot.part"
+        grep -o 'Done when `[^`]*`' "$e/tasks.md" | sed 's/^Done when `//; s/`$//')
     # Paths and names come from the file system and Git (branch names may contain ' $ ( ): always quote with %q,
     # because the file is later loaded with `source`.
     {
@@ -197,12 +213,18 @@ Move or remove what is at $wt (or delete a stale worktree with: git -C \"$repo\"
                 TEST_CMD=*) z="TEST_CMD='$sr ${z#"TEST_CMD='"}" ;;
                 WORKER_TOOLS=*) z=${z//"'Bash("/"'Bash($sr "} ;;
             esac; fi
+            if [[ $z == WORKER_TOOLS=* ]]; then
+                had_tools=1; for t in ${tools[@]+"${tools[@]}"}; do [[ $z == *"'$t'"* ]] || z="${z%)} '$t')"; done
+            fi
             echo "$z"
         done <"$e/autopilot.part"
+        [ -n "$had_tools" ] || [ ${#tools[@]} = 0 ] || printf 'WORKER_TOOLS=(Read Edit Write Glob Grep%s)\n' "$(printf " '%s'" "${tools[@]}")"
         grep -q "^DEMO_CMD='[^']" "$e/autopilot.part" || printf "# no demo: the run can never end as delivered – add one\nDEMO_CMD=''\n"
     } >"$repo/autopilot.conf"
     trust "$repo/autopilot.conf"  # you have just accepted the draft
     rm -rf "$e"; rm -f "$LAST"
+    # A new draft is a new start: no milestone, final-review round or no-progress count of an earlier plan
+    rm -f "$repo/.autopilot/milestone" "$repo/.autopilot/final-rounds" "$repo/.autopilot/no-progress"
     echo "Set up: $repo/autopilot.conf, work branch \"autopilot\" in $wt"
     [ -n "$note" ] && echo "$note"
     probe_test_cmd "$repo/autopilot.conf"
@@ -214,7 +236,7 @@ accept_suggestion() { # adds the planner's suggestion to the task list of the pr
     (
         # shellcheck source=common.sh
         . "$TOOL_DIR/common.sh"
-        n=$(wc -l <"$STATE/suggestion.md")
+        n=$(grep -c . "$STATE/suggestion.md")
         is_running && { echo "Stop it first: the autopilot is running."; exit 1; }
         [ -z "$(g -C "$WORKDIR" status --porcelain)" ] || { echo "Work directory not clean."; exit 1; }
         cat "$STATE/suggestion.md" >>"$WORKDIR/$TASKS_FILE"

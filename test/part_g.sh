@@ -7,6 +7,7 @@
 pg_g1() {
     b_project "$T/pg1" <<'EOF'
 TEST_CMD='bash check.sh'
+MODELS=cheap
 EOF
     for n in 1 2; do echo "echo check >>checks.txt; $tick" >"$FAKE_DIR/steps/$n.sh"; done
     printf 'VERDICT: ACCEPT\nVERDICT: ACCEPT\n' >"$FAKE_DIR/verdicts"
@@ -87,7 +88,7 @@ pg_g4() {
     grep -q ';plan;opus;0.01;' "$w/.autopilot/costs.csv" && grep -q ';draft;opus;0.01;' "$w/.autopilot/costs.csv" ||
         fail "G4: cost of the idea or the draft not in the project's costs.csv: $(cat "$w/.autopilot/costs.csv" 2>&1)"
     grep -qF "Build a Tiny counter! App" "$FAKE_DIR/idea-prompt" || fail "G4: idea missing in the prompt"
-    grep -q "Milestones: 5 to 15" "$FAKE_DIR/idea-prompt" || fail "G4: IDEA template missing in the prompt"
+    grep -q "Milestones: if the idea names a number or a list of milestones, use exactly those. Otherwise as few as make sense: 1 for a small tool" "$FAKE_DIR/idea-prompt" && ! grep -q "5 to 15" "$FAKE_DIR/idea-prompt" || fail "G4: IDEA template (milestone rule) missing in the prompt"
     cp "$f" "$f.keep"
     "$TOOL_DIR/menu.sh" plan "Build a Tiny counter! App" >"$T/pg4b.txt" 2>&1 && fail "G4: overwrite not refused"
     grep -q "already exists" "$T/pg4b.txt" || fail "G4: overwrite message missing: $(cat "$T/pg4b.txt")"

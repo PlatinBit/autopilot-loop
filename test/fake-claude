@@ -25,7 +25,7 @@ case "$prompt" in
     # lessons.txt: the answer of every lessons run (default: an empty list); final-<k>.txt: the k-th final review (default OK)
     *"You are condensing the lessons"*) count lessons-nr >/dev/null; printf '%s\n' "$prompt" >"$d/lessons-prompt"
         answer "$(cat "$d/lessons.txt" 2>/dev/null || printf '<<<LESSONS\nLESSONS>>>')" ;;
-    *"You are the final reviewer"*) k=$(count final-nr); printf '%s\n' "$prompt" >"$d/final-prompt"
+    *"You are the final reviewer"*) k=$(count final-nr); printf '%s\n' "$prompt" >"$d/final-prompt"; cp "$d/final-prompt" "$d/final-prompt-$k"
         answer "$(cat "$d/final-$k.txt" 2>/dev/null || echo 'FINAL: OK')" ;;
     *"You are the reviewer"*) [ -f "$d/review-sleep" ] && sleep "$(cat "$d/review-sleep")"; answer "Reasoning …
 $(sed -n "$(count verdict-nr)p" "$d/verdicts")$([ -f "$d/review-note" ] && printf '\n%s' "$(cat "$d/review-note")")" ;;  # review-note: after the verdict

@@ -218,7 +218,7 @@ EOF
     [ -s "$s/log/suggestion-prev.md" ] || fail "H9: previous suggestion not kept for the planner"
     grep -q ';planner;opus;0.01;' "$s/costs.csv" || fail "H9: planner calls missing in costs.csv"
     MAX_RUNS=3 "$TOOL_DIR/autopilot.sh" >"$T/ph9.txt" 2>&1 && fail "H9: third planner round exits 0"
-    [ "$(cat "$s/outcome")" = "$(printf 'not-delivered\tno progress (Accept 0 of 2) after two planner rounds')" ] || fail "H9: outcome wrong: $(cat "$s/outcome")"
+    [ "$(cat "$s/outcome")" = "$(printf 'not-delivered\tno progress (Accept 0 of 2): accepted runs and planner rounds (one counts 5) reached NO_PROGRESS=10')" ] || fail "H9: outcome wrong: $(cat "$s/outcome")"
     [ "$(cat "$s/no-progress")" = "0 12" ] || fail "H9: two accepted runs and two planner rounds (half of NO_PROGRESS each) not counted: $(cat "$s/no-progress")"
     # adopting a suggestion resets the brake (new state)
     printf -- '- [ ] 9. nine. Done when the goal is met.\n' >"$s/suggestion.md"
@@ -310,11 +310,11 @@ EOF
     local h=$T/ph12-conf/.autopilot/log/history.log
     grep -q "Run 1 rejected: change to a file that controls the test command: web/package.json" "$h" || fail "H12: package.json not refused without ALLOWED: $(cat "$h")"
     grep -q "Run 2 accepted" "$h" || fail "H12: an ordinary file refused without ALLOWED: $(cat "$h")"
-    # cost cap: every call costs 0.01, so 0.02 USD is used up after the first run (brief, worker, reviewer)
+    # cost cap: every call costs 0.01, so 0.02 USD is used up after the first run (worker, reviewer)
     echo "echo check >>checks.txt; $tick" >"$FAKE_DIR/steps/3.sh"; printf "VERDICT: ACCEPT\nVERDICT: ACCEPT\n" >"$FAKE_DIR/verdicts"
     printf -- '- [ ] 3. three\n- [ ] 4. four\n' >>TASKS.md && git add -A && git commit -qm more
     MAX_COST_USD=0.02 "$TOOL_DIR/autopilot.sh" >"$T/ph12.txt" 2>&1 || fail "H12: cost cap run failed: $(tail -3 "$T/ph12.txt")"
-    [ "$(cat "$T/ph12-conf/.autopilot/outcome")" = "$(printf 'limit\tcost cap MAX_COST_USD=0.02 reached (0.03 USD), 2 tasks still open')" ] ||
+    [ "$(cat "$T/ph12-conf/.autopilot/outcome")" = "$(printf 'limit\tcost cap MAX_COST_USD=0.02 reached (0.02 USD), 2 tasks still open')" ] ||
         fail "H12: cost cap outcome wrong: $(cat "$T/ph12-conf/.autopilot/outcome")"
 }
 

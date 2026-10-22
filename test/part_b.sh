@@ -62,6 +62,7 @@ grep -q "time limit" "$T/p3-conf/.autopilot/log/accept-2.txt" || fail "acceptanc
 # status counts only the runs of the current start
 b_project "$T/n3" <<'EOF'
 TEST_CMD='bash check.sh'
+MODELS=cheap
 EOF
 for n in 1 2; do echo "echo check >>checks.txt; $tick" >"$FAKE_DIR/steps/$n.sh"; done
 printf 'VERDICT: ACCEPT\nVERDICT: ACCEPT\n' >"$FAKE_DIR/verdicts"

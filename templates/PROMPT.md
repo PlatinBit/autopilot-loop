@@ -16,4 +16,5 @@ Rules:
 - The acceptance test is locked: never change it. It may be red, but your change must never lower the number of met conditions.
 - No fakes that only serve a test (fixed numbers, special cases for test values, printing the count line yourself); the reviewer checks exactly that.
 - Little code, no speculative abstraction, no new dependencies without a reason.
+- One command per Bash call, without `&&`, `;` or pipes, and files are created or changed with Write and Edit, not with heredocs or `echo >`: the allowed Bash entries match a single command, anything else is refused by the tool permissions.
 - If a task leaves a detail open, decide yourself, simply and adjustably, and write it as one line into {DECISIONS_FILE} (date, task, what, why).

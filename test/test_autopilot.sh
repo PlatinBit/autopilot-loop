@@ -98,8 +98,8 @@ c=$T/pa/.autopilot/costs.csv
     fail "costs.csv: worker and reviewer calls with tokens not recorded: $(cat "$c")"
 "$TOOL_DIR/menu.sh" status >"$T/st.txt" || fail "status failed"
 grep -q "4 done, 0 open, 1 blocked" "$T/st.txt" || fail "status wrong: $(cat "$T/st.txt")"
-grep -qE '^  worker +0\.15 USD +tokens: 1500 in, 15k cache read, 150 out$' "$T/st.txt" && grep -qE '^  lessons +0\.11 USD' "$T/st.txt" &&
-    grep -qE '^  total +0\.32 USD$' "$T/st.txt" ||
+grep -qE '^  worker +0\.15 USD +tokens: 1500 in, 15k cache read, 150 out$' "$T/st.txt" && grep -qE '^  lessons +0\.01 USD' "$T/st.txt" &&
+    grep -qE '^  total +0\.22 USD$' "$T/st.txt" ||
     fail "status: cost and tokens per kind wrong: $(cat "$T/st.txt")"
 grep -q "Autopilot: \[x\] 5. five" "$T/pa/.autopilot/HANDOVER.md" || fail "handover does not list the commits"
 grep -qx "User file" secret.txt || fail "foreign file lost through a rename"
@@ -173,18 +173,17 @@ SECONDS=0; timeout 10 "$TOOL_DIR/autopilot.sh" >"$T/second.txt" 2>&1 && fail "se
 grep -q "already running" "$T/second.txt" || fail "second instance: no 'already running' message: $(cat "$T/second.txt")"
 [ -d "$T/p2/.autopilot/lock" ] || fail "second instance removed the lock of the first run"
 "$TOOL_DIR/menu.sh" status | grep -q "^Status: *running – run 1 of at most 50" || fail "status does not show the running run: $("$TOOL_DIR/menu.sh" status)"
-"$TOOL_DIR/menu.sh" status --short | grep -qx "Autopilot p2: run 1/50 · 0.01 USD" || fail "status --short while running: $("$TOOL_DIR/menu.sh" status --short)"
+"$TOOL_DIR/menu.sh" status --short | grep -qx "Autopilot p2: run 1/50 · 0.00 USD" || fail "status --short while running: $("$TOOL_DIR/menu.sh" status --short)"
 touch "$FAKE_DIR/go"
 wait "$first" || fail "run ended with an error: $(tail -3 "$T/output2.txt")"
 grep -q "Goal reached" "$T/p2/.autopilot/log/history.log" || fail "project not completed"
-# Cheaper worker than planner (MODELS=balanced): the planner writes a brief with the whole plan; the worker gets the brief, not the plan
-grep -q "## Brief from the planner" "$FAKE_DIR/last-prompt" && grep -q "BRIEF: reuse check.sh" "$FAKE_DIR/last-prompt" ||
-    fail "brief from the planner missing in the worker prompt"
-grep -q "It should count" "$FAKE_DIR/brief-prompt" || fail "plan missing in the brief prompt"
-grep -q "## Plan being implemented" "$FAKE_DIR/last-prompt" && fail "worker got the whole plan although a brief ran"
+# MODELS=balanced: no brief (only cheap gets one); the sonnet worker gets the whole plan and reads the code itself
+[ ! -e "$FAKE_DIR/brief-nr" ] && grep -q "## Plan being implemented" "$FAKE_DIR/last-prompt" && grep -q "It should count" "$FAKE_DIR/last-prompt" ||
+    fail "balanced: a brief ran, or the worker did not get the plan"
 grep -q "models balanced (planner opus, worker sonnet, reviewer sonnet)" "$T/p2/.autopilot/log/history.log" || fail "models not shown at the start"
-grep -q ';brief;opus;' "$T/p2/.autopilot/costs.csv" && grep -q ';worker;sonnet;' "$T/p2/.autopilot/costs.csv" || fail "costs.csv: brief or worker model wrong"
-"$TOOL_DIR/menu.sh" status --short | grep -qx "Autopilot p2 ended: delivered - 1 done, 0 blocked, tests 1 -> 2, 0.04 USD" ||
+grep -q ';brief;' "$T/p2/.autopilot/costs.csv" && fail "costs.csv: a brief call under MODELS=balanced"
+grep -q ';worker;sonnet;' "$T/p2/.autopilot/costs.csv" || fail "costs.csv: worker model wrong"
+"$TOOL_DIR/menu.sh" status --short | grep -qx "Autopilot p2 ended: delivered - 1 done, 0 blocked, tests 1 -> 2, 0.03 USD" ||
     fail "status --short after the end: $("$TOOL_DIR/menu.sh" status --short)"
 # Planner suggestion: shown by `plan`, adopted by `plan accept`, thrown away by `plan discard` (honest when there is none)
 printf -- '- [ ] 2. two. Done when two more tests pass.\n' >"$T/p2/.autopilot/suggestion.md"
@@ -607,4 +606,5 @@ cd "$T" || exit 1
 . "$TOOL_DIR/test/part_g.sh"
 . "$TOOL_DIR/test/part_h.sh"
 . "$TOOL_DIR/test/part_i.sh"
+. "$TOOL_DIR/test/part_j.sh"
 echo ok

@@ -37,7 +37,10 @@ doc_project() { # with a trusted configuration: work directory, sandbox state an
      under_claude_dir "$WORKDIR" && echo "  ✘ WORKDIR $(readlink -f "$WORKDIR") lies below ~/.claude/: Claude Code refuses every write there – move the project"
      if [ "$SANDBOX" = off ]; then echo "  SANDBOX=off (test commands run unsandboxed)"
      elif sandbox_works; then echo "  sandbox on (bwrap works)"
-     else echo "  no sandbox: bwrap is missing or cannot start here – $(install_hint bubblewrap), or set SANDBOX=off"; fi)
+     else echo "  no sandbox: bwrap is missing or cannot start here – $(install_hint bubblewrap), or set SANDBOX=off"; fi
+     main=$(g -C "$WORKDIR" worktree list --porcelain 2>/dev/null | sed -n '1s/^worktree //p')
+     [ "${MERGE:-ff}" = ff ] && [ -n "$main" ] && [ -n "$(g -C "$main" status --porcelain 2>/dev/null)" ] &&
+         echo "  ✘ MERGE=ff: $main has uncommitted or untracked files – a delivered result is not merged until they are committed or removed")
     probe_test_cmd "$k" | sed 's/^/  /'
 }
 doctor() {
@@ -123,7 +126,7 @@ status() {
     [ -n "$acc" ] && echo "Acceptance:  ${acc#Accept }"
     echo "This start:  $started, ${run:-0} runs, $spent USD"
     echo "Cost (all Claude calls of this project):"; cost_table "$st/costs.csv"
-    [ -s "$st/suggestion.md" ] && echo "Suggestion:  $(wc -l <"$st/suggestion.md") new tasks from the planner wait: autopilot plan, then autopilot plan accept"
+    [ -s "$st/suggestion.md" ] && echo "Suggestion:  $(grep -c . "$st/suggestion.md") new tasks from the planner wait: autopilot plan, then autopilot plan accept"
     echo; echo "Latest events:"; tail -8 <<<"$ev" | cut_chars 12 110
     lock_alive "$st" && return 0
     if [ "$(cut -f1 "$st/outcome" 2>/dev/null)" = delivered ]; then next='read the handover and try the result: autopilot handover'
