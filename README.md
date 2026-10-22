@@ -6,13 +6,115 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/license-MIT-blue" alt="License: MIT">
+  <a href="https://github.com/PlatinBit/autopilot-loop/actions/workflows/test.yml"><img src="https://github.com/PlatinBit/autopilot-loop/actions/workflows/test.yml/badge.svg" alt="Self-test"></a>
+  <img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FPlatinBit%2Fautopilot-loop%2Fmain%2F.claude-plugin%2Fplugin.json&query=%24.version&label=version" alt="Version">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/Claude%20Code-plugin-8b5cf6" alt="Claude Code plugin">
 </p>
 
-**Point it at a plan file (or a few sentences) and [Claude Code](https://claude.com/claude-code) implements it on its own, one task at a time. Script checks, a read-only reviewer and a locked goal guard every task; a demo command at the end decides whether the result is "delivered" – shown to work and handed over with instructions – or not.**
+# autopilot-loop
 
-## The idea
+**Give [Claude Code](https://claude.com/claude-code) a plan or an idea and let it build task by task on its own. It stops as "delivered" only when your demo command ran green, a final review passed and the tests passed again in a fresh checkout; otherwise the handover says why it is "not delivered".**
+
+What makes it different from a "Ralph loop" that re-runs the agent until it says it is done:
+
+- **A shell script checks, not the model.** Tests green, test count never drops, only allowed paths touched, the plan and locked files untouched. Only the script commits; the worker has no Git write access.
+- **A read-only reviewer with a veto.** A second Claude (only `Read`, `Grep`, `Glob`) reads the diff and the test output; a rejection resets the run, and its reason goes into the next attempt.
+- **"Delivered" is earned at the end:** your demo command (`DEMO_CMD`) exits 0, a final review of the whole change finds nothing, tests and demo pass once more in a fresh checkout, then `main` is fast-forwarded and a `HANDOVER.md` explains how to try it.
+- **A journal and lessons.** Every agent leaves a short note; the planner condenses them into at most 15 one-line lessons that go into every later prompt.
+- **Cost and effort under control.** Caps per start (`MAX_RUNS`, `MAX_COST_USD`) and per call (`MAX_COST_PER_CALL_USD`), model presets, `--effort` per role, every call with its tokens in `costs.csv`.
+
+## What a run looks like
+
+A real run (the plan and its tasks were written in German; only the path is changed). `history.log`, shortened:
+
+```text
+2026-10-22 17:09:00 Run 5: 5. (after 4) Abnahme von Meilenstein 1: Die Testsuite deckt alle im Plan…
+2026-10-22 17:09:25 Run 5 accepted: [x] 5. (after 4) Abnahme von Meilenstein 1: Die Testsuite deckt alle im Plan genannten… | Tests 22 -> 22 | worker 0.0880986 USD
+2026-10-22 17:09:55 Final review (round 1): 1 new tasks
+2026-10-22 17:09:58 Run 6: 6. Überlauf bei mustergültigen, aber sehr großen Operanden abfangen: Liefert…
+2026-10-22 17:10:27 Run 6 accepted: [x] 6. Überlauf bei mustergültigen, aber sehr großen Operanden abfangen: Liefert… | Tests 22 -> 24 | worker 0.1353624 USD
+2026-10-22 17:10:39 Final review (round 2): OK
+2026-10-22 17:10:55 Milestone 1 done: 4 tasks of Milestone 2 proposed. Read: autopilot plan – adopt: autopilot plan accept
+2026-10-22 17:51:34 Start: 24 tests green, at most 50 runs or 1.2 USD, models balanced (planner opus, worker sonnet, reviewer sonnet), sandbox on
+2026-10-22 17:51:34 Run 1: 7. Multiplikation ergänzen: `*` in die Operator-Whitelist von `calc.py`…
+2026-10-22 17:51:59 Run 1 accepted: [x] 7. Multiplikation ergänzen: `*` in die Operator-Whitelist von `calc.py` aufnehmen,… | Tests 24 -> 28 | worker 0.122641 USD
+[…]
+2026-10-22 17:53:23 Run 4 accepted: [x] 10. (after 9) Abnahme Meilenstein 2 und End-to-End: Prüfen, dass… | Tests 35 -> 35 | worker 0.11542840000000001 USD
+2026-10-22 17:53:43 Final review (round 1): OK
+2026-10-22 17:53:44 Fresh checkout: tests and demo green
+2026-10-22 17:53:44 Merged into main (fast-forward) in ~/projects/rechner.
+2026-10-22 17:53:44 Goal reached: all tasks done, demo green, merged into main.
+```
+
+The final review of milestone 1 found that a 400-digit operand crashed the calculator with a traceback and added task 6 for it. Milestone 2 waited for approval (`MILESTONE_GATE=ask`). The head of the `HANDOVER.md` it wrote:
+
+```text
+# Delivered, merged into main
+Project rechner, 2026-10-22 17:51:33 to 2026-10-22 17:53:44, 4 runs, 1.01 USD this start
+Plan milestones: 1 2, current: Milestone 2
+[…]
+## Proof
+Fresh checkout: tests and demo green
+Demo: `python -m pytest -q` – exit code 0
+[…]
+Tests: 24 -> 35 passed, `~/autopilot-loop/sandbox-run python -m pytest -q` – exit code 0
+[…]
+## Cost (all Claude calls of this project)
+  […]
+  worker        1.11 USD   tokens: 102 in, 1.3M cache read, 19k out
+  reviewer      0.54 USD   tokens: 28 in, 215k cache read, 4749 out
+  […]
+  final         0.66 USD   tokens: 12 in, 120k cache read, 3685 out
+  total         3.74 USD
+```
+
+The 3.74 USD cover both starts and the planning (spec, plan, draft) of this 10-task project.
+
+## Quick start
+
+1. **Install** – in a Claude Code session:
+   ```
+   /plugin marketplace add PlatinBit/autopilot-loop
+   /plugin install autopilot@autopilot-loop
+   ```
+2. **Plan** – Claude drafts tasks, test and demo command; read the draft, then accept it:
+   ```
+   /autopilot-loop plan A CLI that counts words in Markdown files
+   /autopilot-loop plan accept
+   ```
+3. **Start** – runs in the background until delivered, not delivered or a cap is hit:
+   ```
+   /autopilot-loop start
+   ```
+
+`/autopilot-loop status` shows progress and cost, `/autopilot-loop handover` the result. Requirements, the terminal command `autopilot` and all details are [below](#requirements).
+
+## How it compares
+
+| No. | Project | How it works | Who says "done" | What it does better |
+|---|---|---|---|---|
+| 1 | [Ralph](https://github.com/snarktank/ralph) | a Bash loop runs Amp or Claude Code with a fresh context per story of a `prd.json` | the agent: runs the checks, marks the story as passing, prints `COMPLETE`; iteration cap | much smaller and easy to adapt; supports Amp; skills to write the PRD; browser checks for UI stories |
+| 2 | [ralph-wiggum plugin](https://github.com/anthropics/claude-code/tree/main/plugins/ralph-wiggum) | a Stop hook feeds the same prompt back into your session | the model prints the completion phrase, or `--max-iterations` | official, no setup, one command in the session you already have |
+| 3 | [Task Master](https://github.com/eyaltoledano/claude-task-master) | turns a PRD into tasks with dependencies, used by your editor's assistant via MCP or CLI | you and your assistant | works in many editors and with many model providers; research, tags, richer task management; you stay in the loop |
+| 4 | [Spec Kit](https://github.github.com/spec-kit/) | spec-driven process: specify, plan, tasks, implement, each step a Markdown file | your agent and you; no independent verification loop in the core | a far more thorough spec process, dozens of agent integrations, a large extension ecosystem |
+| 5 | [Claude Code workflows](https://code.claude.com/docs/en/workflows) | a JavaScript script Claude writes orchestrates many subagents in the background | whatever the script checks, e.g. agents reviewing each other | built in, resumable, scales to hundreds of agents; general purpose (audits, migrations, research) |
+
+autopilot-loop is narrower: one plan, one task per run, and a script, not an agent, decides what is committed and whether the result counts as delivered.
+
+## Status
+
+A hobby project. Tested on Linux (the self-test runs in CI on Ubuntu); macOS is untested. `PARALLEL` > 1 and `MERGE=pr` (with `PR_WAIT`) are experimental. [Issues](https://github.com/PlatinBit/autopilot-loop/issues) and reports from real runs are welcome.
+
+## Contents
+
+- [How it works](#how-it-works) · [Requirements](#requirements) · [Installation](#installation) · [Usage](#usage) · [Commands](#commands) · [Configuration](#configuration)
+- [What you get at the end](#what-you-get-at-the-end) · [The end: final review, fresh checkout, merge](#the-end-final-review-fresh-checkout-merge)
+- [Milestones](#large-projects-milestones) · [Task dependencies](#task-dependencies) · [Size check](#size-check) · [Specification first](#specification-first) · [Pull request mode](#pull-request-mode-experimental) · [Parallel workers](#parallel-workers-experimental) · [Check command per task](#check-command-per-task)
+- [Journal and lessons](#journal-and-lessons) · [Safeguards](#safeguards) · [Limits](#limits) · [Security](#security) · [Self-test](#self-test)
+- Upgrading [from 0.9](#upgrading-from-09) · [from 0.8](#upgrading-from-08)
+
+## How it works
 
 Let Claude run all night and in the morning it says "Done!" – and nothing works. Whoever builds also checks their own work, and a list of ticked-off tasks is not a working result. autopilot-loop separates the two and ends with a demo:
 
@@ -70,14 +172,7 @@ Linux or WSL (macOS 12.3+ untested), Bash 4.4 or newer, `git`, `tmux`, `jq`, `ti
 
 ## Installation
 
-**As a Claude Code plugin** – in a Claude Code session:
-
-```
-/plugin marketplace add PlatinBit/autopilot-loop
-/plugin install autopilot@autopilot-loop
-```
-
-Then `/autopilot-loop` opens a selection menu, `/autopilot-loop <command>` runs any command below, and running projects show up in the status line. Plugin code runs unattended and `trust` only covers `autopilot.conf`, so turn off auto-update for this marketplace and update by hand after reading the changes.
+**As a Claude Code plugin:** the two `/plugin` commands in the [Quick start](#quick-start). Then `/autopilot-loop` opens a selection menu, `/autopilot-loop <command>` runs any command below, and running projects show up in the status line. Plugin code runs unattended and `trust` only covers `autopilot.conf`, so turn off auto-update for this marketplace and update by hand after reading the changes.
 
 **Optionally in the terminal** (the `autopilot` command without Claude Code, e.g. over SSH):
 
@@ -87,7 +182,9 @@ git clone https://github.com/PlatinBit/autopilot-loop.git ~/autopilot-loop
 autopilot doctor
 ```
 
-## Quick start
+## Usage
+
+In the terminal (in Claude Code, the same commands follow `/autopilot-loop`):
 
 ```bash
 autopilot plan ~/my-project/README.md   # or: autopilot plan "A CLI that counts words in Markdown files"
@@ -140,7 +237,7 @@ Everything else has a default; [`templates/autopilot.conf`](templates/autopilot.
 | 8 | `ACCEPT_CMD` | empty | optional overall goal printing `ACCEPT: k of n`; may be red, `k` must never drop |
 | 9 | `SANDBOX` | on when bwrap works | `off` switches it off |
 | 10 | `TRY_IT` | empty | how you try the result by hand, for the handover |
-| 11 | `MERGE` | `ff` | delivered: fast-forward `BASE_BRANCH` in the project folder when that is safe; `off` = you merge yourself; `pr` (experimental) = **push** and open a pull request, see [Pull request mode](#pull-request-mode) |
+| 11 | `MERGE` | `ff` | delivered: fast-forward `BASE_BRANCH` in the project folder when that is safe; `off` = you merge yourself; `pr` (experimental) = **push** and open a pull request, see [Pull request mode](#pull-request-mode-experimental) |
 | 12 | `FRESH_CHECK` | `on` | run the tests once at the start and tests and demo once more before "delivered" in a fresh checkout; `off` for a demo bound to a fixed place or tests that need ignored caches (see [The end](#the-end-final-review-fresh-checkout-merge)) |
 | 13 | `FORBIDDEN_CONTENT` | empty | regex of lines that must never be added; a check for secrets (AWS keys, private key blocks, a long literal assigned to a name that is or ends in `password`/`secret`/`token`/`api_key`, e.g. `DB_PASSWORD`, `dbPassword`) runs in addition |
 | 14 | `SECRETS_CHECK` | `on` | `off` switches the secrets check off (for false alarms) |
@@ -150,7 +247,7 @@ Everything else has a default; [`templates/autopilot.conf`](templates/autopilot.
 | 18 | `MILESTONE_GATE` | `auto` | `ask`: after a milestone the next one's tasks wait as a suggestion, the outcome is `waiting`; `autopilot plan accept`, then `autopilot start` goes on |
 | 19 | `SIZE_CHECK` | `off` | `on`: before a task's first attempt a short call (worker model, effort `low`, kind `size`) judges whether it fits one run; if not, the script puts 2–5 parts in its place, see [Size check](#size-check) |
 | 20 | `PR_WAIT` | `off` | experimental; with `MERGE=pr`: wait up to 30 minutes for the GitHub checks of the pull request; red = not delivered |
-| 21 | `PARALLEL` | 1 | experimental; up to 4 workers at the same time on independent tasks, each in its own worktree; cost about ×N, see [Parallel workers](#parallel-workers) |
+| 21 | `PARALLEL` | 1 | experimental; up to 4 workers at the same time on independent tasks, each in its own worktree; cost about ×N, see [Parallel workers](#parallel-workers-experimental) |
 
 ## What you get at the end
 
