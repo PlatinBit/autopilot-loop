@@ -232,6 +232,7 @@ pj_j13() {
     printf -- '- [ ] 1. one. Done when `test -e out.txt` exits 0.\n' >TASKS.md && git add -A && git commit -qm start && git worktree add -q "$T/pj13-wt" -b autopilot || fail "J13: setup failed"
     mkdir -p "$T/pj13-conf"; printf "WORKDIR=%q\nTEST_CMD='bash check.sh'\nDEMO_CMD='bash check.sh --demo'\nWORKER_TOOLS=(Read Edit 'Bash(bash check.sh:*)')\nFRESH_CHECK=off\n" "$T/pj13-wt" >"$T/pj13-conf/autopilot.conf"
     export AUTOPILOT_CONF=$T/pj13-conf/autopilot.conf; "$TOOL_DIR/menu.sh" trust "$AUTOPILOT_CONF" >/dev/null || fail "J13: trust failed"
+    mkdir -p "$T/pj13-conf/.autopilot"; echo 'test -e out.txt' >"$T/pj13-conf/.autopilot/approved-checks"  # a hand-written list: approved by hand
     echo "echo x >out.txt; $tick" >"$FAKE_DIR/steps/1.sh"; echo "VERDICT: ACCEPT" >"$FAKE_DIR/verdicts"
     local log=$T/pj13-notify.log s=$T/pj13-conf/.autopilot; : >"$log"
     NOTIFY_LOG=$log MAX_RUNS=1 "$TOOL_DIR/autopilot.sh" >"$T/pj13.txt" 2>&1 || fail "J13: run failed: $(tail -3 "$T/pj13.txt")"

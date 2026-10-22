@@ -52,8 +52,8 @@ EOF
 }
 
 # L4: size check before the first attempt: a task that does not fit is replaced by its parts (N.1, N.2 with the
-# task's dependencies, own commit, journal entry, no run used); every task is checked once, the parts never;
-# parts that drop the task's check command are not used
+# task's dependencies, each part after the one before, own commit, journal entry, no run used, effort low); every
+# task is checked once, the parts never; parts that drop the task's check command are not used
 pl_l4() {
     b_project "$T/pl4" <<'EOF'
 TEST_CMD='bash check.sh'
@@ -64,14 +64,14 @@ EOF
     local n s=$T/pl4-conf/.autopilot
     for n in 1 2 3 4; do echo "echo check >>checks.txt; $tick" >"$FAKE_DIR/steps/$n.sh"; echo "VERDICT: ACCEPT" >>"$FAKE_DIR/verdicts"; done
     MAX_RUNS=4 "$TOOL_DIR/autopilot.sh" >"$T/pl4.txt" 2>&1 || fail "L4: run failed: $(tail -3 "$T/pl4.txt")"
-    [ "$(cat TASKS.md)" = "$(printf -- '- [x] 1. one\n- [x] 2.1. (after 1) part a. Done when a test passes.\n- [x] 2.2. (after 1) part b. Done when `bash check.sh` exits 0.\n- [x] 3. three. Done when `bash check.sh` exits 0.')" ] ||
+    [ "$(cat TASKS.md)" = "$(printf -- '- [x] 1. one\n- [x] 2.1. (after 1) part a. Done when a test passes.\n- [x] 2.2. (after 1, 2.1) part b. Done when `bash check.sh` exits 0.\n- [x] 3. three. Done when `bash check.sh` exits 0.')" ] ||
         fail "L4: task list wrong: $(cat TASKS.md)"
     git log --format=%s | grep -qx 'Autopilot: split task 2' || fail "L4: no split commit: $(git log --format=%s)"
     grep -q "Run 2: 2\.1\. (after 1) part a" "$s/log/history.log" && grep -q "Size check: task 2 split into 2 parts" "$s/log/history.log" &&
         grep -q "Size check: task 3 does not fit one run, but the parts drop its check command – it stays" "$s/log/history.log" || fail "L4: history wrong: $(cat "$s/log/history.log")"
     grep -q '^### J[0-9]* .* script 2\. (after 1) big\..* split into 2 parts$' "$s/JOURNAL.md" || fail "L4: no journal entry: $(cat "$s/JOURNAL.md")"
     [ "$(cat "$FAKE_DIR/size-nr")" = 3 ] && [ "$(wc -l <"$s/sized")" = 5 ] || fail "L4: size checks not once per task: $(cat "$FAKE_DIR/size-nr") calls, $(wc -l <"$s/sized") sized"
-    grep -q ';size;opus;0.01;100;1000;10;high$' "$s/costs.csv" && grep -q '^size .*--json-schema {.*"fits"' "$FAKE_DIR/args" || fail "L4: size call not booked or without schema"
+    grep -q ';size;opus;0.01;100;1000;10;low$' "$s/costs.csv" && grep -q '^size .*--json-schema {.*"fits"' "$FAKE_DIR/args" || fail "L4: size call not booked or without schema"
     grep -q "^You are sizing a task" "$FAKE_DIR/size-prompt" && grep -qF -- '- [ ] 3. three.' "$FAKE_DIR/size-prompt" || fail "L4: size prompt wrong"
     MAX_RUNS=1 "$TOOL_DIR/autopilot.sh" >/dev/null 2>&1; [ "$(cat "$FAKE_DIR/size-nr")" = 3 ] || fail "L4: sized again after a restart"
 }
@@ -131,25 +131,29 @@ pl_l6() {
 pl_l7() {
     b_project "$T/pl7" <<EOF
 TEST_CMD='bash check.sh'
-DEMO_CMD='bash check.sh'
+DEMO_CMD='bash $T/pl7/check.sh'
 PLAN_FILE=$T/pl7/plan.md
 FRESH_CHECK=off
 MERGE=pr
 PR_WAIT=on
 EOF
     git init -q --bare "$T/pl7-origin.git" && git remote add origin "$T/pl7-origin.git" && ln -sf "$TOOL_DIR/test/fake-gh" "$T/bin/gh" || fail "L7: setup failed"
-    printf '# Word counter\n' >plan.md && git commit -qam plan || fail "L7: setup failed"
+    printf '# Word counter\n' >plan.md && printf -- '- [ ] 1. one #12 for @octocat\n- [ ] 2. two\n' >TASKS.md && git commit -qam plan || fail "L7: setup failed"
     local s=$T/pl7-conf/.autopilot main u=https://github.com/example/project/pull/7 n; main=$(git rev-parse main)
     for n in 1 2; do echo "echo check >>checks.txt; $tick" >"$FAKE_DIR/steps/$n.sh"; echo "VERDICT: ACCEPT" >>"$FAKE_DIR/verdicts"; done
-    echo "build: lint failed" >"$FAKE_DIR/gh-checks.txt"; echo 1 >"$FAKE_DIR/gh-checks-rc"
-    MAX_RUNS=3 "$TOOL_DIR/autopilot.sh" >"$T/pl7.txt" 2>&1
+    echo "build: lint failed" >"$FAKE_DIR/gh-checks.txt"; echo 1 >"$FAKE_DIR/gh-checks-rc"; echo 2 >"$FAKE_DIR/gh-nochecks"  # CI starts late
+    HOME=$T AUTOPILOT_PR_POLL=0 MAX_RUNS=3 "$TOOL_DIR/autopilot.sh" >"$T/pl7.txt" 2>&1
     [ "$(git -C "$T/pl7-origin.git" rev-parse autopilot)" = "$(git rev-parse HEAD)" ] && [ "$(git rev-parse main)" = "$main" ] || fail "L7: branch not pushed, or main moved"
     grep -qx "pr create --base main --head autopilot --title Word counter --body-file $s/pr-body.md" "$FAKE_DIR/gh-args" &&
-        grep -qx "pr checks $u --watch" "$FAKE_DIR/gh-args" && head -1 "$FAKE_DIR/gh-body" | grep -q '^# Delivered' || fail "L7: gh not called right: $(cat "$FAKE_DIR/gh-args")"
+        [ "$(grep -cx "pr checks $u --watch" "$FAKE_DIR/gh-args")" = 3 ] || fail "L7: gh not called right, or \"no checks reported\" not asked again: $(cat "$FAKE_DIR/gh-args")"
+    # the text: what was built, demo/tests lines; no path, log or output; ~ for the home folder; no issue link, no mention
+    head -1 "$FAKE_DIR/gh-body" | grep -qx '## What was built' && grep -q '^Demo: `bash ~/pl7/check.sh` – exit code 0$' "$FAKE_DIR/gh-body" &&
+        grep -q '^Tests: 1 -> 3 passed' "$FAKE_DIR/gh-body" && grep -qF 'one `#12` for `@octocat`' "$FAKE_DIR/gh-body" || fail "L7: PR text wrong: $(cat "$FAKE_DIR/gh-body")"
+    ! grep -qF -e "$T" -e "$HOME" -e 'Journal' -e 'Lessons' -e 'TESTS:' "$FAKE_DIR/gh-body" || fail "L7: PR text with a path, log or output: $(cat "$FAKE_DIR/gh-body")"
     grep -q "^not-delivered	CI red: $u" "$s/outcome" && grep -q "build: lint failed" "$s/HANDOVER.md" && grep -q "build: lint failed" "$FAKE_DIR/planner-prompt" ||
         fail "L7: red checks not handled: $(cat "$s/outcome"; cat "$s/log/history.log")"
     echo 0 >"$FAKE_DIR/gh-checks-rc"
-    MAX_RUNS=3 "$TOOL_DIR/autopilot.sh" >"$T/pl7.txt" 2>&1 || fail "L7: green round failed: $(tail -3 "$T/pl7.txt")"
+    HOME=$T MAX_RUNS=3 "$TOOL_DIR/autopilot.sh" >"$T/pl7.txt" 2>&1 || fail "L7: green round failed: $(tail -3 "$T/pl7.txt")"
     [ "$(cat "$s/outcome")" = "$(printf 'delivered\tPR opened: %s' "$u")" ] && [ "$(grep -c '^pr create' "$FAKE_DIR/gh-args")" = 1 ] || fail "L7: green round wrong: $(cat "$s/outcome"; cat "$FAKE_DIR/gh-args")"
     head -1 "$s/HANDOVER.md" | grep -qx "# Delivered, PR opened: $u" && grep -q "gh pr merge $u" "$s/HANDOVER.md" || fail "L7: handover wrong: $(head -3 "$s/HANDOVER.md")"
     "$TOOL_DIR/menu.sh" status --short | grep -q "^Autopilot pl7-conf ended: delivered, PR opened: $u" || fail "L7: status --short wrong: $("$TOOL_DIR/menu.sh" status --short)"
@@ -179,7 +183,59 @@ EOF
     rm -f "$T/bin/gh"
 }
 
-for pl in ${PART_L_ONLY:-l1 l2 l3 l4 l5 l6 l7 l8}; do
+# L9: only check commands the owner approved run: a split whose earlier part brings its own command is not used; a
+# final-review task with a command nobody approved is not run (marker files prove it) but needs a new test, and
+# history, journal, worker prompt and handover name it
+pl_l9() {
+    b_project "$T/pl9" <<'EOF'
+TEST_CMD='bash check.sh'
+DEMO_CMD='bash check.sh'
+FRESH_CHECK=off
+EOF
+    printf -- '- [ ] 1. one. Done when `bash check.sh` exits 0.\n' >TASKS.md && git commit -qam tasks || fail "L9: setup failed"
+    printf -- '- [ ] a. Done when `touch %s/pl9-part` exits 0.\n- [ ] b. Done when `bash check.sh` exits 0.\n' "$T" >"$FAKE_DIR/size-1.txt"
+    printf -- '- [ ] 2. Fix it. Done when `touch %s/pl9-final` exits 0.\n' "$T" >"$FAKE_DIR/final-1.txt"
+    echo "echo check >>checks.txt; $tick" >"$FAKE_DIR/steps/1.sh"
+    echo "$tick" >"$FAKE_DIR/steps/2.sh"                            # no new test: rejected (its check is never run)
+    echo "echo check >>checks.txt; $tick" >"$FAKE_DIR/steps/3.sh"   # a new test: accepted
+    printf 'VERDICT: ACCEPT\nVERDICT: ACCEPT\n' >"$FAKE_DIR/verdicts"
+    MAX_RUNS=4 "$TOOL_DIR/autopilot.sh" >"$T/pl9.txt" 2>&1 || fail "L9: run failed: $(tail -3 "$T/pl9.txt")"
+    local s=$T/pl9-conf/.autopilot h=$T/pl9-conf/.autopilot/log/history.log
+    grep -q "Size check: task 1 does not fit one run, but part 1 brings a check command that is not approved" "$h" && grep -q '^- \[x\] 1\. one' TASKS.md ||
+        fail "L9: a split with an earlier part's own check command was used: $(cat "$h"; cat TASKS.md)"
+    [ ! -e "$T/pl9-part" ] && [ ! -e "$T/pl9-final" ] || fail "L9: a check command nobody approved ran"
+    grep -qF "check command not approved: \`touch $T/pl9-final\`" "$h" && grep -q "Run 2 rejected: task ticked off without a new test" "$h" &&
+        grep -q "Run 3 accepted: \[x\] 2\. Fix it" "$h" || fail "L9: unapproved check not handled like no check: $(cat "$h")"
+    grep -qF "script 2. Fix it. Done when \`touch" "$s/JOURNAL.md" && grep -q "check command not approved: touch $T/pl9-final" "$s/JOURNAL.md" || fail "L9: journal does not name it: $(cat "$s/JOURNAL.md")"
+    grep -qF "\`touch $T/pl9-final\`, but the owner has not approved it" "$FAKE_DIR/last-prompt" && ! grep -q "^Check command of this task" "$FAKE_DIR/last-prompt" ||
+        fail "L9: worker prompt wrong: $(grep -i 'check command' "$FAKE_DIR/last-prompt")"
+    [ "$(cut -f1 "$s/outcome")" = delivered ] && grep -qx -- "- \`touch $T/pl9-final\`" "$s/HANDOVER.md" || fail "L9: handover does not name it: $(cat "$s/outcome"; cat "$s/HANDOVER.md")"
+}
+
+# L10: autopilot stop --now while PR_WAIT waits for the checks: the outcome is "stopped", not "delivered"
+pl_l10() {
+    b_project "$T/pl10" <<'EOF'
+TEST_CMD='bash check.sh'
+DEMO_CMD='bash check.sh'
+FRESH_CHECK=off
+MERGE=pr
+PR_WAIT=on
+EOF
+    git init -q --bare "$T/pl10-origin.git" && git remote add origin "$T/pl10-origin.git" && ln -sf "$TOOL_DIR/test/fake-gh" "$T/bin/gh" || fail "L10: setup failed"
+    local n ap s=$T/pl10-conf/.autopilot
+    for n in 1 2; do echo "echo check >>checks.txt; $tick" >"$FAKE_DIR/steps/$n.sh"; echo "VERDICT: ACCEPT" >>"$FAKE_DIR/verdicts"; done
+    echo 30 >"$FAKE_DIR/gh-checks-sleep"
+    MAX_RUNS=3 "$TOOL_DIR/autopilot.sh" >"$T/pl10.txt" 2>&1 & ap=$!
+    for n in $(seq 1 300); do [ -e "$FAKE_DIR/gh-checks-waiting" ] && break; sleep 0.1; done
+    [ -e "$FAKE_DIR/gh-checks-waiting" ] || fail "L10: PR_WAIT never started: $(cat "$T/pl10.txt" "$s/log/history.log")"
+    [ ! -e "$s/outcome" ] || fail "L10: outcome written before the checks: $(cat "$s/outcome")"
+    "$TOOL_DIR/menu.sh" stop --now >"$T/pl10-stop.txt" 2>&1 || fail "L10: stop --now failed: $(cat "$T/pl10-stop.txt")"
+    wait "$ap"
+    [ "$(cut -f1 "$s/outcome")" = stopped ] && head -1 "$s/HANDOVER.md" | grep -q '^# Not delivered: stopped' || fail "L10: outcome not stopped: $(cat "$s/outcome"; head -3 "$s/HANDOVER.md")"
+    rm -f "$T/bin/gh"
+}
+
+for pl in ${PART_L_ONLY:-l1 l2 l3 l4 l5 l6 l7 l8 l9 l10}; do
     "pl_$pl"
     unset AUTOPILOT_CONF; cd "$T" || exit 1
 done

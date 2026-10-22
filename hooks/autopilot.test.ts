@@ -51,6 +51,33 @@ test('/autopilot-loop plan "<idea>" passes the idea as one argument, quotes stri
   expect(text).toBe('Plan file written')
 })
 
+test('/autopilot-loop plan --spec "<idea>" passes --spec and the idea as separate arguments', async ($, on) => {
+  const calls: string[][] = []
+  on('process.spawn', async function* (_$, e) {
+    calls.push([...e.argv])
+    yield { stream: 'stdout' as const, text: 'Specification written\n' }
+    return { value: { code: 0, signal: null } }
+  })
+
+  const { text } = await $.command.run({ command: 'autopilot-loop', args: 'plan --spec "A word counter"' })
+
+  expect(calls.map(a => a.slice(1))).toEqual([['plan', '--spec', 'A word counter']])
+  expect(text).toBe('Specification written')
+})
+
+test('/autopilot-loop status --watch runs one round (--once): a slash command cannot press Ctrl+C', async ($, on) => {
+  const calls: string[][] = []
+  on('process.run', async (_$, e) => {
+    calls.push([...e.argv])
+    return { value: { exitCode: 0, stdout: 'Status:      off', stderr: '' } }
+  })
+
+  await $.command.run({ command: 'autopilot-loop', args: 'status --watch' })
+
+  expect(calls.map(a => a.slice(1))).toContainEqual(['status', '--watch', '--once'])
+  expect(calls.map(a => a.slice(1))).not.toContainEqual(['status', '--watch'])
+})
+
 test('a real error is shown, not "menu closed"', async ($, on) => {
   on('process.run', async () => ({ deny: 'menu.sh timed out' }))
   const { text } = await $.command.run({ command: 'autopilot-loop', args: 'handover' })

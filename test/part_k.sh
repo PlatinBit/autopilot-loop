@@ -37,7 +37,7 @@ TEST_CMD='bash check.sh'
 EOF
     echo "echo check >>checks.txt; $tick" >"$FAKE_DIR/steps/1.sh"; echo "VERDICT: ACCEPT" >"$FAKE_DIR/verdicts"
     MAX_RUNS=1 "$TOOL_DIR/autopilot.sh" >"$T/pk1.txt" 2>&1 || fail "K1: balanced run failed: $(tail -3 "$T/pk1.txt")"
-    grep -q '^worker .*--effort medium --max-budget-usd 2 ' "$FAKE_DIR/args" && grep -q '^reviewer .*--effort high --max-budget-usd 2 ' "$FAKE_DIR/args" ||
+    grep -q '^worker .*--effort medium --max-budget-usd 5 ' "$FAKE_DIR/args" && grep -q '^reviewer .*--effort high --max-budget-usd 5 ' "$FAKE_DIR/args" ||
         fail "K1: balanced efforts or default budget wrong: $(cut -c1-120 "$FAKE_DIR/args")"
     for e in EFFORT_WORKER=ultra EFFORT_PLANNER=High MAX_COST_PER_CALL_USD=lots COOLDOWN=soon MILESTONE_GATE=yes; do
         b_project "$T/pk1c" <<EOF
@@ -65,12 +65,24 @@ EOF
     for n in 1 2; do echo "echo check >>checks.txt; $tick" >"$FAKE_DIR/steps/$n.sh"; done; echo "VERDICT: ACCEPT" >"$FAKE_DIR/verdicts"
     MAX_RUNS=2 "$TOOL_DIR/autopilot.sh" >"$T/pk2.txt" 2>&1 || fail "K2: run failed: $(tail -3 "$T/pk2.txt")"
     local s=$T/pk2-conf/.autopilot
-    grep -q "Run 1 rejected: hit the per-call budget (MAX_COST_PER_CALL_USD=2)" "$s/log/history.log" && grep -q "Run 2 accepted" "$s/log/history.log" ||
+    grep -q "Run 1 rejected: hit the per-call budget (MAX_COST_PER_CALL_USD=5)" "$s/log/history.log" && grep -q "Run 2 accepted" "$s/log/history.log" ||
         fail "K2: budget not handled like a time limit: $(cat "$s/log/history.log")"
     grep -q "Claude reported an error" "$s/log/history.log" && fail "K2: the budget stop ended the loop as an error"
     grep -q "hit the per-call budget" "$FAKE_DIR/last-prompt" && grep -q "Attempt 2 of at most 3" "$FAKE_DIR/last-prompt" && grep -q "rejected-1.patch" "$FAKE_DIR/last-prompt" ||
         fail "K2: no feedback or attempt not counted: $(grep -A3 'This run' "$FAKE_DIR/last-prompt")"
     grep -q '^### J[0-9]* .* worker 1\. one over budget$' "$s/JOURNAL.md" && grep -q ';worker;sonnet;2.01;' "$s/costs.csv" || fail "K2: journal or cost wrong: $(cat "$s/JOURNAL.md" "$s/costs.csv")"
+    # the reviewer over the budget: asked once more; twice is a rejection that is not the worker's attempt
+    b_project "$T/pk2b" <<'EOF'
+TEST_CMD='bash check.sh'
+EOF
+    echo 3 >"$FAKE_DIR/review-budget"
+    for n in 1 2; do echo "echo check >>checks.txt; $tick" >"$FAKE_DIR/steps/$n.sh"; done; echo "VERDICT: ACCEPT" >"$FAKE_DIR/verdicts"
+    MAX_RUNS=2 "$TOOL_DIR/autopilot.sh" >"$T/pk2.txt" 2>&1 || fail "K2: reviewer budget run failed: $(tail -3 "$T/pk2.txt")"
+    s=$T/pk2b-conf/.autopilot
+    grep -q "Reviewer: per-call budget (MAX_COST_PER_CALL_USD=5), trying once more" "$s/log/history.log" &&
+        grep -q "Run 1 rejected: Reviewer: reviewer hit the per-call budget (MAX_COST_PER_CALL_USD=5) twice" "$s/log/history.log" &&
+        grep -q "Run 2 accepted" "$s/log/history.log" || fail "K2: reviewer budget not retried once: $(cat "$s/log/history.log")"
+    grep -q "Attempt 1 of at most 3" "$FAKE_DIR/last-prompt" || fail "K2: the reviewer's budget counted as the worker's attempt: $(grep Attempt "$FAKE_DIR/last-prompt")"
 }
 
 # K3: reviewer, final review and planner answer through --json-schema; the note of a structured answer reaches the
@@ -113,8 +125,9 @@ FRESH_CHECK=off
 MILESTONE_GATE=ask
 EOF
     printf '# Plan\n\n## Milestone 1: a\n\n## Milestone 2: b\n' >plan.md && git add plan.md && git commit -qm plan || fail "K4: setup failed"
-    for n in 1 2 3; do echo "echo check >>checks.txt; $tick" >"$FAKE_DIR/steps/$n.sh"; echo "VERDICT: ACCEPT" >>"$FAKE_DIR/verdicts"; done
-    echo '- [ ] 3. three. Done when a test passes.' >"$FAKE_DIR/planner.txt"
+    for n in 1 2; do echo "echo check >>checks.txt; $tick" >"$FAKE_DIR/steps/$n.sh"; echo "VERDICT: ACCEPT" >>"$FAKE_DIR/verdicts"; done
+    echo "touch f3.txt; $tick" >"$FAKE_DIR/steps/3.sh"; echo "VERDICT: ACCEPT" >>"$FAKE_DIR/verdicts"   # no new test: only its approved check
+    echo '- [ ] 3. three. Done when `test -e f3.txt` exits 0.' >"$FAKE_DIR/planner.txt"
     local s=$T/pk4-conf/.autopilot log=$T/pk4-notify.log w='milestone 1 done, approve with autopilot plan accept'; : >"$log"
     NOTIFY_LOG=$log MAX_RUNS=5 "$TOOL_DIR/autopilot.sh" >"$T/pk4.txt" 2>&1 || fail "K4: run failed: $(tail -3 "$T/pk4.txt"; cat "$s/log/history.log")"
     [ "$(cat "$s/outcome")" = "$(printf 'waiting\t%s' "$w")" ] || fail "K4: outcome not waiting: $(cat "$s/outcome"; cat "$s/log/history.log")"
@@ -127,9 +140,12 @@ EOF
     grep -q "Milestone 2 waits for your OK" "$T/pk4.txt" && [ "$(cat "$FAKE_DIR/step-nr")" = "$steps" ] && [ "$(cut -f1 "$s/outcome")" = waiting ] ||
         fail "K4: start without the OK not refused before any run: $(cat "$T/pk4.txt")"
     "$TOOL_DIR/menu.sh" plan accept | grep -q "1 tasks adopted" || fail "K4: plan accept failed"
-    [ ! -e "$s/gate" ] && [ "$(cut -d' ' -f1 "$s/milestone")" = 2 ] || fail "K4: milestone not moved on: $(cat "$s/milestone")"
+    [ ! -e "$s/gate" ] && [ "$(cut -d' ' -f1 "$s/milestone")" = 2 ] && [ "$(cut -d' ' -f2 "$s/milestone")" = "$(git rev-parse HEAD)" ] ||
+        fail "K4: milestone not moved on after the commit: $(cat "$s/milestone")"
+    grep -qxF 'test -e f3.txt' "$s/approved-checks" || fail "K4: plan accept did not approve the check command: $(cat "$s/approved-checks" 2>&1)"
     MAX_RUNS=5 "$TOOL_DIR/autopilot.sh" >"$T/pk4.txt" 2>&1 || fail "K4: second start failed: $(tail -3 "$T/pk4.txt")"
-    [ "$(cut -f1 "$s/outcome")" = delivered ] && grep -q '^- \[x\] 3\. three' TASKS.md || fail "K4: not delivered after the OK: $(cat "$s/outcome"; cat "$s/log/history.log")"
+    [ "$(cut -f1 "$s/outcome")" = delivered ] && grep -q '^- \[x\] 3\. three' TASKS.md && [ -e "$s/log/check-1.txt" ] ||
+        fail "K4: not delivered after the OK, or its approved check did not run: $(cat "$s/outcome"; cat "$s/log/history.log")"
 }
 
 # K5: API or network errors (overloaded) of worker and reviewer: no attempt, a script entry, COOLDOWN, 3 times in a row;

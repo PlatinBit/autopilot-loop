@@ -177,7 +177,39 @@ EOF
     done
 }
 
-for pm in ${PART_M_ONLY:-m1 m2 m3 m4 m5 m6 m7 m8}; do
+# M9: the parts of a split task run one after the other: 1.1 and 2 in a wave, then 1.2 alone
+pm_m9() {
+    b_project "$T/pm9" <<'EOF'
+TEST_CMD='bash check.sh'
+PARALLEL=2
+EOF
+    m_tasks "1. one" "2. two"; m_steps 2
+    printf -- '- [ ] a. Done when a test passes.\n- [ ] b. Done when `bash check.sh` exits 0.\n' >"$FAKE_DIR/size-1.txt"
+    echo "echo check >>checks.txt; $(m_tick 1.1)" >"$FAKE_DIR/steps/t1.1.sh"; echo "echo b >fb.txt; $(m_tick 1.2)" >"$FAKE_DIR/steps/t1.2.sh"
+    local h=$T/pm9-conf/.autopilot/log/history.log
+    printf 'VERDICT: ACCEPT\nVERDICT: ACCEPT\nVERDICT: ACCEPT\n' >"$FAKE_DIR/verdicts"
+    MAX_RUNS=5 "$TOOL_DIR/autopilot.sh" >"$T/pm9.txt" 2>&1 || fail "M9: run failed: $(tail -3 "$T/pm9.txt")"
+    grep -q "Run 1: 1\.1\. a\..* (wave of 2)$" "$h" && grep -q "Run 2: 2\. two.* (wave of 2)$" "$h" && grep -q "Run 3: 1\.2\. (after 1\.1) b\..*exits 0\.$" "$h" &&
+        grep -q "Run 3 accepted: \[x\] 1\.2\." "$h" && [ "$(grep -c '^- \[x\]' TASKS.md)" = 3 ] || fail "M9: parts in the same wave, or not done: $(cat "$h")"
+}
+
+# M10: a wave whose workers delete one file and rename another: both changes are merged
+pm_m10() {
+    b_project "$T/pm10" <<'EOF'
+TEST_CMD='bash check.sh'
+PARALLEL=2
+EOF
+    echo old >gone.txt; echo moved >old-name.txt; git add gone.txt old-name.txt; m_tasks "1. one" "2. two"
+    echo "rm gone.txt; $(m_tick 1)" >"$FAKE_DIR/steps/t1.sh"; echo "mv old-name.txt new-name.txt; $(m_tick 2)" >"$FAKE_DIR/steps/t2.sh"
+    local h=$T/pm10-conf/.autopilot/log/history.log
+    printf 'VERDICT: ACCEPT\nVERDICT: ACCEPT\n' >"$FAKE_DIR/verdicts"
+    MAX_RUNS=2 "$TOOL_DIR/autopilot.sh" >"$T/pm10.txt" 2>&1 || fail "M10: run failed: $(tail -3 "$T/pm10.txt")"
+    grep -q "Run 1 accepted: \[x\] 1\. one" "$h" && grep -q "Run 2 accepted: \[x\] 2\. two" "$h" || fail "M10: not both merged: $(cat "$h")"
+    [ "$(git ls-files gone.txt old-name.txt new-name.txt)" = new-name.txt ] && [ "$(cat new-name.txt)" = moved ] && [ -z "$(git status --porcelain)" ] ||
+        fail "M10: delete or rename lost: $(git ls-files; git status --porcelain)"
+}
+
+for pm in ${PART_M_ONLY:-m1 m2 m3 m4 m5 m6 m7 m8 m9 m10}; do
     "pm_$pm"
     unset AUTOPILOT_CONF; cd "$T" || exit 1
 done

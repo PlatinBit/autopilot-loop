@@ -60,6 +60,10 @@ case "$prompt" in
     *"You are the final reviewer"*) role=final; k=$(count final-nr); printf '%s\n' "$prompt" >"$d/final-prompt"; cp "$d/final-prompt" "$d/final-prompt-$k"
         t=$(cat "$d/final-$k.txt" 2>/dev/null || echo 'FINAL: OK'); answer "$t" "$(structured final "$t")" ;;
     *"You are the reviewer"*) role=reviewer; [ -f "$d/review-sleep" ] && sleep "$(cat "$d/review-sleep")"
+        if [ "$(cat "$d/review-budget" 2>/dev/null || echo 0)" -gt 0 ]; then  # review-budget: the next N reviews stop at the budget
+            echo $(( $(cat "$d/review-budget") - 1 )) >"$d/review-budget"; log_args
+            jq -n '{type: "result", subtype: "error_max_budget_usd", is_error: true, result: null, errors: ["Reached maximum budget"], total_cost_usd: 5.01}'; exit 1
+        fi
         v=$(sed -n "$(count verdict-nr)p" "$d/verdicts" 2>/dev/null)  # no verdicts file: an answer without a verdict
         case $v in '{'*) s=$v ;; *) s=$(structured reviewer "$v" "$(cat "$d/review-note" 2>/dev/null)") ;; esac
         answer "Reasoning … $v" "$s" ;;

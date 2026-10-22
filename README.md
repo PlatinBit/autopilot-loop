@@ -109,9 +109,9 @@ autopilot handover                      # what was built, how to try it, the pro
 | 1a | `autopilot plan --spec "<idea>"` | writes `./SPEC.md` (requirements, each with 1–2 acceptance examples, non-goals, demo) and stops, so you can correct it; then `autopilot plan SPEC.md` writes the plan from it and drafts, see [Specification first](#specification-first) |
 | 2 | `autopilot plan` / `plan accept` / `plan discard` | show / set up or adopt / throw away the draft – or, after a planner round, the planner's suggested tasks (the newer of the two) |
 | 3 | `autopilot start` | discards unfinished changes in the work directory, then runs the loop in tmux until delivered, not delivered or a cap (`MAX_RUNS`, `MAX_COST_USD`) |
-| 4 | `autopilot status [--short\|--watch]` | running or off, outcome, tasks, tests, acceptance, effort, cost and tokens per kind of Claude call, latest events, next step; `--short`: one line per project for the status line; `--watch`: again every 5 s with the last 5 journal entries, until Ctrl+C |
+| 4 | `autopilot status [--short\|--watch]` | running or off, outcome, tasks, tests, acceptance, effort, cost and tokens per kind of Claude call, latest events, next step; `--short`: one line per project for the status line; `--watch`: again every 5 s with the last 5 journal entries, until Ctrl+C (as `/autopilot-loop status --watch` one round) |
 | 5 | `autopilot stop [--now]` | stop after the current run (a running demo is ended) / now: the unfinished run is discarded |
-| 6 | `autopilot handover [--export-lessons]` | `.autopilot/HANDOVER.md`: what was built, where and how to try it, the proof, what is open, cost, next step; `--export-lessons`: writes the lessons (`.autopilot/AGENTS-suggestion.md`) as section "## Lessons from autopilot" into `AGENTS.md` next to `autopilot.conf`, replacing that section if it is there – only on this command, never by itself |
+| 6 | `autopilot handover [--export-lessons]` | `.autopilot/HANDOVER.md`: what was built, where and how to try it, the proof, what is open, cost, next step; `--export-lessons`: writes the lessons (`.autopilot/AGENTS-suggestion.md`) as section "## Lessons from autopilot" into `AGENTS.md` next to `autopilot.conf`, replacing that section if it is there – only on this command, never by itself; commit `AGENTS.md` before the next start, otherwise `MERGE=ff` is refused (uncommitted changes) |
 | 7 | `autopilot doctor` | ✔/✘ per tool with version and install command, git identity, sandbox, a probe of the project's test command, a main worktree with uncommitted or untracked files under `MERGE=ff` |
 | – | `autopilot trust [file]` / `help` | confirm a hand-written or changed `autopilot.conf` (it is Bash code) / this list |
 
@@ -140,17 +140,17 @@ Everything else has a default; [`templates/autopilot.conf`](templates/autopilot.
 | 8 | `ACCEPT_CMD` | empty | optional overall goal printing `ACCEPT: k of n`; may be red, `k` must never drop |
 | 9 | `SANDBOX` | on when bwrap works | `off` switches it off |
 | 10 | `TRY_IT` | empty | how you try the result by hand, for the handover |
-| 11 | `MERGE` | `ff` | delivered: fast-forward `BASE_BRANCH` in the project folder when that is safe; `off` = you merge yourself; `pr` = **push** and open a pull request, see [Pull request mode](#pull-request-mode) |
+| 11 | `MERGE` | `ff` | delivered: fast-forward `BASE_BRANCH` in the project folder when that is safe; `off` = you merge yourself; `pr` (experimental) = **push** and open a pull request, see [Pull request mode](#pull-request-mode) |
 | 12 | `FRESH_CHECK` | `on` | run the tests once at the start and tests and demo once more before "delivered" in a fresh checkout; `off` for a demo bound to a fixed place or tests that need ignored caches (see [The end](#the-end-final-review-fresh-checkout-merge)) |
 | 13 | `FORBIDDEN_CONTENT` | empty | regex of lines that must never be added; a check for secrets (AWS keys, private key blocks, a long literal assigned to a name that is or ends in `password`/`secret`/`token`/`api_key`, e.g. `DB_PASSWORD`, `dbPassword`) runs in addition |
 | 14 | `SECRETS_CHECK` | `on` | `off` switches the secrets check off (for false alarms) |
 | 15 | `EFFORT_WORKER`, `EFFORT_REVIEWER`, `EFFORT_PLANNER`, `EFFORT_LESSONS` | from `MODELS` | `claude --effort` per role (`EFFORT_PLANNER` also for final review, brief, draft, plan). `balanced`: worker medium, reviewer high, planner high, lessons low · `max`: worker high, the rest xhigh · `cheap`: all medium, lessons low. `CLAUDE_CODE_EFFORT_LEVEL` is removed for every call so the flag holds |
-| 16 | `MAX_COST_PER_CALL_USD` | 2 | cap of one Claude call (`--max-budget-usd`); a worker run over it is rejected like a time limit ("hit the per-call budget", the attempt counts), a reviewer over it rejects |
-| 17 | `COOLDOWN` | `10m` | an API or network error (overloaded, 5xx, connection reset, API timeout) is no failed attempt: wait this long, 3 times in a row, then it is an error. The usage limit has its own wait |
+| 16 | `MAX_COST_PER_CALL_USD` | 5 | cap of one Claude call (`--max-budget-usd`); a worker run over it is rejected like a time limit ("hit the per-call budget", the attempt counts); a reviewer over it is asked once more, then the run is rejected without counting the attempt |
+| 17 | `COOLDOWN` | `10m` | an API or network error (overloaded, 5xx, connection reset, API timeout) is no failed attempt: wait this long, 3 times in a row, then it is an error. The usage limit has its own wait. Both waits hold for every Claude call of the loop (worker, reviewer, size check, planner, lessons, final review) |
 | 18 | `MILESTONE_GATE` | `auto` | `ask`: after a milestone the next one's tasks wait as a suggestion, the outcome is `waiting`; `autopilot plan accept`, then `autopilot start` goes on |
 | 19 | `SIZE_CHECK` | `on` (`off` with `MODELS=cheap`) | before a task's first attempt a short planner call (kind `size`) judges whether it fits one run; if not, the script puts 2–5 parts in its place, see [Size check](#size-check) |
-| 20 | `PR_WAIT` | `off` | with `MERGE=pr`: wait up to 30 minutes for the GitHub checks of the pull request; red = not delivered |
-| 21 | `PARALLEL` | 1 | up to 4 workers at the same time on independent tasks, each in its own worktree; cost about ×N, see [Parallel workers](#parallel-workers) |
+| 20 | `PR_WAIT` | `off` | experimental; with `MERGE=pr`: wait up to 30 minutes for the GitHub checks of the pull request; red = not delivered |
+| 21 | `PARALLEL` | 1 | experimental; up to 4 workers at the same time on independent tasks, each in its own worktree; cost about ×N, see [Parallel workers](#parallel-workers) |
 
 ## What you get at the end
 
@@ -174,17 +174,17 @@ A task names the tasks it needs right after its number: `- [ ] 5. (after 2, 4) E
 
 ## Size check
 
-With `SIZE_CHECK=on` (default, except `MODELS=cheap`) a short planner call ([`templates/SIZE.md`](templates/SIZE.md), answer `{fits, split}` via `--json-schema`, effort and model of the planner, kind `size` in `costs.csv`) judges each task once before its first attempt. If it does not fit one run, the script – not the worker – replaces the line by 2 to 5 parts `N.1`, `N.2` …, each with the task's `(after …)`, commits that as "Autopilot: split task N" and notes it in the journal; no attempt and no run is used. The last part must keep the task's check command (otherwise the task stays as it is), and a task without a number is never split. `.autopilot/sized` remembers what was checked, so neither a task nor its parts are checked twice, also after a restart.
+With `SIZE_CHECK=on` (default, except `MODELS=cheap`) a short planner call ([`templates/SIZE.md`](templates/SIZE.md), answer `{fits, split}` via `--json-schema`, model of the planner, effort `low`, kind `size` in `costs.csv`) judges each task once before its first attempt. If it does not fit one run, the script – not the worker – replaces the line by 2 to 5 parts `N.1`, `N.2` …, each with the task's `(after …)` and, from the second on, after the part before it (`N.2. (after …, N.1)`), so the parts run one after the other, also with `PARALLEL`. It commits that as "Autopilot: split task N" and notes it in the journal; no attempt and no run is used. Every part is read like a run reads it (the first command in backticks after "Done when"): the last part must name exactly the task's check command, the others none or an [approved](#check-command-per-task) one – otherwise the task stays as it is. A task without a number is never split. `NO_PROGRESS` counts the parts of a task once. `.autopilot/sized` remembers what was checked, so neither a task nor its parts are checked twice, also after a restart.
 
 ## Specification first
 
 `autopilot plan --spec "<idea>"` writes `./SPEC.md` ([`templates/SPEC.md`](templates/SPEC.md)): the requirements as a numbered list, each with one or two acceptance examples ("Given … when … then …" or `` `command` → output``), the non-goals and the demo command. It shows the file and stops. Correct it, then `autopilot plan SPEC.md` writes `<title>-plan.md` next to it from the spec and drafts as usual. `plan accept` commits both files, locks both (`LOCKED`) and sets `SPEC_FILE`, so planner, worker, size check and final review get the spec like the plan, and the final review checks every acceptance example against the result. Without `--spec` nothing changes.
 
-## Pull request mode
+## Pull request mode (experimental)
 
-**`MERGE=pr` pushes your code to a remote: an action outside this machine.** When the result is delivered, the script pushes the work branch to `origin` (`git push origin HEAD:refs/heads/<branch>`, no force) and opens a pull request against `BASE_BRANCH` with `gh pr create` (title: the plan's first heading, body: the first 80 lines of the handover), or reuses the one already open for the branch. The outcome reads "delivered, PR opened: <url>", the handover names `gh pr merge <url>`. With `PR_WAIT=on` it then waits up to 30 minutes for the checks (`gh pr checks --watch`): red (or not done in time) is "not delivered: CI red: <url>" with the output in the handover (`.autopilot/ci.txt`), and with `PLANNER=on` the planner gets that output like a red demo. The start refuses `MERGE=pr` unless `gh` is installed and logged in (`gh auth status`) and the work directory has a remote `origin`; `doctor` shows the same. Default stays `MERGE=ff`, which never leaves the machine.
+**`MERGE=pr` pushes your code to a remote: an action outside this machine.** When the result is delivered, the script pushes the work branch to `origin` (`git push origin HEAD:refs/heads/<branch>`, no force) and opens a pull request against `BASE_BRANCH` with `gh pr create` (title: the plan's first heading, body: "What was built" and one line each for demo, tests and acceptance – no paths, logs, lessons or output; `~` for your home folder, `#123` and `@name` in backticks so GitHub links no issue and notifies nobody), or reuses the pull request still open for the branch. The outcome reads "delivered, PR opened: <url>", the handover names `gh pr merge <url>`; the outcome is written only after the pull request (and its checks), so `stop --now` while it waits ends as "stopped". With `PR_WAIT=on` it then waits up to 30 minutes for the checks (`gh pr checks --watch`; "no checks reported" is asked again every 15 s for about 2 minutes, CI may start late, then it counts as no CI): red (or not done in time) is "not delivered: CI red: <url>" with the output in the handover (`.autopilot/ci.txt`), and with `PLANNER=on` the planner gets that output like a red demo. The start refuses `MERGE=pr` unless `gh` is installed and logged in (`gh auth status`) and the work directory has a remote `origin`; `doctor` shows the same. Default stays `MERGE=ff`, which never leaves the machine.
 
-## Parallel workers
+## Parallel workers (experimental)
 
 **`PARALLEL=N` (2 to 4) runs up to N workers at the same time: the cost per wave is about N times a run, and tasks that touch the same lines conflict.** Use it only for tasks that are really independent, with their dependencies written in the plan (`(after …)`); the default `PARALLEL=1` is the serial loop, unchanged.
 
@@ -194,11 +194,13 @@ A wave takes up to N tasks that can start now (open, dependencies done; so none 
 - A conflict is no failed attempt: the task gets "conflict with parallel task N, retry on the new base" with its diff as feedback, and is tried again in a later wave or alone; after 2 conflicts only alone. A task rejected in a wave goes on alone with its attempt counted and its feedback (`.autopilot/pending/`, survives a restart).
 - `MAX_RUNS` counts every worker; before a wave the script checks that N more workers at the mean worker cost so far fit into what is left of `MAX_COST_USD`, otherwise the wave is smaller ("Cost cap: … wave of k"); a wave of 1 is the serial run. A usage limit or API error of a worker counts no attempt; the wave is merged, then the loop waits.
 - `status` (and `--watch`) shows the running wave, `status --short` "wave of N"; `stop --now` ends all workers and removes all temporary worktrees, the handover names the discarded wave. Lessons are condensed once after the wave.
-- Workers start from a fresh checkout without ignored files (`node_modules/`, build caches), like the fresh check; their test calls are slower or need those tools elsewhere.
+- Workers start from a fresh checkout without ignored files (`node_modules/`, build caches), like the fresh check; their test calls are slower or need those tools elsewhere. Start and `doctor` say so when `PARALLEL` > 1.
 
 ## Check command per task
 
-A task line ``- [ ] 4. Export. Done when `./bin/tool export x.md` exits 0 …`` names its own check: after the run the script runs the command in backticks in the work directory (sandbox and time limit like `TEST_CMD`); a non-zero exit rejects the run with its output. Such a task does not need to raise the test count. Without a command in backticks the old rule holds: every ticked-off task adds tests.
+A task line ``- [ ] 4. Export. Done when `./bin/tool export x.md` exits 0 …`` names its own check: after the run the script runs the (first) command in backticks after "Done when" in the work directory (sandbox and time limit like `TEST_CMD`); a non-zero exit rejects the run with its output. Such a task does not need to raise the test count. Without a command in backticks the old rule holds: every ticked-off task adds tests.
+
+Only commands you approved run: `TEST_CMD`, `DEMO_CMD`, `ACCEPT_CMD` and those of task lines you adopted with `autopilot plan accept` (the draft, a planner suggestion, a milestone with `MILESTONE_GATE=ask`), kept in `.autopilot/approved-checks`. Task lines nobody approved – the parts of a split, the final review's tasks, the next milestone with `MILESTONE_GATE=auto` – may name another command: it is not run, the task must raise the test count instead, and history, journal, worker prompt and handover say "check command not approved: …". For a task list you wrote by hand, add its commands to `.autopilot/approved-checks` yourself, one per line.
 
 ## Journal and lessons
 
@@ -240,7 +242,7 @@ In Claude Code the status line shows each running project; when one ends, a toas
 | 2 | The reviewer can be wrong (both ways) | at most `ATTEMPTS` tries per task, then it lands with you in `BLOCKED.md` |
 | 3 | Cost | caps per start; with a subscription the loop pauses at the usage limit; `status` shows cost and tokens per kind |
 | 4 | Claude Code refuses every write below `~/.claude/` | keep projects elsewhere; `plan accept` refuses such a work directory, `doctor` warns |
-| 5 | Tasks of the next milestone, of the final review and the parts of a split task are added without your OK, and their check commands run like `TEST_CMD` | milestone tasks are drafted from the locked plan, final-review tasks from the final reviewer's reading of the change (at most 5, two rounds), parts must keep the split task's check command; read the journal and `git log`; the run caps still apply; `SIZE_CHECK=off` turns splitting off |
+| 5 | Tasks of the next milestone (`MILESTONE_GATE=auto`), of the final review and the parts of a split task are added without your OK | their check commands run only when you approved them (`.autopilot/approved-checks`), otherwise the test count must rise; milestone tasks are drafted from the locked plan, final-review tasks from the final reviewer's reading of the change (at most 5, two rounds); read the journal and `git log`; the run caps still apply; `SIZE_CHECK=off` turns splitting off, `MILESTONE_GATE=ask` asks for each milestone |
 | 6 | `PARALLEL` > 1: workers in a wave do not see each other's changes | only independent tasks with dependencies in the plan; conflicts are retried on the new base, at most twice, then alone |
 
 ## Upgrading from 0.9
@@ -249,10 +251,11 @@ In Claude Code the status line shows each running project; when one ends, a toas
 |---|---|---|---|
 | 1 | any Claude Code 2.1 | needs `--effort`, `--max-budget-usd`, `--json-schema` (the start refuses otherwise) | update Claude Code; `autopilot doctor` names a missing flag |
 | 2 | reviewer, planner and final review answered with `VERDICT:`/`FINAL:`/`NOT REACHABLE` lines and a `<<<NOTE` block | a JSON answer (`--json-schema`) | a custom `REVIEWER_FILE`/`PLANNER_FILE` should ask for the JSON fields instead of those lines (the schema is enforced anyway) |
-| 3 | no cap per call | `MAX_COST_PER_CALL_USD=2` | raise it for big plans or diffs (`plan` names it when a draft stops there) |
+| 3 | no cap per call | `MAX_COST_PER_CALL_USD=5` | raise it for big plans or diffs (`plan` names it when a draft stops there) |
 | 4 | `costs.csv` with 7 columns | 8th column `effort` | nothing: the header is updated, old rows stay |
 | 5 | the worker took the first open task | the script picks the task (dependencies) and names it in the prompt | a custom `PROMPT_FILE` should say "take the task named under This run" |
 | 6 | no size check | `SIZE_CHECK=on` with `balanced`/`max`: one short planner call per task | `SIZE_CHECK=off` to save it |
+| 7 | every "Done when \`<command>\`" ran | only approved ones (`TEST_CMD`, `DEMO_CMD`, `ACCEPT_CMD`, task lines adopted with `plan accept`) | a hand-written task list: put its check commands into `.autopilot/approved-checks`, one per line |
 
 ## Upgrading from 0.8
 
@@ -294,7 +297,8 @@ The checks protect the **quality** of the work. They are **not a security bounda
 |---|---|---|
 | 1 | An `autopilot.conf` is only loaded once you confirmed it (`autopilot trust`, automatic after `plan accept`); every change needs a new confirmation | foreign repos with a prepared `autopilot.conf`, changes by the worker |
 | 2 | Only a few settings from Claude's draft are adopted, in a strictly checked form; tools only `Read`, `Edit`, `Write`, `Glob`, `Grep` and `Bash` for a single command (`plan accept` adds the test, demo and check commands of the draft as whole commands, metacharacter-free ones only) | prompt injection through the plan or the project |
-| 3 | All Claude runs with `--safe-mode` (no foreign hooks, plugins, MCP servers; the project's `CLAUDE.md` goes into the prompt as text) and without write access to `.git`, `.claude`, `.autopilot`, `autopilot.conf` | hooks and permissions from a foreign `.claude/settings.json` |
+| 3 | All Claude runs with `--safe-mode` (no foreign hooks, plugins, MCP servers; the project's `CLAUDE.md` goes into the prompt as text) and without write access to `.git`, `.claude`, `.autopilot` (also where it lies outside the work directory), `autopilot.conf` | hooks and permissions from a foreign `.claude/settings.json`, a worker rewriting its own logs |
+| 3a | Check commands of task lines run only when you approved them (`plan accept` or `.autopilot/approved-checks`) | a command smuggled into a task line the loop wrote itself (split, final review, next milestone) |
 | 4 | Git without hooks, fsmonitor and external diff programs; if a run changes `.git` (config, info, hooks), the autopilot stops immediately | code execution through Git management files |
 | 5 | `.git*`, `.github/`, `.claude/`, `.autopilot/`, `autopilot.conf`, `CLAUDE.md` are always locked; renames are checked with old and new path; symlinks out of the work directory are rejected | bypassing the path check |
 

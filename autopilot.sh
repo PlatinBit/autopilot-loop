@@ -46,7 +46,7 @@ echo $$ >"$lock/pid"; trap 'rm -rf "$lock"' EXIT  # replaced by finish() below o
 [ -s "$STATE/gate" ] && [ -s "$STATE/suggestion.md" ] &&
     { echo "Milestone $(cat "$STATE/gate") waits for your OK: read it with autopilot plan, adopt it with autopilot plan accept (or throw it away: autopilot plan discard), then autopilot start" >&2; exit 1; }
 t_start=$(date '+%F %T')
-rm -f "$STATE/outcome" "$STATE/HANDOVER.md" "$STATE/demo.txt" "$STATE/final-rounds" "$STATE/ci.txt"
+rm -f "$STATE/outcome" "$STATE/HANDOVER.md" "$STATE/demo.txt" "$STATE/final-rounds" "$STATE/ci.txt" "$STATE/wave"
 # What `status`, `status --short` and `handover` read: they never load autopilot.conf, which may change during a run.
 { for k in NAME WORKDIR TASKS_FILE PLAN_FILE TEST_CMD DEMO_CMD ACCEPT_CMD MAX_RUNS MAX_COST_USD; do
       v=${!k}; printf '%s=%s\n' "$k" "${v//$'\n'/ }"; done
@@ -65,6 +65,7 @@ if [ ${#old_logs[@]} -gt 0 ]; then
 fi
 is_number() { [[ ${1:-} =~ ^[0-9]+$ ]]; }
 pause() { sleep "$1" & wait $!; }  # in the background, so a signal is handled at once
+seconds() { case $1 in *h) echo $(( ${1%h} * 3600 )) ;; *m) echo $(( ${1%m} * 60 )) ;; *) echo "${1%s}" ;; esac; }  # 10m → 600 (macOS sleep takes no suffix)
 open_tasks() { grep -c '^- \[ \]' "$TASKS_FILE"; }
 # An API or network error is no failed attempt: wait COOLDOWN, at most 3 times in a row ($api_waits), then it counts
 cooldown() { # ANSWERFILE TASK → 0 waited, 1 no such error or the 3 waits are used up
@@ -72,7 +73,17 @@ cooldown() { # ANSWERFILE TASK → 0 waited, 1 no such error or the 3 waits are 
     api_waits=$((api_waits + 1))
     note "Claude API or network error ($(head -1 "$1" | shorten 120)), waiting $COOLDOWN ($api_waits of 3), no attempt counted" >&2
     journal_add /dev/null "$JOURNAL" script "$2" "api error, waiting $COOLDOWN ($api_waits of 3)"
-    pause "$COOLDOWN"
+    pause "$(seconds "$COOLDOWN")"
+}
+# claude_run with the waits of the loop: an API error waits COOLDOWN (3 times in a row), the usage limit LIMIT_WAIT
+# (20 times); → 1 when it still has no answer
+claude_wait() { # TEXTFILE KIND [claude arguments …] <prompt
+    local p waits=0 api_waits=0; p=$(cat)
+    until claude_run "$@" <<<"$p" >/dev/null; do
+        cooldown "$1" "$2" && continue
+        usage_limit "$1" && [ $((waits += 1)) -le 20 ] || return 1
+        note "Claude call ($2): usage limit, waiting $((LIMIT_WAIT / 60)) min" >&2; pause "$LIMIT_WAIT"
+    done
 }
 
 # Last line of an output that matches the pattern → group 1 (or 2)
@@ -119,7 +130,7 @@ condense_lessons() {
     local a=$LOGS/lessons.txt removed new
     [ -n "$in_wave" ] && { lessons_due=1; return 0; }  # a wave condenses once after its last merge
     removed=$(grep '^- \[removed by owner\]' "$LESSONS" 2>/dev/null)
-    claude_run "$a" lessons --model "$PLANNER_MODEL" --allowedTools Read Grep Glob <<<"$(cat "$TOOL_DIR/templates/LESSONS.md")
+    claude_wait "$a" lessons --model "$PLANNER_MODEL" --allowedTools Read Grep Glob <<<"$(cat "$TOOL_DIR/templates/LESSONS.md")
 
 ## Journal (latest entries)
 $(journal_tail "$JOURNAL" 40)
@@ -128,7 +139,7 @@ $(journal_tail "$JOURNAL" 40)
 $(grep -v '^- \[removed by owner\]' "$LESSONS" 2>/dev/null || echo –)
 
 ## Lessons removed by the owner
-${removed:-–}" >/dev/null
+${removed:-–}"
     new=$(awk '/^<<<LESSONS[[:space:]]*$/ { b = ""; on = 1; next }
                /^LESSONS>>>[[:space:]]*$/ { if (on) { last = b; ok = 1 } on = 0; next }
                on { b = b $0 "\n" }
@@ -226,7 +237,8 @@ reject() { # BEFORE REASON [LOGFILE]: every rejection counts as a failed attempt
     { echo "The last attempt at this task was rejected. Reason: $2"
       [ -f "$patch" ] && echo "Diff of your last attempt (read it with the Read tool, do not start from zero): $patch"
       [ -n "${3:-}" ] && { echo; echo "Last lines of $(basename "$3"):"; tail -40 "$3" | no_ansi; }; } >"$FEEDBACK"
-    fails=$((fails + 1)); rejected_n=$((rejected_n + 1)); save_attempts
+    case $2 in "Reviewer: reviewer hit the per-call budget"*) ;; *) fails=$((fails + 1)) ;; esac  # the reviewer's budget is not the worker's attempt
+    rejected_n=$((rejected_n + 1)); save_attempts
     # lessons are condensed at a timeout, a blocked task and every 5 accepted tasks, not at every rejection (cost)
     case $2 in "aborted after"*) journal_run timeout; condense_lessons ;; "hit the per-call budget"*) journal_run "over budget"; condense_lessons ;; *) journal_run "rejected: $(shorten 120 <<<"$2")" ;; esac
 }
@@ -244,31 +256,37 @@ block_task() { # REASON: mark the picked task (line $pick) as [~] so the loop ca
 
 # Size check (SIZE_CHECK=on), once per task line before its first attempt (.autopilot/sized holds the hashes): the
 # planner judges whether the picked task fits one run. If not, the script puts its parts in its place as N.1, N.2 …,
-# each with the task's "(after …)", and commits that; the parts are never checked again. Parts that drop the task's
-# check command, or a task without a number, stay as they are. → 0 split, 1 the task stays
+# one after the other (N.k waits on N.(k-1)), each with the task's "(after …)", and commits that; the parts are never
+# checked again. A task without a number stays as it is, and so does one whose parts would bring a check command
+# the owner never approved: only the last part has one, exactly the task's own. → 0 split, 1 the task stays
 size_check() {
-    local line h a=$LOGS/size-$((i + 1)).txt num deps cmd parts n k=0 p re='Done when `([^`]+)`'
+    local line h a=$LOGS/size-$((i + 1)).txt num deps d cmd pc bad='' parts n k=0 p
     line=$(sed -n "${pick}p" "$TASKS_FILE"); h=$(hash_only <<<"$line" | cut -c1-16)
     grep -qxF "$h" "$STATE/sized" 2>/dev/null && return 1
     echo "$h" >>"$STATE/sized"
-    claude_run "$a" size --model "$PLANNER_MODEL" --allowedTools Read Grep Glob --json-schema "$SIZE_SCHEMA" <<<"$(cat "$TOOL_DIR/templates/SIZE.md")$(plan_section)$(project_rules)
+    claude_wait "$a" size --model "$PLANNER_MODEL" --allowedTools Read Grep Glob --json-schema "$SIZE_SCHEMA" <<<"$(cat "$TOOL_DIR/templates/SIZE.md")$(plan_section)$(project_rules)
 
 ## Task list ($TASKS_FILE)
 $(cat "$TASKS_FILE")
 
 ## The task to judge
-$line" >/dev/null
+$line"
     [ "$(answer_lines "$a" .fits)" = false ] || return 1
     num=$(sed -nE 's/^- \[ \] ([0-9]+(\.[0-9]+)*)\..*/\1/p' <<<"$line")
     deps=$(sed -nE 's/^- \[ \] [0-9.]+\. (\(after [0-9][0-9., ]*\)).*/\1/p' <<<"$line")
     parts=$(answer_lines "$a" '.split[]?' | grep -E '^- \[ \] .*Done when' | head -5); n=$(grep -c . <<<"$parts")
-    [[ $line =~ $re ]] && cmd=${BASH_REMATCH[1]} || cmd=''
+    [[ $line =~ $CHECK_RE ]] && cmd=${BASH_REMATCH[1]} || cmd=''
     if [ -z "$num" ] || [ "$n" -lt 2 ]; then note "Size check: task ${num:-without a number} does not fit one run, but cannot be split (see $a) – it stays"; return 1; fi
-    if [ -n "$cmd" ] && [[ $(tail -1 <<<"$parts") != *"Done when \`$cmd\`"* ]]; then
-        note "Size check: task $num does not fit one run, but the parts drop its check command – it stays"; return 1; fi
+    while IFS= read -r p; do k=$((k + 1)); pc=''; [[ $p =~ $CHECK_RE ]] && pc=${BASH_REMATCH[1]}  # read as the run reads it
+        if [ "$k" = "$n" ]; then [ "$pc" = "$cmd" ] || bad="the parts drop its check command"
+        elif [ -n "$pc" ] && ! approved "$pc"; then bad="part $k brings a check command that is not approved (\`$(shorten 60 <<<"$pc")\`)"; fi
+    done <<<"$parts"
+    [ -z "$bad" ] || { note "Size check: task $num does not fit one run, but $bad – it stays"; return 1; }
+    k=0
     while IFS= read -r p; do k=$((k + 1))  # the planner's own number and dependencies give way to N.k and the task's
         p=$(sed -E 's/^- \[ \] ([0-9][0-9.]*\.[[:space:]]*)?(\(after [^)]*\)[[:space:]]*)?//' <<<"$p")
-        printf -- '- [ ] %s.%s. %s%s\n' "$num" "$k" "${deps:+$deps }" "$p"
+        d=$deps; [ "$k" -gt 1 ] && { if [ -n "$deps" ]; then d="${deps%)}, $num.$((k - 1)))"; else d="(after $num.$((k - 1)))"; fi; }
+        printf -- '- [ ] %s.%s. %s%s\n' "$num" "$k" "${d:+$d }" "$p"
     done <<<"$parts" >"$a.parts"
     while IFS= read -r p; do hash_only <<<"$p" | cut -c1-16; done <"$a.parts" >>"$STATE/sized"
     awk -v l="$pick" -v f="$a.parts" 'NR == l { while ((getline x < f) > 0) print x; next } 1' "$TASKS_FILE" >"$TASKS_FILE.new" && mv "$TASKS_FILE.new" "$TASKS_FILE"
@@ -285,7 +303,7 @@ verdict_line() { # FILE
 }
 # Second Claude with a fresh context and read-only access; prints the VERDICT line.
 verdict_of() { # PROMPT-FILE LOG-NAME
-    local attempt rc retried='' api_waits=0
+    local attempt rc retried='' budget='' api_waits=0
     for attempt in $(seq 1 20); do
         claude_run "$LOGS/$2" reviewer --model "$REVIEWER_MODEL" --allowedTools Read Grep Glob --json-schema "$REVIEWER_SCHEMA" <"$1" >/dev/null; rc=$?
         verdict_line "$LOGS/$2" | grep . && return
@@ -293,7 +311,10 @@ verdict_of() { # PROMPT-FILE LOG-NAME
             [ -z "$retried" ] && { retried=1; note "Reviewer: time limit (${CLAUDE_TIMEOUT:-20m}), trying once more" >&2; continue; }
             echo "VERDICT: REJECT: reviewer hit the time limit (${CLAUDE_TIMEOUT:-20m}) twice, see log/$2"; return
         fi
-        over_budget "$LOGS/$2" && { echo "VERDICT: REJECT: reviewer hit the per-call budget (MAX_COST_PER_CALL_USD=$MAX_COST_PER_CALL_USD), see log/$2"; return; }
+        if over_budget "$LOGS/$2"; then  # like the time limit: once more, then a rejection that counts no attempt (reject)
+            [ -z "$budget" ] && { budget=1; note "Reviewer: per-call budget (MAX_COST_PER_CALL_USD=$MAX_COST_PER_CALL_USD), trying once more" >&2; continue; }
+            echo "VERDICT: REJECT: reviewer hit the per-call budget (MAX_COST_PER_CALL_USD=$MAX_COST_PER_CALL_USD) twice, see log/$2"; return
+        fi
         cooldown "$LOGS/$2" "$jtask" && continue
         usage_limit "$LOGS/$2" || return
         note "Reviewer: usage limit, waiting $((LIMIT_WAIT / 60)) min" >&2; pause "$LIMIT_WAIT"
@@ -371,6 +392,7 @@ handover() { # OUTCOME REASON; OUTCOME is delivered|not-delivered|stopped|limit|
         echo; echo "## Open"
         grep '^- \[~\]' "$TASKS_FILE" || echo "no blocked tasks"
         tasks_awk waiting "$TASKS_FILE"
+        [ -n "$unapproved" ] && { echo "Check commands not approved (not run, the test count had to rise instead; approve one: add it to $STATE/approved-checks):"; sed 's/.*/- `&`/' <<<"$unapproved"; }
         [ -s BLOCKED.md ] && { echo "Reasons (BLOCKED.md):"; tail -10 BLOCKED.md; }
         [ -s "$STATE/wave" ] && { echo "Wave running at the end (discarded, PARALLEL=$PARALLEL):"; cat "$STATE/wave"; }
         echo "Rejected runs this start: $rejected_n$( [ "$rejected_n" -gt 0 ] && echo " (diffs: $LOGS/rejected-*.patch)")"
@@ -380,7 +402,6 @@ handover() { # OUTCOME REASON; OUTCOME is delivered|not-delivered|stopped|limit|
         [ -s "$JOURNAL" ] && { echo; echo "## Log (last 10 entries, all of them: $JOURNAL)"; journal_tail "$JOURNAL" 10; }
         echo; echo "## Next step for you"; echo "$next"
     } >"$STATE/HANDOVER.md"
-    [ -n "${quiet:-}" ] && return 0  # only the text (the body of a pull request), no notification
     case $1 in delivered) notify ok "$head" ;; waiting) notify info "Waiting: $2" ;; *) notify warn "Not delivered: $2" ;; esac >/dev/null 2>&1 || true
 }
 finish() { # EXIT trap: an end that wrote no outcome itself (crit stop) is an error with the last history line
@@ -389,6 +410,7 @@ finish() { # EXIT trap: an end that wrote no outcome itself (crit stop) is an er
         save_attempts
     fi
     [ -n "${fresh:-}" ] && { g -C "$ROOT" worktree remove --force "$fresh/w" >/dev/null 2>&1; rm -rf "$fresh"; g -C "$ROOT" worktree prune; }
+    for p in ${wave_pids[@]+"${wave_pids[@]}"}; do kill_tree "$p"; done  # a crit stop during a wave: its workers end too
     wave_end
     rm -f "$STATE/STOP"; rm -rf "$lock"
 }
@@ -407,7 +429,7 @@ new_deps() {
 # (the loop goes on), 2 not OK ($reason, the points in $final_issues). At most 2 rounds per milestone or project.
 # An intermediate milestone is judged by its own change only (since the commit it started at, $ms_from).
 final_review() {
-    local a=$LOGS/final.txt n diff k tasks waits=0 f range=$BASE_BRANCH...HEAD try nt api_waits=0
+    local a=$LOGS/final.txt n diff k tasks f range=$BASE_BRANCH...HEAD try nt
     [ -z "$last_ms" ] && [ -n "$ms_from" ] && range=$ms_from..HEAD
     n=$(cat "$STATE/final-rounds" 2>/dev/null); is_number "$n" || n=0; n=$((n + 1)); echo "$n" >"$STATE/final-rounds"
     f=$(cat "$TOOL_DIR/templates/FINAL.md"); f=${f//\{RANGE\}/"$range"}
@@ -423,11 +445,7 @@ final_review() {
       memory final
     } >"$LOGS/final-prompt.txt"
     for try in 1 2; do  # an answer with neither tasks nor ok is asked for once more
-        until claude_run "$a" final --model "$PLANNER_MODEL" --allowedTools Read Grep Glob --json-schema "$FINAL_SCHEMA" <"$LOGS/final-prompt.txt" >/dev/null; do
-            cooldown "$a" final && continue
-            usage_limit "$a" && [ $((waits += 1)) -le 20 ] || break
-            note "Final review: usage limit, waiting $((LIMIT_WAIT / 60)) min"; pause "$LIMIT_WAIT"
-        done
+        claude_wait "$a" final --model "$PLANNER_MODEL" --allowedTools Read Grep Glob --json-schema "$FINAL_SCHEMA" <"$LOGS/final-prompt.txt"
         tasks=$(answer_lines "$a" '.tasks[]?' | grep -E '^- \[ \] .*Done when' | head -5)
         [ -n "$tasks" ] || [ "$(answer_lines "$a" .ok)" = true ] && break
         [ "$try" = 1 ] && note "Final review (round $n): no usable answer, asking once more"
@@ -482,17 +500,28 @@ merge_into_base() {
     if [ -z "$why" ]; then merge_note="Merged into $BASE_BRANCH (fast-forward) in $main."; note "$merge_note"; merge_state="merged into $BASE_BRANCH"
     else merge_note="Not merged: $why. Adopt it yourself: $merge_cmd"; [ "$MERGE" = off ] || merge_state="not merged: $(shorten 80 <<<"$why")"; fi
 }
-# MERGE=pr: push the work branch to origin and open a pull request against BASE_BRANCH (an open one is reused),
-# title from the plan's first heading, body the start of the handover. PR_WAIT=on waits up to 30 minutes for
-# its GitHub checks (output in $STATE/ci.txt); red sets $ci_red.
+# The pull request's text: what was built and one line each for demo, tests and acceptance – no paths, logs, lessons
+# or output. ~ for the home folder; #123 and @name in backticks, so GitHub links no issue and notifies nobody.
+pr_body() {
+    local t
+    t=$(echo "## What was built"; g log --format='- %s' "$BASE_BRANCH..HEAD" | cut_chars 1 100; echo
+        if [ -n "$demo_rc" ]; then echo "Demo: \`$DEMO_CMD\` – exit code $demo_rc"; else echo "Demo: none"; fi
+        echo "Tests: $count0 -> $count passed (\`$TEST_CMD\`)"
+        [ -n "$ACCEPT_CMD" ] && echo "Acceptance: $acc0 -> $acc of ${target:-?}")
+    sed -E 's/(^|[^`[:alnum:]_])(#[0-9]+|@[A-Za-z0-9][A-Za-z0-9-]*)/\1`\2`/g' <<<"${t//"$HOME"/"~"}"
+}
+# MERGE=pr (experimental): push the work branch to origin and open a pull request against BASE_BRANCH (an open one
+# is reused), title from the plan's first heading, body from pr_body. PR_WAIT=on waits up to 30 minutes for its
+# GitHub checks (output in $STATE/ci.txt; "no checks reported" is asked again for about 2 minutes, CI may not have
+# started yet); red sets $ci_red.
 open_pr() { # BRANCH
-    local out url rc title body=$STATE/pr-body.md
+    local out url rc title try body=$STATE/pr-body.md
     if ! out=$(g push -q origin "HEAD:refs/heads/$1" 2>&1); then
         merge_note="Not pushed: git push origin $1 failed: $(tail -1 <<<"$out")"; merge_state="not merged: git push failed: $(tail -1 <<<"$out" | shorten 60)"; note "$merge_note"; return
     fi
-    if ! url=$(gh pr view "$1" --json url -q .url 2>/dev/null) || [ -z "$url" ]; then
+    if ! url=$(gh pr view "$1" --json url,state -q 'select(.state == "OPEN") | .url' 2>/dev/null) || [ -z "$url" ]; then
         title=$(sed -n 's/^# *//p' "$PLAN_FILE" 2>/dev/null | head -1); title=${title:-Autopilot: $NAME}
-        merge_cmd='review and merge this pull request'; quiet=1 handover delivered "PR"; head -80 "$STATE/HANDOVER.md" >"$body"
+        pr_body >"$body"
         if ! url=$(gh pr create --base "$BASE_BRANCH" --head "$1" --title "$title" --body-file "$body" 2>"$STATE/gh.txt"); then
             merge_note="Pushed $1, but no pull request: gh pr create failed: $(tail -1 "$STATE/gh.txt")"; merge_state="not merged: gh pr create failed: $(tail -1 "$STATE/gh.txt" | shorten 60)"; note "$merge_note"; return
         fi
@@ -502,8 +531,12 @@ open_pr() { # BRANCH
     merge_note="Pushed $1 to origin, pull request against $BASE_BRANCH: $url"; note "$merge_note"
     [ "$PR_WAIT" = on ] || return 0
     note "Waiting for the GitHub checks of $url (at most 30 min) …"
-    with_timeout 30m gh pr checks "$url" --watch >"$STATE/ci.txt" 2>&1 & cmd=$!
-    wait "$cmd"; rc=$?; cmd=''
+    for try in 1 2 3 4 5 6 7 8 9; do
+        with_timeout 30m gh pr checks "$url" --watch >"$STATE/ci.txt" 2>&1 & cmd=$!
+        wait "$cmd"; rc=$?; cmd=''
+        grep -q 'no checks reported' "$STATE/ci.txt" && [ "$try" -lt 9 ] || break
+        pause "${AUTOPILOT_PR_POLL:-15}"
+    done
     if [ "$rc" = 0 ] || grep -q 'no checks reported' "$STATE/ci.txt"; then note "GitHub checks green (or none)"; return 0; fi
     ci_red="CI red: $url"; [ "$rc" = 124 ] && ci_red="CI checks not done after 30 minutes: $url"
 }
@@ -529,7 +562,7 @@ Milestone $ms of the plan is done. Propose the tasks of \"Milestone $nx\" only, 
     journal_add /dev/null "$JOURNAL" script "Milestone $nx" "started with $(grep -c . "$STATE/suggestion.md") tasks"
     note "Milestone $nx: $(grep -c . "$STATE/suggestion.md") tasks added"
     rm -f "$STATE/suggestion.md" "$STATE/no-progress" "$STATE/final-rounds"
-    ms=$nx; ms_from=$(g rev-parse HEAD); echo "$ms $ms_from" >"$STATE/milestone"
+    ms=$nx; ms_from=$(g rev-parse HEAD); echo "$ms $ms_from" >"$STATE/milestone.new" && mv "$STATE/milestone.new" "$STATE/milestone"
 }
 
 # --- Planner: proposes new tasks, adopted only with `autopilot plan accept` -----------------------
@@ -559,7 +592,7 @@ $(tail -40 "$STATE/ci.txt" | no_ansi)}
 $(cat "$LOGS/suggestion-prev.md" 2>/dev/null || echo –)${1:+
 
 $1}$(memory planner)"
-    claude_run "$LOGS/planner.txt" planner --model "$PLANNER_MODEL" --allowedTools Read Grep Glob --json-schema "$PLANNER_SCHEMA" <<<"$prompt" >/dev/null
+    claude_wait "$LOGS/planner.txt" planner --model "$PLANNER_MODEL" --allowedTools Read Grep Glob --json-schema "$PLANNER_SCHEMA" <<<"$prompt"
     # not_reachable: the goal needs the owner, not more tasks (exit 2, "NOT REACHABLE: <reason>" as the text)
     if r=$(answer_lines "$LOGS/planner.txt" '.not_reachable // empty' | head -1 | shorten 200 | grep .); then
         journal_add "$LOGS/planner.txt" "$JOURNAL" planner - "not reachable"; echo "NOT REACHABLE: $r"; rm -f "$STATE/suggestion.md"; return 2
@@ -633,6 +666,22 @@ changed_submodules() {
 }
 
 # --- One worker run: its prompt and the script checks after it (the serial loop and every worker of a wave) ---
+# The task's check command: the first command in backticks after "Done when". It runs only when the owner approved it:
+# TEST_CMD, DEMO_CMD, ACCEPT_CMD, or one of a task line adopted with `plan accept` (.autopilot/approved-checks). Task
+# lines nobody approved (split, final review, next milestone with MILESTONE_GATE=auto) may name another one: it is
+# not run, and the task needs a new test like one without a check command. → $task_check, $check_unapproved
+CHECK_RE='Done when `([^`]+)`'
+approved() { [ "$1" = "$TEST_CMD" ] || [ "$1" = "$DEMO_CMD" ] || [ "$1" = "$ACCEPT_CMD" ] || grep -qxF -- "$1" "$STATE/approved-checks" 2>/dev/null; }
+check_of() { # TASK LINE
+    task_check=''; check_unapproved=''
+    [[ $1 =~ $CHECK_RE ]] || return 0
+    approved "${BASH_REMATCH[1]}" && { task_check=${BASH_REMATCH[1]}; return 0; }
+    check_unapproved=${BASH_REMATCH[1]}
+    grep -qxF -- "$check_unapproved" <<<"$unapproved" && return 0  # named once per start
+    unapproved+="${unapproved:+$'\n'}$check_unapproved"
+    note "check command not approved: \`$check_unapproved\` ($(shorten 50 <<<"${1:6}")) – not run, the test count must rise instead"
+    journal_add /dev/null "$JOURNAL" script "$(shorten 50 <<<"${1:6}")" "check command not approved: $(shorten 80 <<<"$check_unapproved")"
+}
 # The prompt for the task $open_task (line $pick) in $prompt
 worker_prompt() {
     prompt=$(cat "$PROMPT_FILE")
@@ -645,6 +694,7 @@ worker_prompt() {
     prompt+=$'\n'"Time budget: $WORKER_TIMEOUT, then the run is aborted and reset. Attempt $((fails + 1)) of at most $ATTEMPTS for this task (then it is blocked)."
     [ -n "$DEMO_CMD" ] && prompt+=$'\n'"Demo command (it must exit 0 once all tasks are done): $(run_hint "$DEMO_CMD" "demo command")"
     [ -n "$task_check" ] && prompt+=$'\n'"Check command of this task (it must exit 0): $(run_hint "$task_check" "check command")"
+    [ -n "$check_unapproved" ] && prompt+=$'\n'"The task names the check command \`$check_unapproved\`, but the owner has not approved it, so the script does not run it: add a test instead (the test count must rise)."
     prompt+=$(project_rules)
     [ -s "$FEEDBACK" ] && prompt+=$'\n\n## Feedback on the previous attempt\n'"$(cat "$FEEDBACK")"
     # Brief (MODELS=cheap only): the planner plans the task with the whole plan, the haiku worker implements it.
@@ -770,7 +820,10 @@ check_run() {
         # every 5 accepted tasks the lessons are condensed again (counted from the script's own history lines)
         [ $(( $(grep -cE '^[0-9-]{10} [0-9:]{8} Run [0-9]+ accepted: \[x\]' "$LOGS/history.log") % 5 )) = 0 ] && condense_lessons
     else journal_run blocked; condense_lessons; fi
-    # Accepted runs without acceptance progress: the tasks miss the goal, more of them would not help
+    # Accepted runs without acceptance progress: the tasks miss the goal, more of them would not help. The parts N.k
+    # of a split task count once, with the last one.
+    root=$(sed -nE 's/^- \[.\] ([0-9]+)\.[0-9].*/\1/p' <<<"$open_task")
+    [ -n "$root" ] && grep -qE "^- \[ \] $root\.[0-9]" "$TASKS_FILE" && progress=1
     if [ -z "$progress" ]; then
         np_add 1
         [ "$(np_count)" -ge "$NO_PROGRESS" ] && {
@@ -795,7 +848,7 @@ wave_git() { GIT_INDEX_FILE=$wave_dir/index-$k g --git-dir="$git_dir" --work-tre
 wave_end() { # the workers' worktrees and the wave file removed (also at every end)
     [ -n "${wave_dir:-}" ] || return 0
     local w; for w in "$wave_dir"/w*; do g -C "$ROOT" worktree remove --force "$w" >/dev/null 2>&1; done
-    rm -rf "$wave_dir"; g -C "$ROOT" worktree prune; wave_dir=''; rm -f "$STATE/wave"
+    rm -rf "$wave_dir"; g -C "$ROOT" worktree prune; wave_dir=''; rm -f "$STATE/wave" "$STATE/wave-dir"
 }
 # A wave: up to PARALLEL tasks that can start now (none waits on another, none was rejected before, at most 1
 # conflict each), each worker in its own temporary worktree at HEAD, all at the same time. Then the script merges
@@ -804,7 +857,7 @@ wave_end() { # the workers' worktrees and the wave file removed (also at every e
 # The task list never comes from a worker: only its own line ticked off or blocked counts, the script sets that mark.
 # → 0 the wave ran, 1 no wave (fewer than 2 tasks for it: the serial run goes on), 2 a size check split a task
 wave() {
-    local lines=() l p f c=0 k n avg base m add x merged='' limit_at='' api_at='' rcs=() runs=() texts=() t
+    local lines=() l p f c=0 k n avg base m add x merged='' limit_at='' api_at='' rcs=() runs=() texts=() t free=0
     while IFS= read -r l; do
         p=$(pending_file "$(sed -n "${l}p" "$TASKS_FILE")")
         if [ -s "$p" ]; then read -r f c <"$p"; [ "$f" = 0 ] && [ "${c:-0}" -lt 2 ] || continue; fi
@@ -822,12 +875,13 @@ wave() {
     lines=("${lines[@]:0:n}")
     for pick in "${lines[@]}"; do [ "$SIZE_CHECK" = on ] && size_check && return 2; done
     wave_dir=$(mktemp -d) || { announce crit "No temporary directory for the wave"; exit 1; }
+    echo "$wave_dir" >"$STATE/wave-dir"  # a start after a crash removes what is left of it
     base=$(g rev-parse HEAD); in_wave=1; : >"$STATE/wave"
-    [ -s "$COSTS" ] || echo "$COSTS_HEADER" >"$COSTS"  # the workers append at the same time: the header first
+    costs_header  # the workers append at the same time: header (and an old one migrated) first
     for k in "${!lines[@]}"; do
         pick=${lines[$k]}; i=$((i + 1)); runs[k]=$i; verdict=''
         open_task=$(sed -n "${pick}p" "$TASKS_FILE"); texts[k]=$open_task; jtask=$(shorten 50 <<<"${open_task:6}")
-        task_check=''; re='Done when `([^`]+)`'; [[ $open_task =~ $re ]] && task_check=${BASH_REMATCH[1]}
+        check_of "$open_task"
         FEEDBACK=$wave_dir/feedback-$k; fails=0; p=$(pending_file "$open_task"); [ -s "$p" ] && tail -n +2 "$p" >"$FEEDBACK"
         note "Run $i: $(shorten 80 <<<"${open_task:6}") (wave of $n)"
         worker_prompt
@@ -845,13 +899,14 @@ wave() {
     restore HEAD  # the work directory is the workers' merge target: nothing a worker might have left there counts
     for k in "${!lines[@]}"; do  # merge, check and commit one by one, in task order
         i=${runs[$k]}; rc=${rcs[$k]}; open_task=${texts[$k]}; jtask=$(shorten 50 <<<"${open_task:6}"); verdict=''
-        task_check=''; re='Done when `([^`]+)`'; [[ $open_task =~ $re ]] && task_check=${BASH_REMATCH[1]}
+        check_of "$open_task"
         cost=$(cat "$wave_dir/cost-$k" 2>/dev/null); cost=${cost:-0}; FEEDBACK=$wave_dir/feedback-$k; fails=0
         p=$(pending_file "$open_task"); c=0; [ -s "$p" ] && read -r f c <"$p"
         pick=$(grep -nxF -- "$open_task" "$TASKS_FILE" | head -1 | cut -d: -f1)
         # Usage limit or an API error: the wave waits after the merges, this task counts no attempt
-        if [ "$rc" -ne 0 ] && usage_limit "$LOGS/run-$i.txt"; then limit_at=$LOGS/run-$i.txt; note "Run $i: usage limit, no attempt counted"; continue; fi
-        if [ "$rc" -ne 0 ] && [ "$rc" != 124 ] && api_error "$LOGS/run-$i.txt"; then api_at=$LOGS/run-$i.txt; note "Run $i: Claude API or network error, no attempt counted"; continue; fi
+        # (and, as in the serial loop, no run of MAX_RUNS)
+        if [ "$rc" -ne 0 ] && usage_limit "$LOGS/run-$i.txt"; then limit_at=$LOGS/run-$i.txt; free=$((free + 1)); note "Run $i: usage limit, no attempt counted"; continue; fi
+        if [ "$rc" -ne 0 ] && [ "$rc" != 124 ] && api_error "$LOGS/run-$i.txt"; then api_at=$LOGS/run-$i.txt; free=$((free + 1)); note "Run $i: Claude API or network error, no attempt counted"; continue; fi
         if [ "$rc" -ne 0 ] && ! over_budget "$LOGS/run-$i.txt" && err=$(jq -er 'select(.is_error == true) | .result // "unknown error"' "$LOGS/run-$i.txt.json" 2>/dev/null); then
             journal_add /dev/null "$JOURNAL" worker "$jtask" error
             announce crit "Run $i: Claude reported an error: $(head -1 <<<"$err" | shorten 200) – fix it (e.g. claude /login, check the network), then start again"; exit 1
@@ -890,7 +945,7 @@ wave() {
         if check_run; then rm -f "$p"; merged+="${merged:+, }$(sed -nE 's/^- \[.\] ([0-9]+(\.[0-9]+)*)\..*/\1/p' <<<"$open_task")"
         else save_pending "$open_task" "$c"; fi
     done
-    wave_end; in_wave=''; FEEDBACK=$STATE/feedback.txt; fails=0; last=''; rm -f "$FEEDBACK"; save_attempts
+    wave_end; in_wave=''; FEEDBACK=$STATE/feedback.txt; fails=0; last=''; rm -f "$FEEDBACK"; save_attempts; i=$((runs[-1] - free))
     [ -n "$lessons_due" ] && { lessons_due=''; condense_lessons; }
     if [ -n "$limit_at" ]; then
         t=$(limit_reset "$limit_at"); waits=$((waits + 1))
@@ -941,12 +996,15 @@ g var GIT_COMMITTER_IDENT >/dev/null 2>&1 || { announce crit "Git cannot commit 
 
 i=0; acc=0; cost=0; worker=''; cmd=''; in_wave=''; lessons_due=''; wave_dir=''; wave_pids=(); reason=''; rejected_n=0; demo_rc=''; verdict=''; jtask=''; api_waits=0
 merge_note=''; merge_cmd=''; merge_state=''; fresh_line=''; final_issues=''; fresh=''; fresh_out=''; ci_red=''; pick=''
+task_check=''; check_unapproved=''; unapproved=''
+# The worktrees of a wave a killed start left behind (only a folder mktemp made)
+wave_dir=$(cat "$STATE/wave-dir" 2>/dev/null); case $wave_dir in "${TMPDIR:-/tmp}"/tmp.*) wave_end ;; *) wave_dir=''; rm -f "$STATE/wave-dir" ;; esac
 ms_all=$([ -n "$PLAN_FILE" ] && milestones "$PLAN_FILE"); ms=''; ms_from=''; last_ms=1
 if [ -n "$ms_all" ]; then  # the current milestone: from .autopilot/milestone if it is one of the plan's, else the first
     read -r ms ms_from 2>/dev/null <"$STATE/milestone"
     grep -qx -- "$ms" <<<"$ms_all" || { ms=$(head -1 <<<"$ms_all"); ms_from=''; }
     [ -n "$ms_from" ] && ! g rev-parse -q --verify "$ms_from^{commit}" >/dev/null && ms_from=''
-    echo "$ms${ms_from:+ $ms_from}" >"$STATE/milestone"
+    echo "$ms${ms_from:+ $ms_from}" >"$STATE/milestone.new" && mv "$STATE/milestone.new" "$STATE/milestone"
 fi
 # Without ALLOWED the scripts that TEST_CMD, ACCEPT_CMD and DEMO_CMD start (first word, or the second after bash/sh, a relative path to a file here) are locked too
 cmd_files=()
@@ -981,6 +1039,7 @@ if [ "$FRESH_CHECK" != off ]; then
     [ "$r" = 2 ] && { announce crit "No fresh checkout of HEAD could be made for the start check ($(tail -1 "$STATE/fresh.txt")) – fix that, or set FRESH_CHECK=off"; exit 1; }
     [ "$r" = 0 ] || { announce crit "TEST_CMD is red in a fresh checkout of HEAD: it depends on files that are not committed (ignored caches, build output, local settings; with the sandbox nothing can be downloaded there), so the result could never be delivered. See $STATE/fresh.txt – commit what is missing, or set FRESH_CHECK=off"; exit 1; }
 fi
+[ "$PARALLEL" -gt 1 ] && note "PARALLEL=$PARALLEL is experimental: workers start without ignored files (caches, node_modules)"
 announce info "Start: $count tests green${ACCEPT_CMD:+, Accept $acc of ${target:-?}}, at most $MAX_RUNS runs or $MAX_COST_USD USD, models $MODELS (planner $PLANNER_MODEL, worker $WORKER_MODEL, reviewer $REVIEWER_MODEL), sandbox ${sandbox:+on}${sandbox:-off}"
 
 # Brake of the next task from the last start (same task: counter and feedback kept)
@@ -1058,8 +1117,8 @@ while :; do
 
     i=$((i + 1)); before=$(g rev-parse HEAD); cost=0; verdict=''
     open_task=$(sed -n "${pick}p" "$TASKS_FILE"); jtask=$(shorten 50 <<<"${open_task:6}")
-    # "Done when `<command>` …": the script runs that command after the run; it replaces "tests must rise"
-    task_check=''; re='Done when `([^`]+)`'; [[ $open_task =~ $re ]] && task_check=${BASH_REMATCH[1]}
+    # "Done when `<command>` …": the script runs that command after the run (if approved); it replaces "tests must rise"
+    check_of "$open_task"
     [ "$open_task" != "$last" ] && { last=$open_task; fails=0; rm -f "$FEEDBACK"; }
     save_attempts
     note "Run $i: $(shorten 80 <<<"${open_task:6}")"

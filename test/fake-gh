@@ -2,13 +2,17 @@
 # Test double for the GitHub CLI `gh` (only for test/test_autopilot.sh). Every call appends its arguments to
 # $FAKE_DIR/gh-args. $FAKE_DIR/gh-noauth: `gh auth status` fails. `gh pr view` prints the URL of a pull request
 # opened before ($FAKE_DIR/gh-pr), `gh pr create` opens one (its body file is copied to $FAKE_DIR/gh-body),
-# `gh pr checks` prints $FAKE_DIR/gh-checks.txt and exits with $FAKE_DIR/gh-checks-rc (default 0).
+# `gh pr checks` prints $FAKE_DIR/gh-checks.txt and exits with $FAKE_DIR/gh-checks-rc (default 0); before that it
+# answers "no checks reported" as often as $FAKE_DIR/gh-nochecks says, and waits $FAKE_DIR/gh-checks-sleep seconds.
 d=$FAKE_DIR; echo "$*" >>"$d/gh-args"
 case "$1 ${2:-}" in
     "auth status") [ ! -e "$d/gh-noauth" ] ;;
     "pr view") [ -s "$d/gh-pr" ] && cat "$d/gh-pr" ;;
     "pr create") while [ $# -gt 0 ]; do [ "$1" = --body-file ] && cp "$2" "$d/gh-body"; shift; done
                  echo "Creating pull request …" >&2; echo https://github.com/example/project/pull/7 | tee "$d/gh-pr" ;;
-    "pr checks") cat "$d/gh-checks.txt" 2>/dev/null; exit "$(cat "$d/gh-checks-rc" 2>/dev/null || echo 0)" ;;
+    "pr checks") n=$(cat "$d/gh-nochecks" 2>/dev/null || echo 0)
+                 [ "$n" -gt 0 ] && { echo $((n - 1)) >"$d/gh-nochecks"; echo "no checks reported on the 'autopilot' branch"; exit 1; }
+                 [ -f "$d/gh-checks-sleep" ] && { touch "$d/gh-checks-waiting"; sleep "$(cat "$d/gh-checks-sleep")"; }
+                 cat "$d/gh-checks.txt" 2>/dev/null; exit "$(cat "$d/gh-checks-rc" 2>/dev/null || echo 0)" ;;
     *) exit 1 ;;
 esac

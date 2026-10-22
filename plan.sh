@@ -30,7 +30,7 @@ exclude_state() { # REPO: state directory and configuration never in Git
 claude_failed() { # ANSWERFILE
     local t
     usage_limit "$1" && { t=$(limit_reset "$1"); fail "Claude's usage limit is reached${t:+ (resets $t)} – nothing was set up; run the same command again then."; }
-    over_budget "$1" && fail "Claude hit the per-call budget (MAX_COST_PER_CALL_USD=${MAX_COST_PER_CALL_USD:-2}) – run it again with a higher one, e.g. MAX_COST_PER_CALL_USD=5 autopilot plan …"
+    over_budget "$1" && fail "Claude hit the per-call budget (MAX_COST_PER_CALL_USD=${MAX_COST_PER_CALL_USD:-5}) – run it again with a higher one, e.g. MAX_COST_PER_CALL_USD=10 autopilot plan …"
     fail "Claude exited with an error, see $1"
 }
 
@@ -251,6 +251,7 @@ Move or remove what is at $wt (or delete a stale worktree with: git -C \"$repo\"
         grep -q "^DEMO_CMD='[^']" "$e/autopilot.part" || printf "# no demo: the run can never end as delivered – add one\nDEMO_CMD=''\n"
     } >"$repo/autopilot.conf"
     trust "$repo/autopilot.conf"  # you have just accepted the draft
+    approve_checks "$e/tasks.md" "$repo/.autopilot"
     rm -rf "$e"; rm -f "$LAST"
     # A new draft is a new start: no milestone, final-review round or no-progress count of an earlier plan
     rm -f "$repo/.autopilot/milestone" "$repo/.autopilot/final-rounds" "$repo/.autopilot/no-progress"
@@ -261,6 +262,11 @@ Move or remove what is at $wt (or delete a stale worktree with: git -C \"$repo\"
     echo "Start: cd $(printf %q "$repo") && autopilot start"
 }
 
+# The check commands of task lines the owner adopts are approved: the loop runs no other ("Done when `<command>`")
+approve_checks() { # TASKFILE STATE
+    grep -o 'Done when `[^`]*`' "$1" | sed 's/^Done when `//; s/`$//' >>"$2/approved-checks"
+}
+
 accept_suggestion() { # adds the planner's suggestion to the task list of the project here (needs its trusted conf)
     (
         # shellcheck source=common.sh
@@ -268,10 +274,11 @@ accept_suggestion() { # adds the planner's suggestion to the task list of the pr
         n=$(grep -c . "$STATE/suggestion.md")
         is_running && { echo "Stop it first: the autopilot is running."; exit 1; }
         [ -z "$(g -C "$WORKDIR" status --porcelain)" ] || { echo "Work directory not clean."; exit 1; }
-        # MILESTONE_GATE=ask: these are the tasks of the next milestone, which starts here
-        read -r nx 2>/dev/null <"$STATE/gate" && echo "$nx $(g -C "$WORKDIR" rev-parse HEAD)" >"$STATE/milestone"
         cat "$STATE/suggestion.md" >>"$WORKDIR/$TASKS_FILE"
         g -C "$WORKDIR" add "$TASKS_FILE" && g -C "$WORKDIR" commit -q -m "Planner: $n new tasks" || exit 1
+        approve_checks "$STATE/suggestion.md" "$STATE"
+        # MILESTONE_GATE=ask: these are the tasks of the next milestone, which starts here (after the commit, atomically)
+        read -r nx 2>/dev/null <"$STATE/gate" && echo "$nx $(g -C "$WORKDIR" rev-parse HEAD)" >"$STATE/milestone.new" && mv "$STATE/milestone.new" "$STATE/milestone"
         rm -f "$STATE/suggestion.md" "$STATE/no-progress" "$STATE/gate"  # adopted = new state: the no-progress brake starts afresh
         echo "$n tasks adopted. Start: autopilot start"
     )

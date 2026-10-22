@@ -42,7 +42,7 @@ MAX_COST_USD=${MAX_COST_USD:-20}
 ATTEMPTS=${ATTEMPTS:-3}
 MAX_BLOCKED=${MAX_BLOCKED:-3}
 NO_PROGRESS=${NO_PROGRESS:-10}
-MAX_COST_PER_CALL_USD=${MAX_COST_PER_CALL_USD:-2}
+MAX_COST_PER_CALL_USD=${MAX_COST_PER_CALL_USD:-5}
 COOLDOWN=${COOLDOWN:-10m}
 EFFORT_WORKER=${EFFORT_WORKER:-}; EFFORT_REVIEWER=${EFFORT_REVIEWER:-}; EFFORT_PLANNER=${EFFORT_PLANNER:-}; EFFORT_LESSONS=${EFFORT_LESSONS:-}
 MILESTONE_GATE=auto
@@ -93,6 +93,9 @@ if [ -z "$BASE_BRANCH" ]; then  # the main worktree's branch; if that is the wor
         { g -C "$WORKDIR" rev-parse -q --verify main >/dev/null && BASE_BRANCH=main || BASE_BRANCH=master; }
 fi
 STATE=$CONF_DIR/.autopilot  # logs, costs, STOP, feedback, brakes, suggestion, outcome, handover
+# Never written by Claude, also where it lies outside the work directory (the worker gets --add-dir for its logs):
+# "//" makes the rule an absolute path
+CLAUDE_SAFE+=("Edit(/$STATE/**)" "Write(/$STATE/**)")
 # Same NAME in two folders: two sessions. Only [A-Za-z0-9_-]: tmux silently renames "." and ":".
 SESSION="autopilot-$(printf '%s' "$NAME" | tr -c 'A-Za-z0-9_-' '_')-$(printf '%s' "$CONF_DIR" | hash_only | cut -c1-8)"
 mkdir -p "$STATE/log"

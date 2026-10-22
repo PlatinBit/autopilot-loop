@@ -121,6 +121,7 @@ TEST_CMD='bash check.sh'
 EOF
     printf -- '- [ ] 1. one. Done when `test -e ok.txt` succeeds.\n- [ ] 2. two. Done when `test -e nope.txt` succeeds.\n' >TASKS.md
     git add -A && git commit -qm tasks || fail "I4: setup failed"
+    mkdir -p "$T/pi4-conf/.autopilot"; printf 'test -e ok.txt\ntest -e nope.txt\n' >"$T/pi4-conf/.autopilot/approved-checks"  # a hand-written list: approved by hand
     echo "touch ok.txt; $tick" >"$FAKE_DIR/steps/1.sh"                             # no new test, but the check is green
     echo "echo check >>checks.txt; touch other.txt; $tick" >"$FAKE_DIR/steps/2.sh"  # tests rise, but the check is red
     printf 'VERDICT: ACCEPT\nVERDICT: ACCEPT\n' >"$FAKE_DIR/verdicts"

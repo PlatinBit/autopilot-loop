@@ -141,7 +141,7 @@ export const register: Register = on => {
     await $.command.register({
       name: 'autopilot-loop',
       description: 'Autopilot: plan a project from a file or an idea, start, status, stop, handover, doctor',
-      argumentHint: '[plan <file>|plan "<idea>"|plan [accept|discard]|start|status|stop [--now]|handover|doctor|trust <file>|help]',
+      argumentHint: '[plan <file>|plan "<idea>"|plan --spec "<idea>"|plan [accept|discard]|start|status [--short|--watch]|stop [--now]|handover [--export-lessons]|doctor|trust [file]|help]',
     }).catch(err => $.ui.log(`autopilot-loop: /autopilot-loop not registered: ${err instanceof Error ? err.message : err}`))
     return next(e)
   })
@@ -150,13 +150,17 @@ export const register: Register = on => {
   on('command.run', { command: 'autopilot-loop' }, async ($, e) => {
     try {
       const args = e.args.trim()
+      const unquote = (s: string) => /^(".*"|'.*')$/.test(s) ? s.slice(1, -1) : s
       let text: string
-      if (args.startsWith('plan ')) {  // a path or an idea, spaces included, stays one argument
-        let rest = args.slice(5).trim()
-        if (/^(".*"|'.*')$/.test(rest)) rest = rest.slice(1, -1)
-        text = await autopilot($, ['plan', rest])
+      if (args.startsWith('plan --spec ')) {  // the idea stays one argument after --spec
+        text = await autopilot($, ['plan', '--spec', unquote(args.slice(12).trim())])
+      } else if (args.startsWith('plan ')) {  // a path or an idea, spaces included, stays one argument
+        text = await autopilot($, ['plan', unquote(args.slice(5).trim())])
       } else {
-        text = args ? await autopilot($, args.split(/\s+/)) : await menu($)
+        const argv = args.split(/\s+/)
+        // --watch repeats until Ctrl+C, which a slash command cannot send: one round
+        if (argv[0] === 'status' && argv[1] === '--watch') argv.splice(2, argv.length, '--once')
+        text = args ? await autopilot($, argv) : await menu($)
       }
       await pollStatus($).catch(() => {})  // refresh the status line right away (start, stop …)
       return { text }

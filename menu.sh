@@ -47,8 +47,9 @@ doc_project() { # with a trusted configuration: work directory, sandbox state an
          if ! command -v gh >/dev/null; then echo "  ✘ MERGE=pr: gh (GitHub CLI) not found – $(install_hint gh), then gh auth login"
          elif ! gh auth status >/dev/null 2>&1; then echo "  ✘ MERGE=pr: gh is not logged in – gh auth login"
          elif ! o=$(g -C "$WORKDIR" remote get-url origin 2>/dev/null); then echo "  ✘ MERGE=pr: no remote origin in $WORKDIR – git remote add origin <url>"
-         else echo "  MERGE=pr: pushes to $o and opens a pull request when delivered"; fi
-     fi)
+         else echo "  MERGE=pr: pushes to $o and opens a pull request when delivered (experimental)"; fi
+     fi
+     [ "${PARALLEL:-1}" -gt 1 ] 2>/dev/null && echo "  PARALLEL=$PARALLEL is experimental: workers start without ignored files (caches, node_modules)")
     probe_test_cmd "$k" | sed 's/^/  /'
 }
 doctor() {
@@ -185,7 +186,7 @@ handover() { # [--export-lessons]
             /^## Lessons from autopilot[[:space:]]*$/ { printf "%s", new; skip = done = 1; next }
             skip && /^## / { skip = 0; print "" } !skip { print }
             END { if (!done) { if (NR) print ""; printf "%s", new } }' >"$a.new" && mv "$a.new" "$a" || return 1
-        echo "Written to $a (commit it yourself):"; cat "$s"; return 0
+        echo "Written to $a – commit AGENTS.md before the next start, otherwise MERGE=ff is refused (uncommitted changes):"; cat "$s"; return 0
     fi
     [ -s "$st/HANDOVER.md" ] || { echo "No handover yet: it is written when a start ends. Start it: autopilot start"; return 0; }
     cat "$st/HANDOVER.md"
